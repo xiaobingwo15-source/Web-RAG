@@ -45,7 +45,3 @@ This architecture completely removes the burden of writing manual, complex backe
 - [PRD.md](./PRD.md) — Feature matrix configurations across all 8 architectural modules.
 - [CLAUDE.md](./CLAUDE.md) — System operating syntax, engineering constraints, and prompt formatting criteria.
 - [PROGRESS.md](./PROGRESS.md) — Real-time ledger tracking active repository design milestones.
-
-## Join the Architectural Space
-
-If you are looking to exchange code patterns, evaluate benchmarks, or iterate alongside hundreds of technical professionals constructing production-grade AI applications, jump into [The AI Automators Community](https://www.skool.com/aiagent/about). Accelerate your building cycle, unlock technical roadmaps, and see what the space is shipping.
