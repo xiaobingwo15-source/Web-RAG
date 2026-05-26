@@ -1,7 +1,10 @@
+import logging
 from google import genai
 from google.genai import types
 from langfuse import observe, get_client
 from app.config import Settings
+
+logger = logging.getLogger(__name__)
 
 RAG_SYSTEM_PROMPT = (
     "You are a helpful assistant that answers questions based on the provided documents. "
@@ -59,14 +62,29 @@ async def generate_chat_response(
         parts=[types.Part.from_text(text=message)],
     ))
 
+    logger.info(f"Generating chat response with store_name={file_search_store_name}")
+
     response = await client.aio.models.generate_content(
         model="gemini-2.5-flash",
         contents=contents,
         config=_build_config(file_search_store_name),
     )
 
-    langfuse.update_current_generation(output={"response": response.text})
-    return response.text
+    candidate = response.candidates[0]
+    if candidate.grounding_metadata:
+        metadata = candidate.grounding_metadata
+        chunks = metadata.grounding_chunks or []
+        logger.info(f"FileSearch returned {len(chunks)} grounding chunks")
+        for i, chunk in enumerate(chunks):
+            logger.debug(f"  Chunk {i}: {chunk}")
+    else:
+        logger.info("No grounding metadata in response")
+
+    output = "".join(
+        part.text for part in candidate.content.parts if part.text
+    )
+    langfuse.update_current_generation(output={"response": output})
+    return output
 
 
 @observe(name="gemini_chat_stream", as_type="generation")
@@ -88,6 +106,8 @@ async def generate_chat_response_stream(
         parts=[types.Part.from_text(text=message)],
     ))
 
+    logger.info(f"Generating streaming chat response with store_name={file_search_store_name}")
+
     response_stream = await client.aio.models.generate_content_stream(
         model="gemini-2.5-flash",
         contents=contents,
@@ -95,9 +115,17 @@ async def generate_chat_response_stream(
     )
 
     full_response = ""
+    grounding_logged = False
     async for chunk in response_stream:
-        if chunk.text:
-            full_response += chunk.text
-            yield chunk.text
+        if chunk.candidates and chunk.candidates[0].content.parts:
+            for part in chunk.candidates[0].content.parts:
+                if part.text:
+                    full_response += part.text
+                    yield part.text
+        if not grounding_logged and chunk.candidates and chunk.candidates[0].grounding_metadata:
+            metadata = chunk.candidates[0].grounding_metadata
+            chunks = metadata.grounding_chunks or []
+            logger.info(f"FileSearch returned {len(chunks)} grounding chunks (stream)")
+            grounding_logged = True
 
     langfuse.update_current_generation(output={"response": full_response})

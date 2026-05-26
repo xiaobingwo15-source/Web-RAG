@@ -9,7 +9,7 @@ import { PanelRightOpen, PanelRightClose } from 'lucide-react'
 
 export function ChatPage() {
   const { messages, sendMessage, isStreaming, clearMessages } = useChat()
-  const { documents, uploadDocument, isUploading, hasProcessed } = useDocuments()
+  const { documents, uploadDocument, isUploading, hasProcessed, indexingIds } = useDocuments()
   const [showPanel, setShowPanel] = useState(false)
 
   return (
@@ -70,6 +70,7 @@ export function ChatPage() {
                 documents={documents}
                 isUploading={isUploading}
                 onUpload={uploadDocument}
+                indexingIds={indexingIds}
               />
             </div>
           )}

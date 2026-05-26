@@ -1,3 +1,6 @@
+import json
+import logging
+import uuid
 from fastapi import APIRouter, Depends
 from google.genai import types
 from langfuse import propagate_attributes
@@ -6,8 +9,8 @@ from app.models.chat import ChatRequest, ChatResponse
 from app.services.gemini import get_gemini_client, generate_chat_response, generate_chat_response_stream
 from app.services.database import create_thread, save_message, get_thread_messages, get_user_store
 from sse_starlette.sse import EventSourceResponse
-import json
-import uuid
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -49,6 +52,7 @@ async def chat(request: ChatRequest, user=Depends(get_current_user)):
             store = get_user_store(token, user.id)
             if store:
                 store_name = store["store_name"]
+        logger.info(f"Chat request from user={user.id} use_documents={request.use_documents} store_name={store_name}")
 
         response_text = await generate_chat_response(client, request.message, history, store_name)
 
@@ -83,6 +87,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
             store = get_user_store(token, user.id)
             if store:
                 store_name = store["store_name"]
+        logger.info(f"Stream chat request from user={user.id} use_documents={request.use_documents} store_name={store_name}")
 
         async def event_generator():
             full_response = ""

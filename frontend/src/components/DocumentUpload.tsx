@@ -8,10 +8,12 @@ export function DocumentUpload({
   documents,
   isUploading,
   onUpload,
+  indexingIds,
 }: {
   documents: DocumentStatus[]
   isUploading: boolean
   onUpload: (file: File) => void
+  indexingIds?: Set<string>
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -31,14 +33,29 @@ export function DocumentUpload({
     if (inputRef.current) inputRef.current.value = ''
   }
 
-  const statusIcon = (status: string) => {
-    switch (status) {
+  const statusIcon = (doc: DocumentStatus) => {
+    if (indexingIds?.has(doc.id)) {
+      return <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+    }
+    switch (doc.status) {
       case 'processed':
         return <CheckCircle className="h-4 w-4 text-green-500" />
       case 'failed':
         return <XCircle className="h-4 w-4 text-red-500" />
       default:
         return <Loader2 className="h-4 w-4 animate-spin text-yellow-500" />
+    }
+  }
+
+  const statusText = (doc: DocumentStatus) => {
+    if (indexingIds?.has(doc.id)) return 'Indexing...'
+    switch (doc.status) {
+      case 'processed':
+        return 'Ready'
+      case 'failed':
+        return 'Failed'
+      default:
+        return 'Processing...'
     }
   }
 
@@ -82,7 +99,8 @@ export function DocumentUpload({
               <span className="flex-1 truncate text-sm text-foreground">
                 {doc.filename}
               </span>
-              {statusIcon(doc.status)}
+              <span className="text-xs text-muted-foreground">{statusText(doc)}</span>
+              {statusIcon(doc)}
             </div>
           ))}
         </div>

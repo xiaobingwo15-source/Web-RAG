@@ -27,11 +27,21 @@ Fully-managed Agentic RAG application utilizing Gemini 2.5 Flash. Features a cle
   - ⚠️ **Medium** — Involves cloud synchronization polling loops, minor iterations expected.
   - 🔴 **Complex** — Large structural updates; requires branching into sub-plans.
 
+## Skill-First Workflow
+Before planning, implementing, debugging, reviewing, or executing any task — **always check for a matching skill first**. Skills encode proven workflows and domain knowledge that improve quality and consistency.
+
+- **Mandatory trigger**: When given a task, scan the available skills list and invoke the most relevant one using the `Skill` tool before doing anything else.
+- **Match criteria**: Look for skills that cover the task type (e.g., `debug` for bugs, `feature-dev` for new features, `review` for code review, `writing-plans` for planning, `research-first` for external tech decisions, `brainstorming` for creative work).
+- **Multiple matches**: If multiple skills seem relevant, pick the one most specific to the immediate task. Skills can be chained — e.g., `research-first` then `writing-plans` then `feature-dev`.
+- **No match**: If no skill fits, proceed with the standard development workflow below.
+- **Never skip**: Do not plan, write code, debug, or review without first checking if a skill applies. This is not optional.
+
 ## Development Workflow
-1. **Planning** — Generate an implementation roadmap inside `.agent/plans/`.
-2. **Building** — Execute sequential blocks to deploy the structural logic.
-3. **Verification** — Run network, API hook, and UI sanity tests.
-4. **Iteration** — Tweak code configurations based on performance verification feedback.
+1. **Skill Check** — Find and invoke the relevant skill(s) for the task.
+2. **Planning** — Generate an implementation roadmap inside `.agent/plans/`.
+3. **Building** — Execute sequential blocks to deploy the structural logic.
+4. **Verification** — Run network, API hook, and UI sanity tests.
+5. **Iteration** — Tweak code configurations based on performance verification feedback.
 
 ## Progress
 Reference `PROGRESS.md` to see exactly which module layers are locked in or currently under active development.

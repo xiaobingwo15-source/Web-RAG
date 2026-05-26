@@ -10,10 +10,11 @@ import {
 export function useDocuments() {
   const [documents, setDocuments] = useState<DocumentStatus[]>([])
   const [isUploading, setIsUploading] = useState(false)
+  const [indexingIds, setIndexingIds] = useState<Set<string>>(new Set())
   const { session } = useAuth()
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const hasProcessed = documents.some((d) => d.status === 'processed')
+  const hasProcessed = documents.some((d) => d.status === 'processed' && !indexingIds.has(d.id))
   const hasPending = documents.some((d) => d.status === 'pending')
 
   const fetchDocuments = useCallback(async () => {
@@ -54,6 +55,16 @@ export function useDocuments() {
       for (const doc of pending) {
         try {
           const updated = await apiGetStatus(doc.id, session.access_token)
+          if (updated.status === 'processed' && doc.status === 'pending') {
+            setIndexingIds((prev) => new Set(prev).add(doc.id))
+            setTimeout(() => {
+              setIndexingIds((prev) => {
+                const next = new Set(prev)
+                next.delete(doc.id)
+                return next
+              })
+            }, 8000)
+          }
           setDocuments((prev) =>
             prev.map((d) => (d.id === updated.id ? updated : d)),
           )
@@ -76,5 +87,5 @@ export function useDocuments() {
     fetchDocuments()
   }, [fetchDocuments])
 
-  return { documents, uploadDocument, fetchDocuments, isUploading, hasProcessed }
+  return { documents, uploadDocument, fetchDocuments, isUploading, hasProcessed, indexingIds }
 }
