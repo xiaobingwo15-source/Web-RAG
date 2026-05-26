@@ -1,165 +1,69 @@
-# Agentic RAG 大師課 - 產品需求文件
+# Agentic RAG Masterclass - Product Requirements Document (PRD)
 
-## 我們要構建什麼
+## What We Are Building
 
-一個具有兩個界面的 RAG 應用程式：
-1. **聊天**（預設視圖）- 帶有檢索增強回應的線程對話
-2. **文件導入** - 手動上傳文件、追蹤處理進度、管理文件
+A decoupled, production-optimized RAG engine serving exactly two user surfaces:
+1. **Chat Interaction Pane** (Default) — A clean workspace delivering context-grounded conversational messaging blocks.
+2. **Data Processing Panel** — A workspace to drag-and-drop source knowledge data assets (PDFs, Markdown, text sheets) directly into cloud indexing zones.
 
-這**不是**帶有連接器的自動化管道。文件通過拖放方式手動上傳。通過環境變數進行配置，沒有管理界面。
+This platform sidesteps complicated backend vector alignment frameworks. Instead, text chunk parsing, visual page ingestion, embedding transformation logic, and matching calculations are offloaded entirely to Google's cloud vector environments via the native Gemini File Search tool.
 
-## 目標用戶
+## Technical Scope
 
-想要使用 AI 編程工具（Claude Code、Cursor 等）構建生產級 RAG 系統的技術人員。他們不需要懂 Python 或 React - 那是 AI 的工作。
+### In Scope
+- ✅ Seamless upload pipelines feeding file inputs directly to Gemini File Search Stores
+- ✅ Automated native text/visual extraction (Zero-setup scanning of visual content in PDFs)
+- ✅ Standard text conversational completion mapping running over Google ai studio API key
+- ✅ Strict context verification instruction layers (Anti-hallucination protective boundaries)
+- ✅ Conversational log auditing and session management
+- ✅ Multi-tenant identity security protected by Supabase Row-Level Security (RLS)
+- ✅ Highly fluid, asynchronous Server-Sent Events (SSE) streaming chat lines
+- ✅ Unified project folder distribution matching Python backend parameters with Vite client layouts
 
-**他們需要理解的：**
-- 深入理解 RAG 概念（分塊、嵌入、檢索、重排序）
-- 代碼庫結構（什麼在哪裡，各部分如何連接）
-- 如何指導 AI 構建他們需要的東西
-- 如何指導 AI 修復出現的問題
+### Out of Scope
+- ❌ Hardcoded local indexing vector math engines / manual character calculators
+- ❌ Standalone data cluster indexes (Pinecone, Weaviate, or independent pgvector configuration)
+- ❌ Continuous external automation fetch scripts (Google Workspace / Dropbox monitors)
+- ❌ Cloud payment gateway or metric access metering layers
 
-## 範圍
+## Technical Stack Architecture
 
-### 在範圍內
-- ✅ 文件導入和處理
-- ✅ 使用 pgvector 的向量搜索
-- ✅ 混合搜索（關鍵詞 + 向量）
-- ✅ 重排序
-- ✅ 元數據提取
-- ✅ 記錄管理（去重）
-- ✅ 多格式支持（PDF、DOCX、HTML、Markdown）
-- ✅ 文本轉 SQL 工具
-- ✅ 網頁搜索回退
-- ✅ 具有隔離上下文的子代理
-- ✅ 帶線程和記憶的聊天
-- ✅ 流式回應
-- ✅ 帶有行級安全性的認證
+| System Layer | Selected Technology |
+|--------------|---------------------|
+| Client App   | React + TypeScript + Vite + Tailwind + shadcn/ui |
+| Backend Core | Python + FastAPI + Uvicorn |
+| Data Anchor  | Supabase (Auth + Client Mapping Tables) |
+| Core AI Engine| `google-genai` Python library (Google ai studio API key) |
+| Managed RAG  | Gemini Native File Search |
+| Observability| LangSmith SDK Tracing |
 
-### 不在範圍內
-- ❌ 知識圖譜 / GraphRAG
-- ❌ 代碼執行 / 沙箱
-- ❌ 圖片/音頻/視頻處理
-- ❌ 微調
-- ❌ 多租戶管理功能
-- ❌ 計費/支付
-- ❌ 數據連接器（Google Drive、SFTP、API、Webhook）
-- ❌ 定時/自動化導入
-- ❌ 管理界面（通過環境變數配置）
+## Core System Constraints
 
-## 技術棧
-
-| 層次 | 選擇 |
-|------|------|
-| 前端 | React + TypeScript + Vite + Tailwind + shadcn/ui |
-| 後端 | Python + FastAPI |
-| 數據庫 | Supabase（Postgres + pgvector + 認證 + 存儲 + 實時） |
-| LLM（模組 1） | OpenAI Responses API（託管線程 + 文件搜索） |
-| LLM（模組 2+） | 任何 OpenAI 兼容端點（OpenRouter、Ollama、LM Studio 等） |
-| 可觀測性 | LangSmith |
-
-## 約束條件
-
-- 不使用 LLM 框架 - 直接使用 OpenAI SDK 的標準 Chat Completions API（OpenAI 兼容），使用 Pydantic 進行結構化輸出
-- 所有表都需要行級安全性 - 用戶只能看到自己的數據
-- 通過 SSE 進行流式聊天
-- 通過 Supabase Realtime 進行導入狀態更新
+- No auxiliary framework structures. Handle interface data bindings natively using clean Pydantic routing.
+- Lock all Supabase configurations down using multi-tenant user Row-Level Security parameters.
+- Restrict folder file footprints to a clean structure to preserve workspace readability in any modern IDE platform.
 
 ---
 
-## 模組 1：應用外殼 + 可觀測性
+## Module 1: Application Frame & Workspace Configuration
 
-**構建：** 認證、聊天 UI、OpenAI Responses API（管理線程 + 文件搜索）、LangSmith 追蹤
+**Deliverables:** Basic authenticated account setup frames, clean frontend Chat View layouts, and live implementation routes initializing standard `genai.Client` references over FastAPI frameworks.
 
-**學習：** 什麼是 RAG、為什麼存在託管 RAG、它的局限性（OpenAI 處理記憶和檢索 - 黑盒）
-
-**備注：** Responses API 是 OpenAI 特有的。它提供託管線程和內建文件搜索，但將你鎖定在 OpenAI。模組 2 過渡到標準 Chat Completions API 以實現提供商靈活性。
+**Learning Focus:** Asynchronous FastAPI endpoint building, strict routing parameters for secret variables, and piping telemetry tracing layers to LangSmith.
 
 ---
 
-## 架構決策：模組 1 → 模組 2 過渡
+## Module 2: Managed Cloud File Indexing & Grounded Chat
 
-在模組 1 結束時，你有一個使用 OpenAI **Responses API** 的工作聊天應用——這是一個由 OpenAI 處理線程、記憶和文件搜索的託管解決方案。在模組 2 中，你切換到標準 **Chat Completions API**，以支持任何 OpenAI 兼容的提供商（OpenRouter、Ollama、LM Studio 等）。
+**Deliverables:** Drag-and-drop layout cards, backend handlers to route local incoming files into Gemini `file_search_stores`, asynchronous polling workers tracking document verification updates, and prompt configs embedding `file_search` parameters natively within conversational queries.
 
-**你需要做的決定：** 如何處理 Responses API 代碼？以下是兩種常見方法，但你不限於這些——如果對你的用例有意義，可以提出自己的方案。
-
-| 選項 | 方法 | 優點 | 缺點 |
-|------|------|------|------|
-| **A：替換** | 完全移除 Responses API 代碼，基於 Chat Completions 重建 | 代碼庫乾淨、單一模式、更易維護 | 失去使用 OpenAI 託管 RAG 的能力 |
-| **B：雙重支持** | 保留 Responses API 與 Chat Completions 並存，可按請求配置 | 靈活使用任一方法，可並列比較 | 代碼庫更複雜，需理解兩種模式 |
-
-沒有正確答案——這是構建生產系統時你將面臨的真實架構選擇。
-
-**在視頻中，我選擇了選項 A**——完全從代碼庫中移除 Responses API 代碼以及數據庫中任何相關的模式。這使事情保持簡單，專注於之後的 OpenAI 兼容 Chat Completions 模式。
-
-**這是一堂關於如何引導 Claude Code 的課**：你需要清楚地傳達你的決定，並引導 AI 正確實施。明確說明你想要移除、重構或保留什麼。
+**Learning Focus:** Evaluating cloud-abstracted semantic indexing zones, processing mixed visual tabular data inside rich PDFs, and setting up strict programmatic fallbacks when source files do not contain an answer.
 
 ---
 
-## 模組 2：自建檢索 + 記憶
+## Definition of Project Success
 
-**前提條件：** 完成上述架構決策。
-
-**構建：** 導入 UI、文件存儲、分塊 → 嵌入 → pgvector、檢索工具、Chat Completions API 集成（OpenRouter/Ollama/LM Studio）、聊天歷史存儲（無狀態 API - 現在由你管理記憶）、實時導入狀態
-
-**學習：** 分塊、嵌入、向量搜索、工具調用、相關性閾值、管理對話歷史、**引導 AI 代理進行架構重構**
-
----
-
-## 模組 3：記錄管理器
-
-**構建：** 內容哈希、檢測變更、只處理新增/修改的內容
-
-**學習：** 為什麼樸素導入會產生重複、增量更新
-
----
-
-## 模組 4：元數據提取
-
-**構建：** LLM 提取結構化元數據、按元數據過濾檢索
-
-**學習：** 結構化提取、模式設計、元數據增強檢索
-
----
-
-## 模組 5：多格式支持
-
-**構建：** 通過 docling 支持 PDF/DOCX/HTML/Markdown、級聯刪除
-
-**學習：** 文件解析挑戰、格式注意事項
-
----
-
-## 模組 6：混合搜索和重排序
-
-**構建：** 關鍵詞 + 向量搜索、RRF 組合、重排序
-
-**學習：** 為什麼僅靠向量搜索不夠、混合策略、重排序
-
----
-
-## 模組 7：附加工具
-
-**構建：** 文本轉 SQL 工具（查詢結構化數據）、網頁搜索回退（當文件沒有答案時）
-
-**學習：** 多工具代理、結構化/非結構化數據之間的路由、優雅回退、用於信任的歸因
-
----
-
-## 模組 8：子代理
-
-**構建：** 檢測全文件場景、生成具有自己工具的隔離子代理、UI 中的嵌套工具調用顯示、展示主代理和子代理的推理過程
-
-**學習：** 上下文管理、代理委派、分層代理顯示、何時進行隔離
-
----
-
-## 成功標準
-
-完成後，學生應該具備：
-- ✅ 一個在 AI 輔助下構建的可運行 RAG 應用
-- ✅ 深入理解 RAG 概念（分塊、嵌入、檢索、重排序）
-- ✅ 理解代碼庫結構——什麼在哪裡，各部分如何連接
-- ✅ 能夠指導 AI 編程工具構建新功能
-- ✅ 能夠指導 AI 編程工具調試和修復問題
-- ✅ 具備代理模式經驗（多工具、子代理）
-- ✅ 從第一天起就建立可觀測性
+- ✅ A fully responsive, cohesive codebase integrating Python FastAPI with Google ai studio API key.
+- ✅ Zero engineering debt spent optimizing matrix chunk offsets or running compute-expensive indexing routines locally.
+- ✅ Impeccable verification layer execution ensuring user interactions are strictly limited to their own private knowledge stores.
+- ✅ High competency instructing background developers to assemble, run, and optimize modern async network pipelines.

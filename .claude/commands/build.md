@@ -1,22 +1,22 @@
 ---
-description: 從計劃開始構建
-argument-hint: [計劃鏈接]
+description: Begin the architectural build phase from a plan file
+argument-hint: [Path to the target plan file]
 ---
 
-# 構建
+# Build Execution Workflow
 
-閱讀並執行：`$ARGUMENTS`
+Read and execute the roadmap blueprint specified in: `$ARGUMENTS`
 
-## 流程
+## Operational Blueprint
 
-1. **閱讀整個計劃** - 理解所有任務、依賴關係和成功標準
+1. **Review the Full Plan File** — Comprehend all targeted engineering tasks, data dependencies, and target success definitions before initializing code modifications.
 
-2. **按順序執行任務** - 按照項目慣例實現每個任務。每次更改後驗證語法和導入。
+2. **Sequential Task Execution** — Implement each structural requirement systematically according to repository conventions. Verify code layout, Pydantic type safety, and module initialization syntax directly after altering file targets.
 
-3. **運行任何驗證步驟** - 如果計劃包含測試或驗證命令，運行它們。在繼續之前修復問題。
+3. **Execute Verification Protocols** — Run any isolated integration test beds or script calls defined inside the plan's milestones. Resolve exceptions immediately before proceeding to subsequent tasks.
 
-4. **報告完成** - 總結完成的內容：
-   - 已完成的任務
-   - 創建/修改的文件
-   - 測試結果（如適用）
-   - 與計劃的任何偏差及原因
+4. **Document Task Completion** — Provide a clear compilation update summarizing the feature run:
+   - Completed structural milestones
+   - Modified or freshly initialized system files
+   - Concrete telemetry results from runtime tests
+   - Any deviations made from the original plan layout along with technical justifications

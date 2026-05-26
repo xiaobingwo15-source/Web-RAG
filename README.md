@@ -1,58 +1,51 @@
-# Claude Code Agentic RAG 大師課
+# Claude Code Agentic RAG Masterclass
 
-通過與 Claude Code 協作，從零開始構建一個 Agentic RAG 應用。跟隨我們的視頻系列，使用此倉庫中的文檔進行學習。
+Collaborate with Claude Code to architect, verify, and launch a fully-managed Agentic RAG system entirely from scratch. Follow our structured video learning roadmap utilizing the precise operational criteria laid out across this directory.
 
+## Core Application Overview
 
+A production-optimized document processing engine featuring two decoupled, high-performance interfaces:
+- **Interactive Chat Arena** — A threaded workspace running dialogue tracking, streaming tokens, multi-path tool calls, and sub-agent reasoning paths.
+- **Managed Document Ingestion Hub** — A landing interface featuring smooth drag-and-drop file ingestion pipelines alongside live processing trackers.
 
-## 這是什麼
+This architecture completely removes the burden of writing manual, complex backend token splitters or managing custom vector index mathematics. Instead, chunk formatting, OCR parsing, semantic embedding mapping, and distance searches are offloaded directly onto Google's cloud infrastructure via the native Gemini File Search engine.
 
-一門實踐課程，你通過與 Claude Code 協作來構建一個功能完整的 RAG 系統。你不是寫代碼的人——Claude 才是。你的工作是引導它、理解你在構建什麼，並在需要時進行糾正。
+## Structural Technical Stack
 
-**你不需要知道如何編程。** 你需要具備技術思維，並願意學習 API、數據庫和系統架構。
+| Architectural Layer | Selection Blueprint |
+|---------------------|--------------------|
+| Client Interface    | React + TypeScript + Vite + Tailwind + shadcn/ui |
+| Backend API Engine  | Python 3 + FastAPI + Uvicorn Servers |
+| Persistent Storage  | Supabase (Auth + Row-Level Security State Mapping) |
+| Core AI Intelligence| `google-genai` Python SDK (Google ai studio API key) |
+| Hosted RAG Engine   | Gemini Native File Search (Context Grounding Tool) |
+| System Observability| LangSmith Telemetry Tracing |
 
-## 你將構建什麼
+## The 8 Masterclass Modules
 
-- **聊天界面**，具有線程對話、流式傳輸、工具調用和子代理推理
-- **文件導入**，具有拖放上傳和處理狀態
-- **完整 RAG 管道**：分塊、嵌入、混合搜索、重排序
-- **代理模式**：文本轉 SQL、網頁搜索、具有隔離上下文的子代理
+1. **Application Shell** — User authentication blocks, unified workspace templates, and live initialization links directly targeting Google ai studio API key.
+2. **Managed Context Stores & Grounded Search** — File routing pipes deploying data straight into Gemini's `file_search_stores` with async operation tracking loops.
+3. **Incremental Records Manager** — Automated content hash checksum validators guarding data indices against redundant file entries.
+4. **Structured Metadata Extraction** — Programmatic metadata profiling using Pydantic tracking frames to enrich vector matching models.
+5. **Multi-Format Processing Adapters** — Dynamic handling of PDF layouts, tables, Markdown, and TXT files, combined with database cascade loops.
+6. **Hybrid Query Engines & Reranking** — Merging full-text search parameters with semantic matches alongside context validation scores to lower processing overhead.
+7. **Advanced Dynamic Tool Routing** — Natural Language Text-to-SQL compile routes and live alternative Web Search tool fallbacks when data logs run dry.
+8. **Context-Isolated Sub-Agents** — Delegated multi-turn analytical reasoning agents running sandboxed child routines with parent/child tracer interfaces.
 
-## 技術棧
+## Getting Started Protocol
 
-| 層次 | 技術 |
-|------|------|
-| 前端 | React、TypeScript、Tailwind、shadcn/ui、Vite |
-| 後端 | Python、FastAPI |
-| 數據庫 | Supabase（Postgres + pgvector + 認證 + 存儲） |
-| 文件處理 | Docling |
-| AI 模型 | 本地（LM Studio）或雲端（OpenAI、OpenRouter） |
-| 可觀測性 | LangSmith |
+1. Clone this project repository down to your local developer machine.
+2. Ensure you have installed [Claude Code](https://docs.anthropic.com/en/docs/claude-code) globally in your console.
+3. Open this folder within your target IDE platform workspace (Cursor, VS Code, etc.).
+4. Initialize a terminal shell path, activate your virtual environment, and launch `claude`.
+5. Execute the `/onboard` command string to sync context maps instantly.
 
-## 8 個模組
+## Documentation Reference Guide
 
-1. **應用外殼** — 認證、聊天 UI、使用 OpenAI Responses API 的託管 RAG
-2. **自建檢索 + 記憶** — 導入、pgvector、切換到通用 Completions API
-3. **記錄管理器** — 內容哈希、去重
-4. **元數據提取** — LLM 提取的元數據、過濾檢索
-5. **多格式支持** — 通過 Docling 支持 PDF、DOCX、HTML、Markdown
-6. **混合搜索和重排序** — 關鍵詞 + 向量搜索、RRF、重排序
-7. **附加工具** — 文本轉 SQL、網頁搜索回退
-8. **子代理** — 隔離上下文、文件分析委派
+- [PRD.md](./PRD.md) — Feature matrix configurations across all 8 architectural modules.
+- [CLAUDE.md](./CLAUDE.md) — System operating syntax, engineering constraints, and prompt formatting criteria.
+- [PROGRESS.md](./PROGRESS.md) — Real-time ledger tracking active repository design milestones.
 
-## 開始使用
+## Join the Architectural Space
 
-1. 克隆此倉庫
-2. 安裝 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-3. 在你的 IDE 中打開（Cursor、VS Code 等）
-4. 在終端中運行 `claude`
-5. 使用 `/onboard` 命令開始
-
-## 文檔
-
-- [PRD.md](./PRD.md) — 要構建什麼（8 個模組的詳細說明）
-- [CLAUDE.md](./CLAUDE.md) — Claude Code 的上下文
-- [PROGRESS.md](./PROGRESS.md) — 追蹤你的構建進度
-
-## 加入社區
-
-如果你想與數百位構建生產級 AI 和 RAG 系統的開發者交流，加入我們的 [The AI Automators 社區]https://www.skool.com/aiagent/about。分享你的進度，在遇到困難時獲得幫助，看看其他人在構建什麼。
+If you are looking to exchange code patterns, evaluate benchmarks, or iterate alongside hundreds of technical professionals constructing production-grade AI applications, jump into [The AI Automators Community](https://www.skool.com/aiagent/about). Accelerate your building cycle, unlock technical roadmaps, and see what the space is shipping.

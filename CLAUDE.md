@@ -1,40 +1,37 @@
 # CLAUDE.md
 
-RAG 應用，具有聊天（預設）和文件導入界面。通過環境變數配置，沒有管理界面。
+Fully-managed Agentic RAG application utilizing Gemini 2.5 Flash. Features a clean client-facing chat layout and an automated file ingestion deck. System operates without complex admin panels and is driven via environment variables.
 
-## 技術棧
-- 前端：React + Vite + Tailwind + shadcn/ui
-- 後端：Python + FastAPI
-- 數據庫：Supabase（Postgres、pgvector、認證、存儲、實時）
-- LLM：OpenAI（模組 1）、OpenRouter（模組 2+）
-- 可觀測性：LangSmith
+## Technical Stack
+- Frontend: React + TypeScript + Vite + Tailwind + shadcn/ui
+- Backend: Python 3 + FastAPI + Uvicorn
+- Database/State: Supabase (Auth, Session Store, Thread Logs)
+- AI Ecosystem: `google-genai` Python SDK (Gemini 2.5 Flash + Native File Search Engine)
+- Observability: Langfuse Tracing (free tier: 50k observations/month)
 
-## 規則
-- Python 後端必須使用 `venv` 虛擬環境
-- 不使用 LangChain，不使用 LangGraph - 僅使用原始 SDK 調用
-- 使用 Pydantic 進行結構化 LLM 輸出
-- 所有表都需要行級安全性 - 用戶只能看到自己的數據
-- 通過 SSE 進行流式聊天回應
-- 使用 Supabase Realtime 進行導入狀態更新
-- 模組 2+ 使用無狀態 Completions - 自己存儲和發送聊天歷史
-- 導入僅限手動文件上傳 - 沒有連接器或自動化管道
+## Rules
+- Backend runs on Python + FastAPI with Uvicorn servers.
+- Strictly call the direct `google-genai` SDK — zero third-party orchestrators (No LangChain/LlamaIndex).
+- Use Pydantic models for structural model responses.
+- Enforce strict Row-Level Security (RLS) on Supabase session state layers — users only read their own logs.
+- Deliver streaming conversations over fast Server-Sent Events (SSE).
+- Rely on Gemini's native long-running operations polling to update client file indexing states.
+- Manage context states using Gemini's native persistent conversation parameters.
 
-## 規劃
-- 將所有計劃保存到 `.agent/plans/` 文件夾
-- 命名慣例：`{序號}.{計劃名稱}.md`（例如 `1.認證設置.md`、`2.文件導入.md`）
-- 計劃應足夠詳細，可以無歧義地執行
-- 計劃中的每個任務必須包含至少一個驗證測試來確認其正常工作
-- 評估複雜度和一次性可行性 - 代理能否真實地一次完成？
-- 在每個計劃頂部包含複雜度指標：
-  - ✅ **簡單** - 可一次執行，低風險
-  - ⚠️ **中等** - 可能需要迭代，有一定複雜性
-  - 🔴 **複雜** - 執行前拆分為子計劃
+## Planning
+- Save all structural execution plans into the `.agent/plans/` folder.
+- Naming convention: `{sequence_number}.{plan_name}.md` (e.g., `1.auth-setup.md`, `2.gemini-file-store.md`).
+- Each objective must have an isolated, concrete verification benchmark.
+- Top-level plan complexity designations:
+  - ✅ **Simple** — Executable in one turn, zero infrastructural risks.
+  - ⚠️ **Medium** — Involves cloud synchronization polling loops, minor iterations expected.
+  - 🔴 **Complex** — Large structural updates; requires branching into sub-plans.
 
-## 開發流程
-1. **規劃** - 創建詳細計劃並保存到 `.agent/plans/`
-2. **構建** - 執行計劃來實現功能
-3. **驗證** - 測試並驗證實現是否正確工作。適用時通過適當的 MCP 進行瀏覽器測試
-4. **迭代** - 修復驗證中發現的任何問題
+## Development Workflow
+1. **Planning** — Generate an implementation roadmap inside `.agent/plans/`.
+2. **Building** — Execute sequential blocks to deploy the structural logic.
+3. **Verification** — Run network, API hook, and UI sanity tests.
+4. **Iteration** — Tweak code configurations based on performance verification feedback.
 
-## 進度
-查看 PROGRESS.md 了解當前模組狀態。完成任務後更新它。
+## Progress
+Reference `PROGRESS.md` to see exactly which module layers are locked in or currently under active development.
