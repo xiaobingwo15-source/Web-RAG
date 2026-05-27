@@ -2,10 +2,15 @@
 
 import logging
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from app.middleware.auth import get_current_user
 from app.services.database import (
     get_all_threads_grouped,
     get_thread_messages_admin,
+    save_admin_message,
+    get_flagged_messages,
+    get_flagged_count,
+    clear_thread_attention_flags,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,8 +50,6 @@ async def get_conversation_messages(thread_id: str, user=Depends(get_current_use
     messages = get_thread_messages_admin(user.access_token, thread_id)
     return {"messages": messages}
 
-
-from pydantic import BaseModel
 
 class SystemSettingsSchema(BaseModel):
     GOOGLE_API_KEY: str | None = None
@@ -127,6 +130,53 @@ async def save_settings(settings: SystemSettingsSchema, user=Depends(get_current
     # Clear the settings cache to apply overrides immediately
     from app.config import _get_cached_setting
     _get_cached_setting.cache_clear()
-    
+
     return {"status": "success"}
+
+
+# --- Admin Manual Answer endpoints ---
+
+class AdminRespondRequest(BaseModel):
+    content: str
+
+
+@router.get("/flagged")
+async def get_flagged(user=Depends(get_current_user)):
+    """Return all messages flagged as needing admin attention."""
+    _verify_admin(user)
+    flagged = get_flagged_messages()
+    return {"flagged": flagged}
+
+
+@router.get("/flagged/count")
+async def get_flagged_count_endpoint(user=Depends(get_current_user)):
+    """Return the count of flagged messages for the badge counter."""
+    _verify_admin(user)
+    count = get_flagged_count()
+    return {"count": count}
+
+
+@router.post("/conversations/{thread_id}/respond")
+async def respond_to_thread(thread_id: str, request: AdminRespondRequest, user=Depends(get_current_user)):
+    """Admin submits a manual response to a client's flagged thread."""
+    _verify_admin(user)
+
+    if not request.content.strip():
+        raise HTTPException(status_code=400, detail="Response content cannot be empty")
+
+    # Look up the thread to get the client's user_id
+    from app.services.database import get_thread
+    thread = get_thread(user.access_token, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
+    client_user_id = thread["user_id"]
+
+    # Save admin message (user_id set to client for RLS compatibility)
+    saved = save_admin_message(thread_id, user.id, client_user_id, request.content.strip())
+
+    # Clear all attention flags in this thread
+    clear_thread_attention_flags(thread_id)
+
+    return {"status": "success", "message_id": saved["id"]}
 

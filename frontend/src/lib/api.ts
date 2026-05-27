@@ -315,3 +315,63 @@ export async function saveAdminSettings(settings: SystemSettings, token: string)
   if (!response.ok) throw new Error(`Save admin settings failed: ${response.status}`)
 }
 
+
+// --- Admin Manual Answer API ---
+
+export interface FlaggedMessage {
+  message_id: string
+  thread_id: string
+  thread_title: string
+  client_email: string
+  client_user_id: string
+  content: string
+  created_at: string
+  has_admin_response: boolean
+}
+
+export interface FlaggedMessagesResponse {
+  flagged: FlaggedMessage[]
+}
+
+export interface FlaggedCountResponse {
+  count: number
+}
+
+export interface AdminRespondResponse {
+  status: string
+  message_id: string
+}
+
+export async function getFlaggedMessages(token: string): Promise<FlaggedMessagesResponse> {
+  const response = await fetch('/api/admin/flagged', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Fetch flagged messages failed: ${response.status}`)
+  return response.json()
+}
+
+export async function getFlaggedCount(token: string): Promise<FlaggedCountResponse> {
+  const response = await fetch('/api/admin/flagged/count', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Fetch flagged count failed: ${response.status}`)
+  return response.json()
+}
+
+export async function submitAdminResponse(
+  threadId: string,
+  content: string,
+  token: string,
+): Promise<AdminRespondResponse> {
+  const response = await fetch(`/api/admin/conversations/${threadId}/respond`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ content }),
+  })
+  if (!response.ok) throw new Error(`Submit admin response failed: ${response.status}`)
+  return response.json()
+}
+

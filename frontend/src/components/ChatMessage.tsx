@@ -1,5 +1,6 @@
 import type { ChatMessage as ChatMessageType } from '@/hooks/useChat'
 import { ThoughtTrace } from '@/components/ThoughtTrace'
+import { Shield } from 'lucide-react'
 
 export function ChatMessage({ message }: { message: ChatMessageType }) {
   const isUser = message.role === 'user'
@@ -33,6 +34,17 @@ export function ChatMessage({ message }: { message: ChatMessageType }) {
             <p className="whitespace-pre-wrap text-sm">{message.content}</p>
           )}
         </div>
+        {!isUser && message.adminResponse && (
+          <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+            <div className="flex items-center gap-2 mb-1.5">
+              <Shield className="h-3.5 w-3.5 text-amber-500" />
+              <span className="text-xs font-semibold text-amber-600">Admin Response</span>
+            </div>
+            <p className="whitespace-pre-wrap text-sm text-foreground">
+              {message.adminResponse}
+            </p>
+          </div>
+        )}
       </div>
     </div>
   )

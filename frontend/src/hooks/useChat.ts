@@ -7,6 +7,7 @@ export interface ChatMessage {
   content: string
   images?: string[]
   thoughts?: string[]
+  adminResponse?: string
 }
 
 export function useChat() {
@@ -20,19 +21,30 @@ export function useChat() {
     if (!session?.access_token) return
     try {
       const msgs = await getThreadMessages(id, session.access_token)
-      setMessages(msgs.map((m) => {
+      const parsed: ChatMessage[] = []
+      for (const m of msgs) {
+        if (m.role === 'admin') {
+          // Attach admin response to the preceding assistant message
+          const prev = parsed[parsed.length - 1]
+          if (prev && prev.role === 'assistant') {
+            prev.adminResponse = m.content
+          }
+          continue
+        }
         try {
-          const parsed = JSON.parse(m.content)
-          if (parsed && typeof parsed.text === 'string') {
-            return {
+          const json = JSON.parse(m.content)
+          if (json && typeof json.text === 'string') {
+            parsed.push({
               role: m.role as 'user' | 'assistant',
-              content: parsed.text,
-              images: parsed.images || [],
-            }
+              content: json.text,
+              images: json.images || [],
+            })
+            continue
           }
         } catch {}
-        return { role: m.role as 'user' | 'assistant', content: m.content }
-      }))
+        parsed.push({ role: m.role as 'user' | 'assistant', content: m.content })
+      }
+      setMessages(parsed)
       setThreadId(id)
     } catch (err) {
       console.error('Failed to load thread:', err)

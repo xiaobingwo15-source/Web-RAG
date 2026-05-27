@@ -420,3 +420,107 @@ def get_admin_user_id(access_token: str | None = None) -> str | None:
         logger.warning("Failed to fetch admin user_id from profiles: %s", e)
     return None
 
+
+# --- Admin Manual Answer functions ---
+
+def save_admin_message(thread_id: str, admin_user_id: str, client_user_id: str, content: str) -> dict:
+    """Insert an admin response into a client's thread.
+
+    Uses service-role client (bypasses RLS). Sets user_id to the client's ID
+    so the client's RLS policy (user_id = auth.uid()) allows them to read it.
+    """
+    db = get_db()
+    result = (
+        db.table("messages")
+        .insert({
+            "thread_id": thread_id,
+            "user_id": client_user_id,
+            "role": "admin",
+            "content": content,
+        })
+        .execute()
+    )
+    return result.data[0]
+
+
+def get_flagged_messages() -> list[dict]:
+    """Return all messages flagged as needing admin attention, with thread context."""
+    db = get_db()
+    result = (
+        db.table("messages")
+        .select("*, threads(id, title, user_id)")
+        .eq("needs_attention", True)
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    flagged = []
+    user_emails: dict[str, str] = {}
+    for msg in result.data:
+        thread = msg.get("threads", {})
+        client_user_id = thread.get("user_id") if thread else None
+        if not client_user_id:
+            continue
+
+        # Resolve email (cache to avoid repeated lookups)
+        if client_user_id not in user_emails:
+            try:
+                user_resp = db.auth.admin.get_user_by_id(client_user_id)
+                user_emails[client_user_id] = user_resp.user.email if user_resp and user_resp.user else client_user_id
+            except Exception:
+                user_emails[client_user_id] = f"user-{client_user_id[:8]}"
+
+        # Check if an admin response already exists after this message
+        admin_after = (
+            db.table("messages")
+            .select("id")
+            .eq("thread_id", msg["thread_id"])
+            .eq("role", "admin")
+            .gt("created_at", msg["created_at"])
+            .limit(1)
+            .execute()
+        )
+
+        flagged.append({
+            "message_id": msg["id"],
+            "thread_id": msg["thread_id"],
+            "thread_title": thread.get("title", "Untitled") if thread else "Untitled",
+            "client_email": user_emails[client_user_id],
+            "client_user_id": client_user_id,
+            "content": msg["content"],
+            "created_at": msg["created_at"],
+            "has_admin_response": len(admin_after.data) > 0,
+        })
+
+    return flagged
+
+
+def get_flagged_count() -> int:
+    """Return the count of flagged messages for the badge counter."""
+    db = get_db()
+    result = (
+        db.table("messages")
+        .select("id", count="exact")
+        .eq("needs_attention", True)
+        .execute()
+    )
+    return result.count or 0
+
+
+def clear_attention_flag(message_id: str) -> dict:
+    """Clear the needs_attention flag on a message."""
+    db = get_db()
+    result = (
+        db.table("messages")
+        .update({"needs_attention": False})
+        .eq("id", message_id)
+        .execute()
+    )
+    return result.data[0] if result.data else {}
+
+
+def clear_thread_attention_flags(thread_id: str) -> None:
+    """Clear all needs_attention flags in a thread."""
+    db = get_db()
+    db.table("messages").update({"needs_attention": False}).eq("thread_id", thread_id).eq("needs_attention", True).execute()
+

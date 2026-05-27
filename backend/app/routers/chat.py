@@ -140,6 +140,12 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                             })
                         }
                     elif event["type"] == "error":
+                        # Persist error message so the DB trigger can flag it
+                        if thread_id:
+                            try:
+                                save_message(token, user.id, thread_id, "assistant", event["content"])
+                            except Exception:
+                                logger.warning("Failed to save error message to DB", exc_info=True)
                         yield {
                             "data": json_lib.dumps({
                                 "type": "error",

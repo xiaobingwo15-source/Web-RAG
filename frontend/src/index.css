@@ -1,30 +1,48 @@
 @import "tailwindcss";
 
 @theme {
-  --color-background: #09090b;
-  --color-foreground: #fafafa;
-  --color-primary: #3b82f6;
-  --color-primary-foreground: #ffffff;
-  --color-muted: #27272a;
-  --color-muted-foreground: #a1a1aa;
-  --color-border: #27272a;
-  --color-card: #0a0a0c;
-  --color-card-foreground: #fafafa;
-  --color-input: #27272a;
-  --color-ring: #3b82f6;
-  --color-destructive: #ef4444;
-  --color-secondary: #27272a;
-  --color-secondary-foreground: #fafafa;
-  --color-accent: #27272a;
-  --color-accent-foreground: #fafafa;
-  --radius: 0.5rem;
+  --color-background: #111316;
+  --color-foreground: #e2e2e6;
+  --color-primary: #9fcaff;
+  --color-primary-container: #007acc;
+  --color-on-primary: #003258;
+  --color-primary-foreground: #003258;
+  --color-secondary: #ffb77d;
+  --color-secondary-container: #fd8b00;
+  --color-on-secondary: #4d2600;
+  --color-surface: #111316;
+  --color-surface-container: #1e2023;
+  --color-surface-container-low: #1a1c1f;
+  --color-surface-container-high: #282a2d;
+  --color-surface-container-highest: #333538;
+  --color-on-surface: #e2e2e6;
+  --color-on-surface-variant: #c0c7d3;
+  --color-outline: #8a919d;
+  --color-outline-variant: #404751;
+  --color-border: #404751;
+  --color-card: #1e2023;
+  --color-card-foreground: #e2e2e6;
+  --color-muted: #1a1c1f;
+  --color-muted-foreground: #c0c7d3;
+  --color-destructive: #ffb4ab;
+  --radius-sm: 0.125rem;
+  --radius-md: 0.25rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-full: 9999px;
+}
+
+html {
+  scroll-behavior: smooth;
 }
 
 body {
   margin: 0;
-  background-color: var(--color-background);
-  color: var(--color-foreground);
-  font-family: system-ui, -apple-system, sans-serif;
+  background-color: #111316;
+  background-image: radial-gradient(circle at 2px 2px, rgba(255, 255, 255, 0.05) 1px, transparent 0);
+  background-size: 24px 24px;
+  color: #e2e2e6;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -32,3 +50,33 @@ body {
 #root {
   min-height: 100vh;
 }
+
+/* Custom technical aesthetic border classes */
+.crosshair-corner {
+  position: relative;
+}
+
+.crosshair-corner::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 8px;
+  height: 8px;
+  border-top: 1px solid var(--color-outline-variant);
+  border-left: 1px solid var(--color-outline-variant);
+  pointer-events: none;
+}
+
+.crosshair-corner::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  border-bottom: 1px solid var(--color-outline-variant);
+  border-right: 1px solid var(--color-outline-variant);
+  pointer-events: none;
+}
+

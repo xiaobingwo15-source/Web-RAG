@@ -2,15 +2,19 @@ import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useDocuments } from '@/hooks/useDocuments'
+import { useFlaggedNotifications } from '@/hooks/useFlaggedNotifications'
 import { DocumentUpload } from '@/components/DocumentUpload'
 import {
   getAdminConversations,
   getAdminThreadMessages,
   getAdminSettings,
   saveAdminSettings,
+  getFlaggedMessages,
+  submitAdminResponse,
   type AdminClient,
   type AdminMessage,
   type SystemSettings,
+  type FlaggedMessage,
 } from '@/lib/api'
 import {
   Shield,
@@ -31,6 +35,7 @@ import {
   Eye,
   EyeOff,
   Save,
+  AlertTriangle,
 } from 'lucide-react'
 
 export function AdminPage() {
@@ -54,6 +59,13 @@ export function AdminPage() {
   const [threadMessages, setThreadMessages] = useState<AdminMessage[]>([])
   const [messagesLoading, setMessagesLoading] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+
+  // Admin Manual Answer state
+  const [flaggedFilter, setFlaggedFilter] = useState(false)
+  const [flaggedMessages, setFlaggedMessages] = useState<FlaggedMessage[]>([])
+  const [responseText, setResponseText] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const { flaggedCount, dismissFlag, refreshCount } = useFlaggedNotifications()
 
   // Settings State
   const [apiSettings, setApiSettings] = useState<SystemSettings>({
@@ -109,6 +121,20 @@ export function AdminPage() {
     fetchConversations()
   }, [fetchConversations])
 
+  const fetchFlagged = useCallback(async () => {
+    if (!session?.access_token) return
+    try {
+      const data = await getFlaggedMessages(session.access_token)
+      setFlaggedMessages(data.flagged)
+    } catch (err) {
+      console.error('Failed to fetch flagged messages:', err)
+    }
+  }, [session?.access_token])
+
+  useEffect(() => {
+    fetchFlagged()
+  }, [fetchFlagged])
+
   useEffect(() => {
     if (activeTab === 'settings') {
       fetchSettings()
@@ -132,6 +158,25 @@ export function AdminPage() {
   const handleLogout = async () => {
     await signOut()
     navigate('/login')
+  }
+
+  const handleSubmitResponse = async () => {
+    if (!session?.access_token || !selectedThread || !responseText.trim()) return
+    setSubmitting(true)
+    try {
+      await submitAdminResponse(selectedThread.threadId, responseText, session.access_token)
+      setResponseText('')
+      // Refresh thread messages to show the admin response
+      await handleSelectThread(selectedThread.threadId, selectedThread.title)
+      // Refresh flagged data
+      dismissFlag()
+      await fetchFlagged()
+      await refreshCount()
+    } catch (err) {
+      console.error('Failed to submit admin response:', err)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   const toggleClient = (userId: string) => {
@@ -161,9 +206,15 @@ export function AdminPage() {
     }
   }
 
-  const filteredClients = clients.filter((c) =>
-    c.email.toLowerCase().includes(searchQuery.toLowerCase())
-  )
+  const filteredClients = flaggedFilter
+    ? clients
+        .filter((c) => c.threads.some((t) => flaggedMessages.some((f) => f.thread_id === t.id)))
+        .map((c) => ({
+          ...c,
+          threads: c.threads.filter((t) => flaggedMessages.some((f) => f.thread_id === t.id)),
+        }))
+        .filter((c) => c.email.toLowerCase().includes(searchQuery.toLowerCase()))
+    : clients.filter((c) => c.email.toLowerCase().includes(searchQuery.toLowerCase()))
 
   const totalThreads = clients.reduce((sum, c) => sum + c.threads.length, 0)
   const totalMessages = clients.reduce(
@@ -192,6 +243,11 @@ export function AdminPage() {
           >
             <Users className="h-3.5 w-3.5" />
             Chats
+            {flaggedCount > 0 && (
+              <span className="ml-1 flex h-4 w-4 items-center justify-center rounded-full bg-destructive text-[9px] font-bold text-destructive-foreground">
+                {flaggedCount > 9 ? '9+' : flaggedCount}
+              </span>
+            )}
           </button>
           <button
             onClick={() => setActiveTab('settings')}
@@ -263,14 +319,30 @@ export function AdminPage() {
                 </p>
               </div>
             </div>
-            <button
-              onClick={fetchConversations}
-              disabled={loading}
-              className="flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
-              Refresh
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  setFlaggedFilter((prev) => !prev)
+                  if (!flaggedFilter) fetchFlagged()
+                }}
+                className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition-colors ${
+                  flaggedFilter
+                    ? 'border-destructive/50 bg-destructive/10 text-destructive'
+                    : 'border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground'
+                }`}
+              >
+                <AlertTriangle className="h-3.5 w-3.5" />
+                Flagged {flaggedCount > 0 && `(${flaggedCount})`}
+              </button>
+              <button
+                onClick={fetchConversations}
+                disabled={loading}
+                className="flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+                Refresh
+              </button>
+            </div>
           </div>
 
           <div className="flex flex-1 overflow-hidden">
@@ -356,6 +428,9 @@ export function AdminPage() {
                                   </span>
                                 </div>
                               </div>
+                              {flaggedMessages.some((f) => f.thread_id === thread.id) && (
+                                <div className="h-2 w-2 rounded-full bg-destructive animate-pulse flex-shrink-0" />
+                              )}
                             </button>
                           ))}
                         </div>
@@ -393,55 +468,108 @@ export function AdminPage() {
                       </div>
                     ) : (
                       <div className="mx-auto max-w-3xl space-y-3">
-                        {threadMessages.map((msg) => (
-                          <div
-                            key={msg.id}
-                            className={`flex gap-3 rounded-xl p-4 ${
-                              msg.role === 'user'
-                                ? 'bg-primary/5 border border-primary/10'
-                                : 'bg-muted/30 border border-border/50'
-                            }`}
-                          >
+                        {threadMessages.map((msg) => {
+                          const isAdmin = msg.role === 'admin'
+                          const isUser = msg.role === 'user'
+                          const isFlagged = flaggedMessages.some((f) => f.message_id === msg.id)
+
+                          return (
                             <div
-                              className={`flex h-7 w-7 items-center justify-center rounded-full flex-shrink-0 ${
-                                msg.role === 'user'
-                                  ? 'bg-primary/20 text-primary'
-                                  : 'bg-muted text-muted-foreground'
+                              key={msg.id}
+                              className={`flex gap-3 rounded-xl p-4 ${
+                                isAdmin
+                                  ? 'bg-amber-500/5 border border-amber-500/20'
+                                  : isUser
+                                    ? 'bg-primary/5 border border-primary/10'
+                                    : 'bg-muted/30 border border-border/50'
                               }`}
                             >
-                              {msg.role === 'user' ? (
-                                <User className="h-3.5 w-3.5" />
-                              ) : (
-                                <Bot className="h-3.5 w-3.5" />
-                              )}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-2 mb-1.5">
-                                <span
-                                  className={`text-xs font-semibold ${
-                                    msg.role === 'user' ? 'text-primary' : 'text-muted-foreground'
-                                  }`}
-                                >
-                                  {msg.role === 'user' ? 'Client' : 'Assistant'}
-                                </span>
-                                <span className="text-[10px] text-muted-foreground/60">
-                                  {new Date(msg.created_at).toLocaleString(undefined, {
-                                    month: 'short',
-                                    day: 'numeric',
-                                    hour: '2-digit',
-                                    minute: '2-digit',
-                                  })}
-                                </span>
+                              <div
+                                className={`flex h-7 w-7 items-center justify-center rounded-full flex-shrink-0 ${
+                                  isAdmin
+                                    ? 'bg-amber-500/20 text-amber-500'
+                                    : isUser
+                                      ? 'bg-primary/20 text-primary'
+                                      : 'bg-muted text-muted-foreground'
+                                }`}
+                              >
+                                {isAdmin ? (
+                                  <Shield className="h-3.5 w-3.5" />
+                                ) : isUser ? (
+                                  <User className="h-3.5 w-3.5" />
+                                ) : (
+                                  <Bot className="h-3.5 w-3.5" />
+                                )}
                               </div>
-                              <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
-                                {msg.content}
-                              </p>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-1.5">
+                                  <span
+                                    className={`text-xs font-semibold ${
+                                      isAdmin
+                                        ? 'text-amber-500'
+                                        : isUser
+                                          ? 'text-primary'
+                                          : 'text-muted-foreground'
+                                    }`}
+                                  >
+                                    {isAdmin ? 'Admin' : isUser ? 'Client' : 'Assistant'}
+                                  </span>
+                                  <span className="text-[10px] text-muted-foreground/60">
+                                    {new Date(msg.created_at).toLocaleString(undefined, {
+                                      month: 'short',
+                                      day: 'numeric',
+                                      hour: '2-digit',
+                                      minute: '2-digit',
+                                    })}
+                                  </span>
+                                </div>
+                                <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
+                                  {msg.content}
+                                </p>
+                                {isFlagged && (
+                                  <div className="flex items-center gap-1 text-[10px] text-destructive mt-2">
+                                    <AlertTriangle className="h-3 w-3" />
+                                    Flagged for review
+                                  </div>
+                                )}
+                              </div>
                             </div>
-                          </div>
-                        ))}
+                          )
+                        })}
                       </div>
                     )}
                   </div>
+
+                  {/* Admin response input */}
+                  {selectedThread &&
+                    flaggedMessages.some(
+                      (f) => f.thread_id === selectedThread.threadId && !f.has_admin_response,
+                    ) && (
+                      <div className="border-t border-border p-4 bg-card/50">
+                        <div className="mx-auto max-w-3xl">
+                          <p className="text-xs text-muted-foreground mb-2">
+                            <Shield className="inline h-3 w-3 mr-1" />
+                            Respond as admin to this flagged conversation
+                          </p>
+                          <div className="flex gap-2">
+                            <textarea
+                              value={responseText}
+                              onChange={(e) => setResponseText(e.target.value)}
+                              rows={2}
+                              placeholder="Type your manual response..."
+                              className="flex-1 resize-none rounded-md border border-border bg-input px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                            />
+                            <button
+                              onClick={handleSubmitResponse}
+                              disabled={submitting || !responseText.trim()}
+                              className="rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                            >
+                              {submitting ? 'Sending...' : 'Send'}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                 </>
               ) : (
                 <div className="flex flex-1 items-center justify-center">
