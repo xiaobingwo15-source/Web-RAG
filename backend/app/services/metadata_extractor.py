@@ -1,7 +1,6 @@
 import json
 import logging
-from google import genai
-from google.genai import types
+from openai import AsyncOpenAI
 from langfuse import observe
 from app.services.gemini import PRIMARY_MODEL
 
@@ -19,21 +18,21 @@ METADATA_PROMPT = (
 
 
 @observe(name="extract_metadata", as_type="generation")
-async def extract_metadata(client: genai.Client, text: str) -> dict:
+async def extract_metadata(client: AsyncOpenAI, text: str) -> dict:
     truncated = text[:2000]
 
-    response = await client.aio.models.generate_content(
+    response = await client.chat.completions.create(
         model=PRIMARY_MODEL,
-        contents=truncated,
-        config=types.GenerateContentConfig(
-            temperature=0.2,
-            max_output_tokens=512,
-            response_mime_type="application/json",
-            system_instruction=METADATA_PROMPT,
-        ),
+        messages=[
+            {"role": "system", "content": METADATA_PROMPT},
+            {"role": "user", "content": truncated},
+        ],
+        temperature=0.2,
+        max_tokens=512,
+        response_format={"type": "json_object"},
     )
 
-    raw = response.candidates[0].content.parts[0].text
+    raw = response.choices[0].message.content
     try:
         metadata = json.loads(raw)
     except json.JSONDecodeError:

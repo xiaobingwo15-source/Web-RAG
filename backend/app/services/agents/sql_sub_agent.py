@@ -1,6 +1,6 @@
 import logging
 from collections.abc import AsyncGenerator
-from app.services.gemini import get_gemini_client, generate_chat_response_stream
+from app.services.gemini import get_llm_client, generate_chat_response_stream
 from app.services.sql_agent import generate_sql
 from app.services.sql_engine import get_schema_description, execute_readonly_sql
 
@@ -10,10 +10,11 @@ logger = logging.getLogger(__name__)
 async def execute(
     message: str,
     history: list,
+    images: list[str] | None = None,
 ) -> AsyncGenerator[dict, None]:
     yield {"type": "thought", "content": "Analyzing question for SQL query generation..."}
 
-    client = get_gemini_client()
+    client = get_llm_client()
     schema = get_schema_description()
 
     yield {"type": "thought", "content": "Generating SQL query..."}
@@ -36,5 +37,5 @@ async def execute(
     yield {"type": "thought", "content": "Summarizing results..."}
     summary_prompt = f"Based on the following database query results, answer the user's question.\n\nQuestion: {message}\n\n{result_text}"
 
-    async for chunk in generate_chat_response_stream(client, summary_prompt, history):
+    async for chunk in generate_chat_response_stream(client, summary_prompt, history, images=images):
         yield {"type": "token", "content": chunk}

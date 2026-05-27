@@ -10,7 +10,7 @@ EMBEDDING_DIMENSION = 768
 
 def get_embedding_client() -> genai.Client:
     settings = Settings()
-    return genai.Client(api_key=settings.google_api_key)
+    return genai.Client(api_key=settings.get_google_api_key)
 
 
 async def get_embedding(client: genai.Client, text: str) -> list[float]:

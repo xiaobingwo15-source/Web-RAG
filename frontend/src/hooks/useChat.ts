@@ -5,6 +5,7 @@ import { streamChat, getThreadMessages, type StreamError } from '@/lib/api'
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
+  images?: string[]
   thoughts?: string[]
 }
 
@@ -19,7 +20,19 @@ export function useChat() {
     if (!session?.access_token) return
     try {
       const msgs = await getThreadMessages(id, session.access_token)
-      setMessages(msgs.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content })))
+      setMessages(msgs.map((m) => {
+        try {
+          const parsed = JSON.parse(m.content)
+          if (parsed && typeof parsed.text === 'string') {
+            return {
+              role: m.role as 'user' | 'assistant',
+              content: parsed.text,
+              images: parsed.images || [],
+            }
+          }
+        } catch {}
+        return { role: m.role as 'user' | 'assistant', content: m.content }
+      }))
       setThreadId(id)
     } catch (err) {
       console.error('Failed to load thread:', err)
@@ -30,10 +43,11 @@ export function useChat() {
     content: string,
     useDocuments: boolean = false,
     retrievalMode: string = 'hybrid',
+    images?: string[],
   ) => {
     if (!session?.access_token) return
 
-    const userMsg: ChatMessage = { role: 'user', content }
+    const userMsg: ChatMessage = { role: 'user', content, images }
     setMessages((prev) => [...prev, userMsg])
     setIsStreaming(true)
     currentThoughts.current = []
@@ -77,6 +91,7 @@ export function useChat() {
       (id) => setThreadId(id),
       useDocuments,
       retrievalMode,
+      images,
       (thought) => {
         currentThoughts.current.push(thought)
         setMessages((prev) => {

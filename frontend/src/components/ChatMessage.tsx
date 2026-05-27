@@ -17,7 +17,21 @@ export function ChatMessage({ message }: { message: ChatMessageType }) {
               : 'bg-muted text-foreground'
           }`}
         >
-          <p className="whitespace-pre-wrap text-sm">{message.content}</p>
+          {isUser && message.images && message.images.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-2">
+              {message.images.map((src, idx) => (
+                <img
+                  key={idx}
+                  src={src}
+                  alt={`Pasted image ${idx + 1}`}
+                  className="max-w-[200px] max-h-[200px] rounded-md object-contain"
+                />
+              ))}
+            </div>
+          )}
+          {message.content && (
+            <p className="whitespace-pre-wrap text-sm">{message.content}</p>
+          )}
         </div>
       </div>
     </div>

@@ -26,10 +26,10 @@ def extract_text(file_bytes: bytes, mime_type: str) -> str:
 
 async def extract_text_with_ocr(file_bytes: bytes, mime_type: str, use_ocr: bool = False) -> str:
     if use_ocr and mime_type == "application/pdf":
-        from app.services.ocr_service import ocr_with_gemini
-        from app.services.gemini import get_gemini_client
-        client = get_gemini_client()
-        return await ocr_with_gemini(client, file_bytes)
+        from app.services.ocr_service import ocr_with_llm
+        from app.services.gemini import get_llm_client
+        client = get_llm_client()
+        return await ocr_with_llm(client, file_bytes)
     return extract_text(file_bytes, mime_type)
 
 

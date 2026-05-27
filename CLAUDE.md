@@ -1,13 +1,39 @@
 # CLAUDE.md
 
-Fully-managed Agentic RAG application utilizing Gemini 2.5 Flash. Features a clean client-facing chat layout and an automated file ingestion deck. System operates without complex admin panels and is driven via environment variables.
+Fully-managed Agentic RAG application. Features a clean client-facing chat layout and an automated file ingestion deck. System operates without complex admin panels and is driven via environment variables.
 
 ## Technical Stack
 - Frontend: React + TypeScript + Vite + Tailwind + shadcn/ui
 - Backend: Python 3 + FastAPI + Uvicorn
-- Database/State: Supabase (Auth, Session Store, Thread Logs)
-- AI Ecosystem: `google-genai` Python SDK (Gemini 2.5 Flash + Native File Search Engine)
+- Database/State: Supabase (Auth, Session Store, Thread Logs, Full-Text Search)
+- Vector Storage: **Qdrant** (cloud-hosted, `document_chunks` collection, 768-dim cosine vectors)
+- Chat LLM: **OpenRouter** (DeepSeek model via `openai`-compatible SDK at `https://openrouter.ai/api/v1`)
+- Embeddings: `google-genai` SDK (`gemini-embedding-001`, 768 dimensions)
 - Observability: Langfuse Tracing (free tier: 50k observations/month)
+
+## RAG Pipeline Architecture
+
+### Document Ingestion Flow
+1. Upload (PDF/Excel/CSV/TXT/MD) → `backend/app/services/text_extractor.py`
+2. Optional OCR via Gemini multimodal → `backend/app/services/ocr_service.py`
+3. Metadata extraction (title, summary, tags, language) → `backend/app/services/metadata_extractor.py`
+4. Chunking (1000 chars, 200 overlap) → `backend/app/services/chunker.py`
+5. Embedding (`gemini-embedding-001`, 768-dim) → `backend/app/services/embeddings.py`
+6. Store vectors in Qdrant → `backend/app/services/qdrant_db.py` (`insert_chunks`)
+7. Store text in Supabase for FTS → `backend/app/services/database.py` (`insert_chunks_for_fts`)
+
+### Query Retrieval Flow (default: hybrid mode)
+1. User message → embedded via `gemini-embedding-001`
+2. Parallel search: Qdrant vector search + Supabase FTS (`search_chunks_fts` RPC)
+3. Merge via Reciprocal Rank Fusion (RRF, k=60)
+4. LLM-based reranking → `backend/app/services/reranker.py`
+5. Top chunks injected into prompt with `RAG_SYSTEM_PROMPT`
+
+### Agent Routing
+- `backend/app/services/agent_supervisor.py` — Routes queries to doc_rag, sql, web_search, or general agent
+- When `use_documents=True`, always routes to `doc_rag` first
+- `backend/app/services/agents/doc_rag_agent.py` — Calls `retrieve_context()` then streams LLM response
+- Hardcoded refusal when 0 chunks found (LLM cannot be trusted to refuse on its own)
 
 ## Rules
 - Backend runs on Python + FastAPI with Uvicorn servers.

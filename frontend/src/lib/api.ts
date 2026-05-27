@@ -12,6 +12,7 @@ export async function streamChat(
   onThreadId?: (threadId: string) => void,
   useDocuments: boolean = false,
   retrievalMode: string = 'hybrid',
+  images?: string[],
   onThought?: (thought: string) => void,
 ) {
   const response = await fetch('/api/chat/stream', {
@@ -20,7 +21,13 @@ export async function streamChat(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ message, thread_id: threadId, use_documents: useDocuments, retrieval_mode: retrievalMode }),
+    body: JSON.stringify({
+      message,
+      thread_id: threadId,
+      use_documents: useDocuments,
+      retrieval_mode: retrievalMode,
+      ...(images && images.length > 0 ? { images } : {}),
+    }),
   })
 
   if (!response.ok) {
@@ -212,3 +219,99 @@ export async function getDocumentMetadata(token: string): Promise<DocumentMetada
   if (!response.ok) throw new Error(`Fetch metadata failed: ${response.status}`)
   return response.json()
 }
+
+
+// --- Admin API ---
+
+export interface AdminThread {
+  id: string
+  title: string
+  created_at: string
+  message_count: number
+}
+
+export interface AdminClient {
+  email: string
+  user_id: string
+  threads: AdminThread[]
+}
+
+export interface AdminConversationsResponse {
+  clients: AdminClient[]
+}
+
+export interface AdminMessage {
+  id: string
+  thread_id: string
+  user_id: string
+  role: string
+  content: string
+  created_at: string
+}
+
+export interface AdminMessagesResponse {
+  messages: AdminMessage[]
+}
+
+export async function getAdminConversations(token: string): Promise<AdminConversationsResponse> {
+  const response = await fetch('/api/admin/conversations', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Fetch admin conversations failed: ${response.status}`)
+  return response.json()
+}
+
+export async function getAdminThreadMessages(
+  threadId: string,
+  token: string,
+): Promise<AdminMessagesResponse> {
+  const response = await fetch(`/api/admin/conversations/${threadId}/messages`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Fetch admin messages failed: ${response.status}`)
+  return response.json()
+}
+
+export interface UserProfileResponse {
+  id: string
+  email: string
+  role: string
+}
+
+export async function getUserProfile(token: string): Promise<UserProfileResponse> {
+  const response = await fetch('/api/auth/me', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Fetch profile failed: ${response.status}`)
+  return response.json()
+}
+
+export interface SystemSettings {
+  GOOGLE_API_KEY?: string
+  OPENROUTER_API_KEY?: string
+  TAVLY_API_KEY?: string
+  LANGFUSE_PUBLIC_KEY?: string
+  LANGFUSE_SECRET_KEY?: string
+  LANGFUSE_BASE_URL?: string
+}
+
+export async function getAdminSettings(token: string): Promise<SystemSettings> {
+  const response = await fetch('/api/admin/settings', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Fetch admin settings failed: ${response.status}`)
+  return response.json()
+}
+
+export async function saveAdminSettings(settings: SystemSettings, token: string): Promise<void> {
+  const response = await fetch('/api/admin/settings', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(settings),
+  })
+  if (!response.ok) throw new Error(`Save admin settings failed: ${response.status}`)
+}
+

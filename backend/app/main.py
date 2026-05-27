@@ -1,9 +1,16 @@
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import Settings
 from app.services.langfuse import configure_langfuse, get_langfuse
-from app.routers import health, auth, chat, documents, tools
+from app.services.qdrant_db import ensure_collection
+from app.routers import health, auth, chat, documents, tools, admin
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 settings = Settings()
 
@@ -13,6 +20,7 @@ configure_langfuse()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await ensure_collection()
     yield
     # Flush pending Langfuse events on shutdown
     langfuse = get_langfuse()
@@ -34,3 +42,4 @@ app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
 app.include_router(tools.router, prefix="/api/tools", tags=["tools"])
+app.include_router(admin.router, prefix="/api/admin", tags=["admin"])

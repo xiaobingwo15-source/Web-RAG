@@ -64,3 +64,18 @@ Use this progressive check-matrix to guide your technical environment helper ass
 - [x] ThoughtTrace UI component (collapsible reasoning steps)
 - [x] Agent traces table for persistence
 - [x] Migration 008: agent_traces table with RLS
+
+### Module 9: Qdrant Vector Migration & RAG Pipeline Fixes
+- [x] Migrate from pgvector to Qdrant for vector storage (migration 015)
+- [x] Qdrant client setup with `document_chunks` collection (768-dim, cosine)
+- [x] Embedding via `gemini-embedding-001` (google-genai SDK)
+- [x] Hybrid retrieval: Qdrant vector + Supabase FTS with RRF merge
+- [x] LLM-based reranker service
+- [x] Fix: Agent routing respects `use_documents` flag (doc_rag prioritized when enabled)
+- [x] Fix: Hardcoded refusal when retrieval returns 0 chunks (LLM ignores system prompt)
+- [x] Fix: Lowered similarity threshold from 0.3 to 0.1
+- [x] Fix: Added diagnostic logging (print + logger) throughout retrieval pipeline
+- [x] Fix: Stronger RAG system prompt for model compliance
+- [x] Debug endpoint: `GET /api/documents/check-qdrant` to verify Qdrant indexing
+- [ ] **NEXT: Verify retrieval actually returns chunks (check-qdrant endpoint)**
+- [ ] **NEXT: End-to-end test — upload doc, ask question, confirm answer from document**

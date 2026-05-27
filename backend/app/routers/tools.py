@@ -2,7 +2,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from app.middleware.auth import get_current_user
 from app.models.tools import SqlQueryRequest, SqlQueryResponse, WebSearchRequest, WebSearchResponse, WebSearchResult
-from app.services.gemini import get_gemini_client
+from app.services.gemini import get_llm_client
 from app.services.sql_agent import generate_sql
 from app.services.sql_engine import get_schema_description, execute_readonly_sql
 from app.services.web_search import search_web
@@ -14,7 +14,7 @@ router = APIRouter()
 
 @router.post("/sql", response_model=SqlQueryResponse)
 async def sql_query(request: SqlQueryRequest, user=Depends(get_current_user)):
-    client = get_gemini_client()
+    client = get_llm_client()
     schema = get_schema_description()
 
     sql = await generate_sql(client, request.question, schema)

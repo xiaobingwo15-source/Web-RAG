@@ -1,7 +1,7 @@
+import base64
 import io
 import logging
-from google import genai
-from google.genai import types
+from openai import AsyncOpenAI
 from langfuse import observe
 from app.services.gemini import PRIMARY_MODEL
 
@@ -15,8 +15,8 @@ OCR_PROMPT = (
 )
 
 
-@observe(name="ocr_with_gemini", as_type="generation")
-async def ocr_with_gemini(client: genai.Client, file_bytes: bytes) -> str:
+@observe(name="ocr_with_llm", as_type="generation")
+async def ocr_with_llm(client: AsyncOpenAI, file_bytes: bytes) -> str:
     import pypdfium2 as pdfium
 
     logger.info("Converting PDF pages to images for OCR")
@@ -34,20 +34,27 @@ async def ocr_with_gemini(client: genai.Client, file_bytes: bytes) -> str:
         buf = io.BytesIO()
         pil_image.save(buf, format="PNG")
         image_bytes = buf.getvalue()
+        b64_image = base64.b64encode(image_bytes).decode("utf-8")
 
-        response = await client.aio.models.generate_content(
+        response = await client.chat.completions.create(
             model=PRIMARY_MODEL,
-            contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-                OCR_PROMPT,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{b64_image}"},
+                        },
+                        {"type": "text", "text": OCR_PROMPT},
+                    ],
+                },
             ],
-            config=types.GenerateContentConfig(
-                temperature=0.1,
-                max_output_tokens=4096,
-            ),
+            temperature=0.1,
+            max_tokens=4096,
         )
 
-        page_text = response.candidates[0].content.parts[0].text
+        page_text = response.choices[0].message.content or ""
         all_text.append(page_text)
 
     doc.close()

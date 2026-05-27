@@ -4,11 +4,12 @@ from app.services.text_extractor import extract_text, extract_text_with_ocr
 from app.services.chunker import chunk_text
 from app.services.embeddings import get_embedding_client, get_embeddings
 from app.services.metadata_extractor import extract_metadata
-from app.services.gemini import get_gemini_client
+from app.services.gemini import get_llm_client
 from app.services.database import (
-    insert_chunks, update_document_status, update_document_hash,
-    update_document_chunk_count, update_document_metadata, update_chunks_metadata,
+    insert_chunks_for_fts, update_document_status, update_document_hash,
+    update_document_chunk_count, update_document_metadata,
 )
+from app.services.qdrant_db import insert_chunks, update_chunks_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ async def process_document(
             raise ValueError("No text content extracted from file")
 
         logger.info(f"Document {document_id}: extracting metadata")
-        gemini_client = get_gemini_client()
+        gemini_client = get_llm_client()
         metadata = await extract_metadata(gemini_client, text[:2000])
         update_document_metadata(access_token, document_id, metadata)
         logger.info(f"Document {document_id}: metadata extracted — {metadata}")
@@ -54,9 +55,12 @@ async def process_document(
             for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
         ]
 
-        logger.info(f"Document {document_id}: storing {len(chunk_data)} chunks")
-        insert_chunks(access_token, user_id, document_id, chunk_data)
-        update_chunks_metadata(access_token, document_id, metadata)
+        logger.info(f"Document {document_id}: storing {len(chunk_data)} chunks in Qdrant")
+        await insert_chunks(user_id, document_id, chunk_data)
+        await update_chunks_metadata(document_id, metadata)
+
+        logger.info(f"Document {document_id}: storing chunk content in Supabase for FTS")
+        insert_chunks_for_fts(access_token, user_id, document_id, chunk_data)
 
         update_document_chunk_count(access_token, document_id, len(chunk_data))
         update_document_status(access_token, document_id, "processed")

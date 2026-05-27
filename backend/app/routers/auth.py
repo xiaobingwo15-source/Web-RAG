@@ -6,4 +6,5 @@ router = APIRouter()
 
 @router.get("/me")
 async def get_me(user=Depends(get_current_user)):
-    return {"id": user.id, "email": user.email}
+    return {"id": user.id, "email": user.email, "role": user.role}
+

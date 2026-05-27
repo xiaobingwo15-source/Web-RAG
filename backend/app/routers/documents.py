@@ -29,13 +29,27 @@ async def upload(
 ):
     token = user.access_token
 
-    mime_type = file.content_type or "text/plain"
-    if mime_type not in ALLOWED_MIME_TYPES:
-        guessed, _ = mimetypes.guess_type(file.filename or "")
-        if guessed in ALLOWED_MIME_TYPES:
-            mime_type = guessed
-        else:
-            mime_type = "text/plain"
+    filename_lower = (file.filename or "").lower()
+    if filename_lower.endswith(".csv"):
+        mime_type = "text/csv"
+    elif filename_lower.endswith(".xlsx"):
+        mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    elif filename_lower.endswith(".xls"):
+        mime_type = "application/vnd.ms-excel"
+    elif filename_lower.endswith(".pdf"):
+        mime_type = "application/pdf"
+    elif filename_lower.endswith((".md", ".markdown")):
+        mime_type = "text/markdown"
+    elif filename_lower.endswith((".txt", ".text")):
+        mime_type = "text/plain"
+    else:
+        mime_type = file.content_type or "text/plain"
+        if mime_type not in ALLOWED_MIME_TYPES:
+            guessed, _ = mimetypes.guess_type(file.filename or "")
+            if guessed in ALLOWED_MIME_TYPES:
+                mime_type = guessed
+            else:
+                mime_type = "text/plain"
 
     file_bytes = await file.read()
 
@@ -53,7 +67,7 @@ async def upload(
 
     store = get_user_store(token, user.id)
     if not store:
-        store = create_store(token, user.id, "", "local-pgvector")
+        store = create_store(token, user.id, "", "local-qdrant")
 
     doc = create_document(
         token, user.id, store["id"],
@@ -80,7 +94,14 @@ async def status(document_id: str, user=Depends(get_current_user)):
 
 @router.get("/", response_model=DocumentListResponse)
 async def list_documents(user=Depends(get_current_user)):
-    docs = get_user_documents(user.access_token, user.id)
+    target_user_id = user.id
+    if user.role == "client":
+        from app.services.database import get_admin_user_id
+        admin_id = get_admin_user_id(user.access_token)
+        if admin_id:
+            target_user_id = admin_id
+
+    docs = get_user_documents(user.access_token, target_user_id)
     result = [
         DocumentStatus(
             id=doc["id"],
@@ -96,5 +117,32 @@ async def list_documents(user=Depends(get_current_user)):
 
 @router.get("/metadata", response_model=DocumentMetadataResponse)
 async def get_metadata(user=Depends(get_current_user)):
-    data = get_user_document_metadata(user.access_token, user.id)
+    target_user_id = user.id
+    if user.role == "client":
+        from app.services.database import get_admin_user_id
+        admin_id = get_admin_user_id(user.access_token)
+        if admin_id:
+            target_user_id = admin_id
+
+    data = get_user_document_metadata(user.access_token, target_user_id)
     return DocumentMetadataResponse(tags=data["tags"], languages=data["languages"])
+
+
+@router.get("/check-qdrant")
+async def check_qdrant(user=Depends(get_current_user)):
+    from app.services.qdrant_db import count_user_chunks, get_sample_chunks
+    target_user_id = user.id
+    if user.role == "client":
+        from app.services.database import get_admin_user_id
+        admin_id = get_admin_user_id(user.access_token)
+        if admin_id:
+            target_user_id = admin_id
+
+    chunk_count = await count_user_chunks(target_user_id)
+    samples = await get_sample_chunks(target_user_id, limit=3)
+    print(f"[DEBUG] check-qdrant: user_id={target_user_id}, chunks={chunk_count}")
+    return {
+        "user_id": target_user_id,
+        "chunk_count": chunk_count,
+        "samples": samples,
+    }

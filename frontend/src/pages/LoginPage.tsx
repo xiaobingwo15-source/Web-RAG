@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
+import { isAdmin } from '@/lib/roles'
 
 export function LoginPage() {
   const [email, setEmail] = useState('')
@@ -21,7 +22,12 @@ export function LoginPage() {
     if (error) {
       setError(error.message)
     } else {
-      navigate('/')
+      // Redirect based on role
+      if (isAdmin(email)) {
+        navigate('/admin')
+      } else {
+        navigate('/chat')
+      }
     }
     setLoading(false)
   }

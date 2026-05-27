@@ -1,5 +1,8 @@
+import logging
 from supabase import Client
 from app.services.supabase import get_supabase_client, get_supabase_client_with_token
+
+logger = logging.getLogger(__name__)
 
 
 def get_db() -> Client:
@@ -200,64 +203,6 @@ def update_document_metadata(access_token: str, document_id: str, metadata: dict
     return result.data[0]
 
 
-def update_chunks_metadata(access_token: str, document_id: str, metadata: dict) -> None:
-    db = get_user_db(access_token)
-    db.table("document_chunks").update({"metadata": metadata}).eq("document_id", document_id).execute()
-
-
-# --- Document chunk functions (pgvector RAG) ---
-
-def insert_chunks(access_token: str, user_id: str, document_id: str, chunks: list[dict]) -> list[dict]:
-    db = get_user_db(access_token)
-    rows = [
-        {
-            "user_id": user_id,
-            "document_id": document_id,
-            "content": chunk["content"],
-            "embedding": chunk["embedding"],
-            "chunk_index": chunk["chunk_index"],
-        }
-        for chunk in chunks
-    ]
-    result = db.table("document_chunks").insert(rows).execute()
-    return result.data
-
-
-def search_similar_chunks(access_token: str, user_id: str, query_embedding: list[float], match_count: int = 5) -> list[dict]:
-    db = get_user_db(access_token)
-    result = db.rpc(
-        "match_documents",
-        {
-            "query_embedding": query_embedding,
-            "match_user_id": user_id,
-            "match_count": match_count,
-        },
-    ).execute()
-    return result.data
-
-
-def search_similar_chunks_filtered(
-    access_token: str,
-    user_id: str,
-    query_embedding: list[float],
-    match_count: int = 5,
-    filter_tags: list[str] | None = None,
-    filter_language: str | None = None,
-) -> list[dict]:
-    db = get_user_db(access_token)
-    params: dict = {
-        "query_embedding": query_embedding,
-        "match_user_id": user_id,
-        "match_count": match_count,
-    }
-    if filter_tags:
-        params["filter_tags"] = filter_tags
-    if filter_language:
-        params["filter_language"] = filter_language
-    result = db.rpc("match_documents_filtered", params).execute()
-    return result.data
-
-
 def get_user_document_metadata(access_token: str, user_id: str) -> dict:
     db = get_user_db(access_token)
     result = (
@@ -290,23 +235,19 @@ def search_chunks_fts(access_token: str, user_id: str, query_text: str, match_co
     return result.data
 
 
-def hybrid_search(
-    access_token: str,
-    user_id: str,
-    query_embedding: list[float],
-    query_text: str,
-    match_count: int = 10,
-) -> list[dict]:
+def insert_chunks_for_fts(access_token: str, user_id: str, document_id: str, chunks: list[dict]) -> list[dict]:
+    """Insert chunk content into Supabase for full-text search (no embeddings)."""
     db = get_user_db(access_token)
-    result = db.rpc(
-        "hybrid_search",
+    rows = [
         {
-            "query_embedding": query_embedding,
-            "search_query": query_text,
-            "match_user_id": user_id,
-            "match_count": match_count,
-        },
-    ).execute()
+            "user_id": user_id,
+            "document_id": document_id,
+            "content": chunk["content"],
+            "chunk_index": chunk["chunk_index"],
+        }
+        for chunk in chunks
+    ]
+    result = db.table("document_chunks").insert(rows).execute()
     return result.data
 
 
@@ -350,3 +291,132 @@ def get_agent_traces(access_token: str, thread_id: str) -> list[dict]:
         .execute()
     )
     return result.data
+
+
+# --- Admin functions ---
+
+def get_all_threads_grouped(access_token: str) -> list[dict]:
+    """Fetch all threads across all users, grouped by user email.
+    Note: This requires RLS policies that allow the admin to read all threads,
+    OR a properly configured service_role_key. If RLS blocks access,
+    only the admin's own threads will be returned.
+    Returns: [{ email, user_id, threads: [{ id, title, created_at, message_count }] }]
+    """
+    # Try service role first, fall back to user token
+    db = get_db()
+    used_service_role = True
+    try:
+        threads_result = (
+            db.table("threads")
+            .select("*")
+            .order("created_at", desc=True)
+            .execute()
+        )
+        logger.info("Service role query succeeded, found %d threads", len(threads_result.data))
+    except Exception as e:
+        logger.warning("Service role query failed, falling back to user token: %s", e)
+        used_service_role = False
+        db = get_user_db(access_token)
+        threads_result = (
+            db.table("threads")
+            .select("*")
+            .order("created_at", desc=True)
+            .execute()
+        )
+        logger.info("User token query found %d threads", len(threads_result.data))
+
+    # Group threads by user_id
+    user_threads: dict[str, list[dict]] = {}
+    user_ids: set[str] = set()
+    for t in threads_result.data:
+        uid = t["user_id"]
+        user_ids.add(uid)
+        if uid not in user_threads:
+            user_threads[uid] = []
+        user_threads[uid].append({
+            "id": t["id"],
+            "title": t["title"],
+            "created_at": t["created_at"],
+        })
+
+    # Fetch message counts per thread
+    try:
+        messages_result = db.table("messages").select("thread_id").execute()
+        logger.info("Found %d messages for thread count", len(messages_result.data))
+    except Exception as e:
+        logger.warning("Failed to fetch message counts: %s", e)
+        messages_result = type('obj', (object,), {'data': []})()
+
+    thread_msg_count: dict[str, int] = {}
+    for m in messages_result.data:
+        tid = m["thread_id"]
+        thread_msg_count[tid] = thread_msg_count.get(tid, 0) + 1
+
+    # Add message count to each thread
+    for uid, threads in user_threads.items():
+        for t in threads:
+            t["message_count"] = thread_msg_count.get(t["id"], 0)
+
+    # Look up user emails via Supabase Auth admin API
+    user_emails: dict[str, str] = {}
+    try:
+        for uid in user_ids:
+            user_resp = db.auth.admin.get_user_by_id(uid)
+            if user_resp and user_resp.user:
+                user_emails[uid] = user_resp.user.email or uid
+            else:
+                user_emails[uid] = uid
+    except Exception:
+        # Fallback: use shortened user_id as identifier
+        for uid in user_ids:
+            user_emails[uid] = f"user-{uid[:8]}"
+
+    # Build grouped result
+    clients = []
+    for uid, threads in user_threads.items():
+        clients.append({
+            "email": user_emails.get(uid, uid),
+            "user_id": uid,
+            "threads": threads,
+        })
+
+    # Sort by email
+    clients.sort(key=lambda c: c["email"])
+    return clients
+
+
+def get_thread_messages_admin(access_token: str, thread_id: str) -> list[dict]:
+    """Fetch all messages for a thread. Tries service role first, falls back to user token."""
+    db = get_db()
+    try:
+        result = (
+            db.table("messages")
+            .select("*")
+            .eq("thread_id", thread_id)
+            .order("created_at")
+            .execute()
+        )
+    except Exception as e:
+        logger.warning("Service role query failed for messages, falling back to user token: %s", e)
+        db = get_user_db(access_token)
+        result = (
+            db.table("messages")
+            .select("*")
+            .eq("thread_id", thread_id)
+            .order("created_at")
+            .execute()
+        )
+    return result.data
+
+
+def get_admin_user_id(access_token: str | None = None) -> str | None:
+    """Find the shared admin user ID using the service role client."""
+    db = get_db()
+    try:
+        result = db.table("profiles").select("id").eq("role", "admin").limit(1).execute()
+        if result.data:
+            return result.data[0]["id"]
+    except Exception as e:
+        logger.warning("Failed to fetch admin user_id from profiles: %s", e)
+    return None
+

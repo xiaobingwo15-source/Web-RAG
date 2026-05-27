@@ -10,6 +10,8 @@ interface ChatSidebarProps {
   onUpload: (file: File, useOcr?: boolean) => void
   duplicateWarning?: string | null
   onDismissWarning?: () => void
+  uploadFailure?: { filename: string; error: string } | null
+  onDismissFailure?: () => void
 }
 
 export function ChatSidebar({
@@ -18,6 +20,8 @@ export function ChatSidebar({
   onUpload,
   duplicateWarning,
   onDismissWarning,
+  uploadFailure,
+  onDismissFailure,
 }: ChatSidebarProps) {
   const { user, signOut } = useAuth()
   const navigate = useNavigate()
@@ -41,6 +45,8 @@ export function ChatSidebar({
           onUpload={onUpload}
           duplicateWarning={duplicateWarning}
           onDismissWarning={onDismissWarning}
+          uploadFailure={uploadFailure}
+          onDismissFailure={onDismissFailure}
         />
       </div>
 

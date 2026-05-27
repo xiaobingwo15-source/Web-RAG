@@ -1,13 +1,12 @@
-import json
+import json as json_lib
 import logging
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
-from google.genai import types
-from google.genai.errors import ServerError, ClientError
+from openai import APIError, RateLimitError
 from langfuse import propagate_attributes
 from app.middleware.auth import get_current_user
 from app.models.chat import ChatRequest, ChatResponse, ThreadListResponse, ThreadSummary, MessageListResponse, MessageResponse
-from app.services.gemini import get_gemini_client, generate_chat_response, generate_chat_response_stream, _extract_retry_delay
+from app.services.gemini import get_llm_client, generate_chat_response, generate_chat_response_stream, _extract_retry_delay
 from app.services.retrieval import retrieve_context
 from app.services.agent_supervisor import execute as agent_execute
 from app.services.database import create_thread, save_message, get_thread_messages, get_user_threads, get_thread, delete_thread as db_delete_thread
@@ -18,20 +17,29 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def build_gemini_history(messages: list[dict]) -> list[types.Content]:
+def build_history(messages: list[dict]) -> list[dict]:
     history = []
     for msg in messages:
-        role = "model" if msg["role"] == "assistant" else "user"
-        history.append(types.Content(
-            role=role,
-            parts=[types.Part.from_text(text=msg["content"])],
-        ))
+        role = "assistant" if msg["role"] == "assistant" else "user"
+        content = msg["content"]
+        if role == "user":
+            try:
+                parsed = json_lib.loads(content)
+                if isinstance(parsed, dict) and "text" in parsed:
+                    parts = [{"type": "text", "text": parsed["text"]}]
+                    for img in parsed.get("images", []):
+                        parts.append({"type": "image_url", "image_url": {"url": img}})
+                    history.append({"role": role, "content": parts})
+                    continue
+            except (json_lib.JSONDecodeError, TypeError):
+                pass
+        history.append({"role": role, "content": content})
     return history
 
 
 @router.post("/", response_model=ChatResponse)
 async def chat(request: ChatRequest, user=Depends(get_current_user)):
-    client = get_gemini_client()
+    client = get_llm_client()
     is_new_thread = not request.thread_id
     thread_id = request.thread_id or str(uuid.uuid4())
     token = user.access_token
@@ -43,12 +51,17 @@ async def chat(request: ChatRequest, user=Depends(get_current_user)):
         trace_name="chat",
     ):
         if is_new_thread:
-            create_thread(token, user.id, thread_id)
+            title = request.message.strip()
+            if len(title) > 40:
+                title = title[:37] + "..."
+            title = title or "New Chat"
+            create_thread(token, user.id, thread_id, title=title)
 
-        save_message(token, user.id, thread_id, "user", request.message)
+        stored_content = json_lib.dumps({"text": request.message, "images": request.images}) if request.images else request.message
+        save_message(token, user.id, thread_id, "user", stored_content)
 
         history_messages = get_thread_messages(token, thread_id)[:-1]
-        history = build_gemini_history(history_messages)
+        history = build_history(history_messages)
 
         context_chunks = None
         if request.use_documents:
@@ -56,11 +69,11 @@ async def chat(request: ChatRequest, user=Depends(get_current_user)):
             logger.info(f"Retrieved {len(context_chunks)} context chunks for user={user.id}")
 
         try:
-            response_text = await generate_chat_response(client, request.message, history, context_chunks)
-        except (ServerError, ClientError) as e:
-            if getattr(e, "code", None) == 429:
-                retry_hint = _extract_retry_delay(e)
-                raise HTTPException(status_code=429, detail=f"Rate limit reached. Please wait {int(retry_hint)} seconds and try again.")
+            response_text = await generate_chat_response(client, request.message, history, context_chunks, images=request.images)
+        except RateLimitError as e:
+            retry_hint = _extract_retry_delay(e)
+            raise HTTPException(status_code=429, detail=f"Rate limit reached. Please wait {int(retry_hint)} seconds and try again.")
+        except APIError:
             raise HTTPException(status_code=503, detail="The AI service is temporarily unavailable. Please try again in a moment.")
 
         save_message(token, user.id, thread_id, "assistant", response_text)
@@ -81,12 +94,17 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
         trace_name="chat-stream",
     ):
         if is_new_thread:
-            create_thread(token, user.id, thread_id)
+            title = request.message.strip()
+            if len(title) > 40:
+                title = title[:37] + "..."
+            title = title or "New Chat"
+            create_thread(token, user.id, thread_id, title=title)
 
-        save_message(token, user.id, thread_id, "user", request.message)
+        stored_content = json_lib.dumps({"text": request.message, "images": request.images}) if request.images else request.message
+        save_message(token, user.id, thread_id, "user", stored_content)
 
         history_messages = get_thread_messages(token, thread_id)[:-1]
-        history = build_gemini_history(history_messages)
+        history = build_history(history_messages)
 
         async def event_generator():
             full_response = ""
@@ -101,10 +119,11 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                     retrieval_mode=request.retrieval_mode,
                     enable_web_search=request.enable_web_search,
                     enable_sql=request.enable_sql,
+                    images=request.images,
                 ):
                     if event["type"] == "thought":
                         yield {
-                            "data": json.dumps({
+                            "data": json_lib.dumps({
                                 "type": "thought",
                                 "content": event["content"],
                                 "thread_id": thread_id,
@@ -113,7 +132,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                     elif event["type"] == "token":
                         full_response += event["content"]
                         yield {
-                            "data": json.dumps({
+                            "data": json_lib.dumps({
                                 "type": "token",
                                 "content": event["content"],
                                 "thread_id": thread_id,
@@ -122,7 +141,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                         }
                     elif event["type"] == "error":
                         yield {
-                            "data": json.dumps({
+                            "data": json_lib.dumps({
                                 "type": "error",
                                 "content": event["content"],
                                 "error_code": event.get("error_code", "unknown"),
@@ -134,7 +153,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                 save_message(token, user.id, thread_id, "assistant", full_response)
 
                 yield {
-                    "data": json.dumps({
+                    "data": json_lib.dumps({
                         "type": "done",
                         "content": "",
                         "thread_id": thread_id,
@@ -143,10 +162,10 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                 }
             except Exception as e:
                 logger.error(f"SSE event_generator failed: {e}", exc_info=True)
-                error_code = "rate_limit" if isinstance(e, (ServerError, ClientError)) and getattr(e, "code", None) == 429 else "server_error"
+                error_code = "rate_limit" if isinstance(e, RateLimitError) else "server_error"
                 content = "Rate limit reached. Please wait a moment and try again." if error_code == "rate_limit" else "An unexpected error occurred. Please try again."
                 yield {
-                    "data": json.dumps({
+                    "data": json_lib.dumps({
                         "type": "error",
                         "content": content,
                         "error_code": error_code,

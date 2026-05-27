@@ -14,6 +14,7 @@ class ChatRequest(BaseModel):
     retrieval_mode: str = "hybrid"  # "vector", "fts", "hybrid"
     enable_web_search: bool = True
     enable_sql: bool = True
+    images: Optional[list[str]] = None  # base64 data URLs
 
 
 class ChatResponse(BaseModel):

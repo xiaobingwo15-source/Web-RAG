@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useChat } from '@/hooks/useChat'
 import { useDocuments } from '@/hooks/useDocuments'
 import { useThreads } from '@/hooks/useThreads'
+import { useAuth } from '@/hooks/useAuth'
+import { isAdmin } from '@/lib/roles'
 import { ChatSidebar } from '@/components/ChatSidebar'
 import { ChatMessage } from '@/components/ChatMessage'
 import { ChatInput } from '@/components/ChatInput'
@@ -10,8 +12,19 @@ import { PanelRightOpen, PanelRightClose } from 'lucide-react'
 
 export function ChatPage() {
   const { messages, sendMessage, isStreaming, clearMessages, loadThread } = useChat()
-  const { documents, uploadDocument, isUploading, hasProcessed, duplicateWarning, clearDuplicateWarning } = useDocuments()
+  const {
+    documents,
+    uploadDocument,
+    isUploading,
+    hasProcessed,
+    duplicateWarning,
+    clearDuplicateWarning,
+    uploadFailure,
+    clearUploadFailure
+  } = useDocuments()
   const { threads, selectedThreadId, setSelectedThreadId, refreshThreads, removeThread } = useThreads()
+  const { user, role } = useAuth()
+  const admin = isAdmin(role || user?.email)
   const [showPanel, setShowPanel] = useState(true)
 
   const handleNewChat = () => {
@@ -31,24 +44,28 @@ export function ChatPage() {
     }
   }
 
-  const handleSendMessage = async (content: string, useDocuments: boolean = false, retrievalMode: string = 'hybrid') => {
-    await sendMessage(content, useDocuments, retrievalMode)
+  const handleSendMessage = async (content: string, useDocuments: boolean = false, retrievalMode: string = 'hybrid', images?: string[]) => {
+    await sendMessage(content, useDocuments, retrievalMode, images)
     refreshThreads()
   }
 
   return (
     <div className="flex h-screen bg-background">
-      <ChatSidebar
-        documents={documents}
-        isUploading={isUploading}
-        onUpload={uploadDocument}
-        duplicateWarning={duplicateWarning}
-        onDismissWarning={clearDuplicateWarning}
-      />
+      {admin && (
+        <ChatSidebar
+          documents={documents}
+          isUploading={isUploading}
+          onUpload={uploadDocument}
+          duplicateWarning={duplicateWarning}
+          onDismissWarning={clearDuplicateWarning}
+          uploadFailure={uploadFailure}
+          onDismissFailure={clearUploadFailure}
+        />
+      )}
       <main className="flex flex-1 flex-col">
         <div className="flex items-center justify-between border-b border-border px-4 py-2 bg-muted/20">
           <span className="text-sm font-medium text-foreground">
-            {hasProcessed ? 'Documents loaded' : 'No documents'}
+            {admin ? (hasProcessed ? 'Documents loaded' : 'No documents') : 'Chat'}
           </span>
           <button
             onClick={() => setShowPanel((prev) => !prev)}
@@ -71,9 +88,11 @@ export function ChatPage() {
                     Agentic RAG Masterclass
                   </h2>
                   <p className="mt-2 text-muted-foreground">
-                    {hasProcessed
-                      ? 'Ask a question about your documents'
-                      : 'Upload documents or start a conversation'}
+                    {admin
+                      ? (hasProcessed
+                        ? 'Ask a question about your documents'
+                        : 'Upload documents or start a conversation')
+                      : 'Start a conversation'}
                   </p>
                 </div>
               </div>

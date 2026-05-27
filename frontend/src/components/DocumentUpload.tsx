@@ -2,7 +2,7 @@ import { useRef, useState, type DragEvent } from 'react'
 import { Upload, FileText, CheckCircle, XCircle, Loader2, AlertTriangle } from 'lucide-react'
 import type { DocumentStatus } from '@/lib/api'
 
-const ACCEPTED_TYPES = ['.pdf', '.md', '.txt']
+const ACCEPTED_TYPES = ['.pdf', '.md', '.txt', '.csv', '.xlsx', '.xls']
 
 export function DocumentUpload({
   documents,
@@ -10,12 +10,16 @@ export function DocumentUpload({
   onUpload,
   duplicateWarning,
   onDismissWarning,
+  uploadFailure,
+  onDismissFailure,
 }: {
   documents: DocumentStatus[]
   isUploading: boolean
   onUpload: (file: File, useOcr?: boolean) => void
   duplicateWarning?: string | null
   onDismissWarning?: () => void
+  uploadFailure?: { filename: string; error: string } | null
+  onDismissFailure?: () => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [useOcr, setUseOcr] = useState(false)
@@ -49,6 +53,23 @@ export function DocumentUpload({
 
   return (
     <div className="flex flex-col gap-4">
+      {uploadFailure && (
+        <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2">
+          <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+          <div className="flex-1">
+            <h5 className="text-xs font-bold text-red-400">Upload Failed</h5>
+            <p className="text-xs text-red-200 mt-0.5">
+              Failed to process <span className="font-semibold">{uploadFailure.filename}</span>: {uploadFailure.error}
+            </p>
+          </div>
+          {onDismissFailure && (
+            <button onClick={onDismissFailure} className="text-red-400 hover:text-red-200">
+              <XCircle className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+      )}
+
       {duplicateWarning && (
         <div className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-500" />
@@ -78,7 +99,7 @@ export function DocumentUpload({
           {isUploading ? 'Uploading...' : 'Drop documents here or click to browse'}
         </p>
         <p className="text-xs text-muted-foreground">
-          PDF, Markdown, or Text files
+          PDF, Markdown, Text, CSV, or Excel files
         </p>
         <label
           className="flex items-center gap-2 text-xs text-muted-foreground"

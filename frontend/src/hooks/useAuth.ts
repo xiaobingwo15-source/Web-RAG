@@ -1,24 +1,43 @@
 import { useState, useEffect } from 'react'
 import type { Session, User } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
+import { getUserProfile } from '@/lib/api'
 
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null)
   const [session, setSession] = useState<Session | null>(null)
+  const [role, setRole] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    const loadRole = async (sess: Session | null) => {
+      if (sess?.access_token) {
+        try {
+          const profile = await getUserProfile(sess.access_token)
+          setRole(profile.role)
+        } catch (err) {
+          console.error('Failed to load user role:', err)
+          const isHardcodedAdmin = sess.user?.email?.toLowerCase() === 'admin@example.com'
+          setRole(isHardcodedAdmin ? 'admin' : 'client')
+        }
+      } else {
+        setRole(null)
+      }
+    }
+
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
       setSession(session)
       setUser(session?.user ?? null)
+      await loadRole(session)
       setLoading(false)
     })
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange(async (_event, session) => {
       setSession(session)
       setUser(session?.user ?? null)
+      await loadRole(session)
       setLoading(false)
     })
 
@@ -40,5 +59,6 @@ export function useAuth() {
     return { error }
   }
 
-  return { user, session, loading, signIn, signUp, signOut }
+  return { user, session, role, loading, signIn, signUp, signOut }
 }
+

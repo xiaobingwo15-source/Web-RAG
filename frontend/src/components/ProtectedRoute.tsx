@@ -1,9 +1,15 @@
 import type { ReactNode } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
+import { isAdmin } from '@/lib/roles'
 
-export function ProtectedRoute({ children }: { children: ReactNode }) {
-  const { session, loading } = useAuth()
+interface ProtectedRouteProps {
+  children: ReactNode
+  requireAdmin?: boolean
+}
+
+export function ProtectedRoute({ children, requireAdmin = false }: ProtectedRouteProps) {
+  const { session, user, role, loading } = useAuth()
 
   if (loading) {
     return (
@@ -16,6 +22,12 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
   if (!session) {
     return <Navigate to="/login" replace />
   }
+
+  // If admin is required but user is not admin, redirect to client chat
+  if (requireAdmin && !isAdmin(role || user?.email)) {
+    return <Navigate to="/chat" replace />
+  }
+
 
   return <>{children}</>
 }

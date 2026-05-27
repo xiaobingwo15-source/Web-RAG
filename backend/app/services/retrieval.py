@@ -1,8 +1,10 @@
+import asyncio
 import logging
 from app.services.embeddings import get_embedding_client, get_embedding
-from app.services.reranker import rerank_with_gemini
-from app.services.gemini import get_gemini_client
-from app.services.database import search_similar_chunks, search_chunks_fts, hybrid_search
+from app.services.reranker import rerank_with_llm
+from app.services.gemini import get_llm_client
+from app.services.qdrant_db import search_similar_chunks
+from app.services.database import search_chunks_fts
 
 logger = logging.getLogger(__name__)
 
@@ -14,30 +16,80 @@ async def retrieve_context(
     mode: str = "hybrid",
     match_count: int = 5,
 ) -> list[str]:
+    target_user_id = user_id
+
+    # Check if user is a client, if so retrieval should ground on the shared admin knowledge base
+    try:
+        from app.services.supabase import get_supabase_client_with_token
+        from app.services.database import get_admin_user_id
+        db = get_supabase_client_with_token(token)
+        profile = db.table("profiles").select("role").eq("id", user_id).single().execute()
+        if profile.data and profile.data.get("role") == "client":
+            admin_id = get_admin_user_id(token)
+            if admin_id:
+                target_user_id = admin_id
+                logger.info(f"Redirecting RAG search to admin shared knowledge base: {admin_id}")
+    except Exception as e:
+        logger.warning(f"Error checking user role in retrieve_context: {e}")
+
     if mode == "fts":
-        chunks = search_chunks_fts(token, user_id, message, match_count)
+        chunks = await asyncio.to_thread(search_chunks_fts, token, target_user_id, message, match_count)
         results = [chunk["content"] for chunk in chunks]
         logger.info(f"FTS retrieval: {len(results)} chunks")
         return results
 
     embedding_client = get_embedding_client()
     query_embedding = await get_embedding(embedding_client, message)
+    print(f"[RETRIEVAL] query='{message[:80]}...', mode={mode}, target_user_id={target_user_id}")
+    logger.info(f"Retrieval: query='{message[:80]}...', mode={mode}, user_id={target_user_id}")
 
     if mode == "hybrid":
-        raw = hybrid_search(token, user_id, query_embedding, message, match_count * 2)
-        if raw:
-            candidates = [chunk["content"] for chunk in raw]
-            client = get_gemini_client()
-            scored = await rerank_with_gemini(client, message, candidates, top_n=match_count)
+        # Run vector search (Qdrant) and FTS (Supabase) in parallel
+        vector_task = search_similar_chunks(target_user_id, query_embedding, match_count * 2)
+        fts_task = asyncio.to_thread(search_chunks_fts, token, target_user_id, message, match_count * 2)
+        vector_results, fts_results = await asyncio.gather(vector_task, fts_task)
+
+        print(f"[RETRIEVAL] Hybrid results: vector={len(vector_results)}, fts={len(fts_results)}")
+        logger.info(f"Hybrid retrieval: vector={len(vector_results)} results, fts={len(fts_results)} results")
+
+        if not vector_results and not fts_results:
+            print(f"[RETRIEVAL] WARNING: NO results from Qdrant or FTS. Documents may not be indexed for user_id={target_user_id}")
+            logger.warning("Hybrid retrieval: NO results from either Qdrant vector search or Supabase FTS. Check if documents are properly indexed.")
+            return []
+
+        # Reciprocal Rank Fusion (RRF) merge
+        rrf_k = 60
+        combined: dict[str, dict] = {}
+
+        for rank, chunk in enumerate(vector_results):
+            cid = chunk["id"]
+            combined[cid] = {"content": chunk["content"], "score": 1.0 / (rrf_k + rank + 1)}
+
+        for rank, chunk in enumerate(fts_results):
+            cid = chunk.get("id", f"fts_{rank}")
+            if cid in combined:
+                combined[cid]["score"] += 1.0 / (rrf_k + rank + 1)
+            else:
+                combined[cid] = {"content": chunk["content"], "score": 1.0 / (rrf_k + rank + 1)}
+
+        sorted_results = sorted(combined.values(), key=lambda x: x["score"], reverse=True)
+        candidates = [r["content"] for r in sorted_results[:match_count * 2]]
+        logger.info(f"Hybrid RRF merge: {len(combined)} unique candidates, top {len(candidates)} selected for reranking")
+
+        if candidates:
+            client = get_llm_client()
+            scored = await rerank_with_llm(client, message, candidates, top_n=match_count)
             results = [candidates[s["index"]] for s in scored if s["index"] < len(candidates)]
-            logger.info(f"Hybrid retrieval: {len(raw)} candidates -> {len(results)} reranked")
+            logger.info(f"Hybrid reranker: {len(scored)} scored -> {len(results)} final results")
             return results
-        logger.info("Hybrid: no FTS matches, falling back to vector")
-        chunks = search_similar_chunks(token, user_id, query_embedding, match_count)
+
+        # Fallback to vector-only
+        logger.warning("Hybrid: RRF merge produced 0 candidates, falling back to vector-only")
+        chunks = await search_similar_chunks(target_user_id, query_embedding, match_count)
         return [chunk["content"] for chunk in chunks]
 
     # mode == "vector"
-    chunks = search_similar_chunks(token, user_id, query_embedding, match_count)
+    chunks = await search_similar_chunks(target_user_id, query_embedding, match_count)
     results = [chunk["content"] for chunk in chunks]
     logger.info(f"Vector retrieval: {len(results)} chunks")
     return results
