@@ -1,22 +1,30 @@
 import { useState, type KeyboardEvent } from 'react'
 import { Send, FileSearch } from 'lucide-react'
 
+const RETRIEVAL_MODES = ['vector', 'fts', 'hybrid'] as const
+const RETRIEVAL_LABELS: Record<string, string> = {
+  vector: 'Vector',
+  fts: 'FTS',
+  hybrid: 'Hybrid',
+}
+
 export function ChatInput({
   onSend,
   disabled,
   hasDocuments,
 }: {
-  onSend: (msg: string, useDocuments: boolean) => void
+  onSend: (msg: string, useDocuments: boolean, retrievalMode: string) => void
   disabled: boolean
   hasDocuments: boolean
 }) {
   const [value, setValue] = useState('')
   const [useDocuments, setUseDocuments] = useState(true)
+  const [retrievalMode, setRetrievalMode] = useState<string>('hybrid')
 
   const handleSend = () => {
     const trimmed = value.trim()
     if (!trimmed || disabled) return
-    onSend(trimmed, hasDocuments && useDocuments)
+    onSend(trimmed, hasDocuments && useDocuments, retrievalMode)
     setValue('')
   }
 
@@ -29,6 +37,24 @@ export function ChatInput({
 
   return (
     <div className="border-t border-border p-4">
+      {hasDocuments && useDocuments && (
+        <div className="mx-auto mb-2 flex max-w-3xl items-center gap-1">
+          <span className="text-xs text-muted-foreground">Retrieval:</span>
+          {RETRIEVAL_MODES.map((mode) => (
+            <button
+              key={mode}
+              onClick={() => setRetrievalMode(mode)}
+              className={`rounded-md px-2 py-0.5 text-xs transition-colors ${
+                retrievalMode === mode
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-muted text-muted-foreground hover:bg-muted/80'
+              }`}
+            >
+              {RETRIEVAL_LABELS[mode]}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="mx-auto flex max-w-3xl items-end gap-2">
         {hasDocuments && (
           <button

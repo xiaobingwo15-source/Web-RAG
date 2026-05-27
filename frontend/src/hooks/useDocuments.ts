@@ -1,21 +1,19 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from './useAuth'
 import {
   uploadDocument as apiUpload,
   getDocuments as apiGetDocuments,
-  getDocumentStatus as apiGetStatus,
+  DuplicateError,
   type DocumentStatus,
 } from '@/lib/api'
 
 export function useDocuments() {
   const [documents, setDocuments] = useState<DocumentStatus[]>([])
   const [isUploading, setIsUploading] = useState(false)
-  const [indexingIds, setIndexingIds] = useState<Set<string>>(new Set())
+  const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null)
   const { session } = useAuth()
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const hasProcessed = documents.some((d) => d.status === 'processed' && !indexingIds.has(d.id))
-  const hasPending = documents.some((d) => d.status === 'pending')
+  const hasProcessed = documents.some((d) => d.status === 'processed')
 
   const fetchDocuments = useCallback(async () => {
     if (!session?.access_token) return
@@ -27,65 +25,27 @@ export function useDocuments() {
     }
   }, [session?.access_token])
 
-  const uploadDocument = async (file: File) => {
+  const uploadDocument = async (file: File, useOcr: boolean = false) => {
     if (!session?.access_token) return
     setIsUploading(true)
+    setDuplicateWarning(null)
     try {
-      const res = await apiUpload(file, session.access_token)
+      const res = await apiUpload(file, session.access_token, useOcr)
       setDocuments((prev) => [{ ...res, error_message: undefined }, ...prev])
     } catch (err) {
-      console.error('Upload failed:', err)
+      if (err instanceof DuplicateError) {
+        setDuplicateWarning(err.message)
+      } else {
+        console.error('Upload failed:', err)
+      }
     } finally {
       setIsUploading(false)
     }
   }
 
-  // Poll pending documents
-  useEffect(() => {
-    if (!hasPending || !session?.access_token) {
-      if (pollRef.current) {
-        clearInterval(pollRef.current)
-        pollRef.current = null
-      }
-      return
-    }
-
-    pollRef.current = setInterval(async () => {
-      const pending = documents.filter((d) => d.status === 'pending')
-      for (const doc of pending) {
-        try {
-          const updated = await apiGetStatus(doc.id, session.access_token)
-          if (updated.status === 'processed' && doc.status === 'pending') {
-            setIndexingIds((prev) => new Set(prev).add(doc.id))
-            setTimeout(() => {
-              setIndexingIds((prev) => {
-                const next = new Set(prev)
-                next.delete(doc.id)
-                return next
-              })
-            }, 8000)
-          }
-          setDocuments((prev) =>
-            prev.map((d) => (d.id === updated.id ? updated : d)),
-          )
-        } catch (err) {
-          console.error('Poll failed:', err)
-        }
-      }
-    }, 3000)
-
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current)
-        pollRef.current = null
-      }
-    }
-  }, [hasPending, documents, session?.access_token])
-
-  // Fetch on mount
   useEffect(() => {
     fetchDocuments()
   }, [fetchDocuments])
 
-  return { documents, uploadDocument, fetchDocuments, isUploading, hasProcessed, indexingIds }
+  return { documents, uploadDocument, fetchDocuments, isUploading, hasProcessed, duplicateWarning, clearDuplicateWarning: () => setDuplicateWarning(null) }
 }

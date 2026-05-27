@@ -1,29 +1,59 @@
 import { useState } from 'react'
 import { useChat } from '@/hooks/useChat'
 import { useDocuments } from '@/hooks/useDocuments'
+import { useThreads } from '@/hooks/useThreads'
 import { ChatSidebar } from '@/components/ChatSidebar'
 import { ChatMessage } from '@/components/ChatMessage'
 import { ChatInput } from '@/components/ChatInput'
-import { DocumentUpload } from '@/components/DocumentUpload'
+import { ChatHistoryPanel } from '@/components/ChatHistoryPanel'
 import { PanelRightOpen, PanelRightClose } from 'lucide-react'
 
 export function ChatPage() {
-  const { messages, sendMessage, isStreaming, clearMessages } = useChat()
-  const { documents, uploadDocument, isUploading, hasProcessed, indexingIds } = useDocuments()
-  const [showPanel, setShowPanel] = useState(false)
+  const { messages, sendMessage, isStreaming, clearMessages, loadThread } = useChat()
+  const { documents, uploadDocument, isUploading, hasProcessed, duplicateWarning, clearDuplicateWarning } = useDocuments()
+  const { threads, selectedThreadId, setSelectedThreadId, refreshThreads, removeThread } = useThreads()
+  const [showPanel, setShowPanel] = useState(true)
+
+  const handleNewChat = () => {
+    clearMessages()
+    setSelectedThreadId(null)
+  }
+
+  const handleSelectThread = (threadId: string) => {
+    setSelectedThreadId(threadId)
+    loadThread(threadId)
+  }
+
+  const handleDeleteThread = async (threadId: string) => {
+    await removeThread(threadId)
+    if (selectedThreadId === threadId) {
+      handleNewChat()
+    }
+  }
+
+  const handleSendMessage = async (content: string, useDocuments: boolean = false, retrievalMode: string = 'hybrid') => {
+    await sendMessage(content, useDocuments, retrievalMode)
+    refreshThreads()
+  }
 
   return (
     <div className="flex h-screen bg-background">
-      <ChatSidebar onNewChat={clearMessages} />
+      <ChatSidebar
+        documents={documents}
+        isUploading={isUploading}
+        onUpload={uploadDocument}
+        duplicateWarning={duplicateWarning}
+        onDismissWarning={clearDuplicateWarning}
+      />
       <main className="flex flex-1 flex-col">
-        <div className="flex items-center justify-between border-b border-border px-4 py-2">
+        <div className="flex items-center justify-between border-b border-border px-4 py-2 bg-muted/20">
           <span className="text-sm font-medium text-foreground">
             {hasProcessed ? 'Documents loaded' : 'No documents'}
           </span>
           <button
             onClick={() => setShowPanel((prev) => !prev)}
-            className="rounded-md p-1.5 text-muted-foreground hover:bg-muted"
-            title={showPanel ? 'Hide documents panel' : 'Show documents panel'}
+            className="rounded-md p-1.5 text-muted-foreground hover:bg-muted transition-colors cursor-pointer"
+            title={showPanel ? 'Hide chat history' : 'Show chat history'}
           >
             {showPanel ? (
               <PanelRightClose className="h-4 w-4" />
@@ -62,20 +92,17 @@ export function ChatPage() {
             )}
           </div>
           {showPanel && (
-            <div className="w-80 overflow-y-auto border-l border-border p-4">
-              <h3 className="mb-4 text-sm font-semibold text-foreground">
-                Document Upload
-              </h3>
-              <DocumentUpload
-                documents={documents}
-                isUploading={isUploading}
-                onUpload={uploadDocument}
-                indexingIds={indexingIds}
-              />
-            </div>
+            <ChatHistoryPanel
+              threads={threads}
+              selectedThreadId={selectedThreadId}
+              onSelectThread={handleSelectThread}
+              onDeleteThread={handleDeleteThread}
+              onNewChat={handleNewChat}
+              messages={messages}
+            />
           )}
         </div>
-        <ChatInput onSend={sendMessage} disabled={isStreaming} hasDocuments={hasProcessed} />
+        <ChatInput onSend={handleSendMessage} disabled={isStreaming} hasDocuments={hasProcessed} />
       </main>
     </div>
   )

@@ -1,77 +1,68 @@
-import io
-from google import genai
-from google.genai import types
+import hashlib
+import logging
+from app.services.text_extractor import extract_text, extract_text_with_ocr
+from app.services.chunker import chunk_text
+from app.services.embeddings import get_embedding_client, get_embeddings
+from app.services.metadata_extractor import extract_metadata
+from app.services.gemini import get_gemini_client
 from app.services.database import (
-    get_user_store,
-    create_store,
-    create_document,
-    get_document,
-    update_document_status,
+    insert_chunks, update_document_status, update_document_hash,
+    update_document_chunk_count, update_document_metadata, update_chunks_metadata,
 )
 
-
-async def get_or_create_store(client: genai.Client, access_token: str, user_id: str) -> str:
-    existing = get_user_store(access_token, user_id)
-    if existing:
-        return existing["store_name"]
-
-    store = await client.aio.file_search_stores.create(
-        config=types.CreateFileSearchStoreConfig(
-            display_name=f"user-{user_id[:8]}",
-        )
-    )
-    create_store(access_token, user_id, store.name, f"user-{user_id[:8]}")
-    return store.name
+logger = logging.getLogger(__name__)
 
 
-async def upload_document(
-    client: genai.Client,
+def compute_content_hash(file_bytes: bytes) -> str:
+    return hashlib.md5(file_bytes).hexdigest()
+
+
+async def process_document(
     access_token: str,
     user_id: str,
-    store_name: str,
-    filename: str,
+    document_id: str,
     file_bytes: bytes,
     mime_type: str,
+    use_ocr: bool = False,
 ) -> dict:
-    operation = await client.aio.file_search_stores.upload_to_file_search_store(
-        file_search_store_name=store_name,
-        file=io.BytesIO(file_bytes),
-        config=types.UploadToFileSearchStoreConfig(
-            mime_type=mime_type,
-            display_name=filename,
-        ),
-    )
+    try:
+        content_hash = compute_content_hash(file_bytes)
+        update_document_hash(access_token, document_id, content_hash)
 
-    store = get_user_store(access_token, user_id)
-    doc = create_document(
-        access_token,
-        user_id,
-        store["id"],
-        filename,
-        mime_type,
-        operation.name,
-    )
-    return doc
+        logger.info(f"Processing document {document_id}: extracting text (ocr={use_ocr})")
+        text = await extract_text_with_ocr(file_bytes, mime_type, use_ocr)
 
+        if not text.strip():
+            raise ValueError("No text content extracted from file")
 
-async def poll_document_status(client: genai.Client, access_token: str, document_id: str) -> dict:
-    doc = get_document(access_token, document_id)
-    if not doc:
-        return {"id": document_id, "status": "not_found", "error_message": "Document not found"}
+        logger.info(f"Document {document_id}: extracting metadata")
+        gemini_client = get_gemini_client()
+        metadata = await extract_metadata(gemini_client, text[:2000])
+        update_document_metadata(access_token, document_id, metadata)
+        logger.info(f"Document {document_id}: metadata extracted — {metadata}")
 
-    if doc["status"] != "pending":
-        return doc
+        logger.info(f"Document {document_id}: chunking text ({len(text)} chars)")
+        chunks = chunk_text(text)
+        logger.info(f"Document {document_id}: created {len(chunks)} chunks")
 
-    operation = types.UploadToFileSearchStoreOperation(name=doc["operation_name"])
-    result = await client.aio.operations.get(operation)
+        logger.info(f"Document {document_id}: generating embeddings")
+        client = get_embedding_client()
+        embeddings = await get_embeddings(client, chunks)
 
-    if result.done:
-        if result.error:
-            update_document_status(access_token, document_id, "failed", str(result.error))
-            doc["status"] = "failed"
-            doc["error_message"] = str(result.error)
-        else:
-            update_document_status(access_token, document_id, "processed")
-            doc["status"] = "processed"
+        chunk_data = [
+            {"content": chunk, "embedding": embedding, "chunk_index": i}
+            for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
+        ]
 
-    return doc
+        logger.info(f"Document {document_id}: storing {len(chunk_data)} chunks")
+        insert_chunks(access_token, user_id, document_id, chunk_data)
+        update_chunks_metadata(access_token, document_id, metadata)
+
+        update_document_chunk_count(access_token, document_id, len(chunk_data))
+        update_document_status(access_token, document_id, "processed")
+        return {"id": document_id, "status": "processed", "chunk_count": len(chunk_data)}
+
+    except Exception as e:
+        logger.error(f"Document {document_id} processing failed: {e}")
+        update_document_status(access_token, document_id, "failed", str(e))
+        return {"id": document_id, "status": "failed", "error_message": str(e)}

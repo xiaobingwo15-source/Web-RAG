@@ -13,7 +13,13 @@ class DocumentStatus(BaseModel):
     filename: str
     status: str
     error_message: Optional[str] = None
+    metadata: Optional[dict] = None
 
 
 class DocumentListResponse(BaseModel):
     documents: list[DocumentStatus]
+
+
+class DocumentMetadataResponse(BaseModel):
+    tags: list[str]
+    languages: list[str]

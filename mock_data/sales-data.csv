@@ -1,0 +1,49 @@
+Quarter,Region,Product,Units_Sold,Unit_Price_RMB,Revenue_RMB,Profit_Margin_pct,Key_Customer
+Q1 2025,South China,SmartEdge SE-Core,120,28000,3360000,42,Foxconn Shenzhen
+Q1 2025,South China,SmartEdge SE-Pro,45,68000,3060000,45,BYD Shenzhen
+Q1 2025,South China,IE-PLC 300,200,12800,2560000,38,Midea Foshan
+Q1 2025,East China,SmartEdge SE-Enterprise,8,188000,1504000,52,TSMC Shanghai
+Q1 2025,East China,IE-Vision M,60,38000,2280000,40,SAIC Motor
+Q1 2025,East China,IE-Robo 10,35,88000,3080000,36,Fanuc China
+Q1 2025,North China,IE-PLC 500,15,35000,525000,44,CRRC Beijing
+Q1 2025,North China,IE-Sense T100,500,850,425000,55,Sinopec
+Q1 2025,Europe,SmartEdge SE-Pro,20,68000,1360000,48,BMW Munich
+Q1 2025,Europe,IE-Vision L,5,85000,425000,41,Siemens AG
+Q1 2025,North America,IE-Robo 20,10,145000,1450000,34,Ford Detroit
+Q1 2025,Japan,IE-Predict Starter,15,36000,540000,60,Toyota Nagoya
+Q2 2025,South China,SmartEdge SE-Core,145,28000,4060000,42,Guangzhou Auto
+Q2 2025,South China,SmartEdge SE-Pro,52,68000,3536000,45,Huawei Dongguan
+Q2 2025,South China,IE-PLC 300,230,12800,2944000,38,Gree Electric
+Q2 2025,East China,SmartEdge SE-Enterprise,12,188000,2256000,52,SMIC Beijing
+Q2 2025,East China,IE-Vision M,75,38000,2850000,40,Geely Auto
+Q2 2025,East China,IE-Robo 10,42,88000,3696000,36,ABB China
+Q2 2025,North China,IE-PLC 500,22,35000,770000,44,CATL Beijing
+Q2 2025,North China,IE-Sense T100,620,850,527000,55,PetroChina
+Q2 2025,Europe,SmartEdge SE-Pro,28,68000,1904000,48,VW Wolfsburg
+Q2 2025,Europe,IE-Vision L,8,85000,680000,41,Bosch Stuttgart
+Q2 2025,North America,IE-Robo 20,14,145000,2030000,34,Tesla Fremont
+Q2 2025,Japan,IE-Predict Starter,22,36000,792000,60,Honda Suzuka
+Q3 2025,South China,SmartEdge SE-Core,168,28000,4704000,42,DJ Innovations
+Q3 2025,South China,SmartEdge SE-Pro,60,68000,4080000,45,ZTE Shenzhen
+Q3 2025,South China,IE-PLC 300,260,12800,3328000,38,TCL Huizhou
+Q3 2025,East China,SmartEdge SE-Enterprise,15,188000,2820000,52,SK Hynix Wuxi
+Q3 2025,East China,IE-Vision M,88,38000,3344000,40,NIO Hefei
+Q3 2025,East China,IE-Robo 10,55,88000,4840000,36,KUKA China
+Q3 2025,North China,IE-PLC 500,28,35000,980000,44,Baosteel
+Q3 2025,North China,IE-Sense T100,750,850,637500,55,CNOOC
+Q3 2025,Europe,SmartEdge SE-Pro,35,68000,2380000,48,Mercedes Stuttgart
+Q3 2025,Europe,IE-Vision L,12,85000,1020000,41,Continental Hanover
+Q3 2025,North America,IE-Robo 20,18,145000,2610000,34,GM Detroit
+Q3 2025,Japan,IE-Predict Professional,5,120000,600000,58,Panasonic Osaka
+Q4 2025,South China,SmartEdge SE-Core,195,28000,5460000,42,Xiaomi Wuhan
+Q4 2025,South China,SmartEdge SE-Pro,70,68000,4760000,45,OPPO Dongguan
+Q4 2025,South China,IE-PLC 300,300,12800,3840000,38,Haier Qingdao
+Q4 2025,East China,SmartEdge SE-Enterprise,18,188000,3384000,52,Hynix Nanjing
+Q4 2025,East China,IE-Vision M,100,38000,3800000,40,Xpeng Guangzhou
+Q4 2025,East China,IE-Robo 10,65,88000,5720000,36,Yaskawa China
+Q4 2025,North China,IE-PLC 500,35,35000,1225000,44,CNPC Beijing
+Q4 2025,North China,IE-Sense T100,900,850,765000,55,Shenhua Group
+Q4 2025,Europe,SmartEdge SE-Pro,42,68000,2856000,48,Audi Ingolstadt
+Q4 2025,Europe,IE-Vision L,15,85000,1275000,41,Philips Eindhoven
+Q4 2025,North America,IE-Robo 20,22,145000,3190000,34,Rivian Normal
+Q4 2025,Japan,IE-Predict Professional,8,120000,960000,58,Sony Tokyo

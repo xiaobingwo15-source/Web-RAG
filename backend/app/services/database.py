@@ -71,6 +71,12 @@ def get_user_threads(access_token: str, user_id: str) -> list[dict]:
     return result.data
 
 
+def delete_thread(access_token: str, thread_id: str) -> None:
+    db = get_user_db(access_token)
+    db.table("messages").delete().eq("thread_id", thread_id).execute()
+    db.table("threads").delete().eq("id", thread_id).execute()
+
+
 # --- File Search Store functions ---
 
 def get_user_store(access_token: str, user_id: str) -> dict | None:
@@ -147,3 +153,200 @@ def update_document_status(access_token: str, document_id: str, status: str, err
         .execute()
     )
     return result.data[0]
+
+
+def get_document_by_hash(access_token: str, user_id: str, content_hash: str) -> dict | None:
+    db = get_user_db(access_token)
+    result = (
+        db.table("documents")
+        .select("*")
+        .eq("user_id", user_id)
+        .eq("content_hash", content_hash)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def update_document_hash(access_token: str, document_id: str, content_hash: str) -> dict:
+    db = get_user_db(access_token)
+    result = (
+        db.table("documents")
+        .update({"content_hash": content_hash})
+        .eq("id", document_id)
+        .execute()
+    )
+    return result.data[0]
+
+
+def update_document_chunk_count(access_token: str, document_id: str, count: int) -> dict:
+    db = get_user_db(access_token)
+    result = (
+        db.table("documents")
+        .update({"chunk_count": count})
+        .eq("id", document_id)
+        .execute()
+    )
+    return result.data[0]
+
+
+def update_document_metadata(access_token: str, document_id: str, metadata: dict) -> dict:
+    db = get_user_db(access_token)
+    result = (
+        db.table("documents")
+        .update({"metadata": metadata})
+        .eq("id", document_id)
+        .execute()
+    )
+    return result.data[0]
+
+
+def update_chunks_metadata(access_token: str, document_id: str, metadata: dict) -> None:
+    db = get_user_db(access_token)
+    db.table("document_chunks").update({"metadata": metadata}).eq("document_id", document_id).execute()
+
+
+# --- Document chunk functions (pgvector RAG) ---
+
+def insert_chunks(access_token: str, user_id: str, document_id: str, chunks: list[dict]) -> list[dict]:
+    db = get_user_db(access_token)
+    rows = [
+        {
+            "user_id": user_id,
+            "document_id": document_id,
+            "content": chunk["content"],
+            "embedding": chunk["embedding"],
+            "chunk_index": chunk["chunk_index"],
+        }
+        for chunk in chunks
+    ]
+    result = db.table("document_chunks").insert(rows).execute()
+    return result.data
+
+
+def search_similar_chunks(access_token: str, user_id: str, query_embedding: list[float], match_count: int = 5) -> list[dict]:
+    db = get_user_db(access_token)
+    result = db.rpc(
+        "match_documents",
+        {
+            "query_embedding": query_embedding,
+            "match_user_id": user_id,
+            "match_count": match_count,
+        },
+    ).execute()
+    return result.data
+
+
+def search_similar_chunks_filtered(
+    access_token: str,
+    user_id: str,
+    query_embedding: list[float],
+    match_count: int = 5,
+    filter_tags: list[str] | None = None,
+    filter_language: str | None = None,
+) -> list[dict]:
+    db = get_user_db(access_token)
+    params: dict = {
+        "query_embedding": query_embedding,
+        "match_user_id": user_id,
+        "match_count": match_count,
+    }
+    if filter_tags:
+        params["filter_tags"] = filter_tags
+    if filter_language:
+        params["filter_language"] = filter_language
+    result = db.rpc("match_documents_filtered", params).execute()
+    return result.data
+
+
+def get_user_document_metadata(access_token: str, user_id: str) -> dict:
+    db = get_user_db(access_token)
+    result = (
+        db.table("documents")
+        .select("metadata")
+        .eq("user_id", user_id)
+        .execute()
+    )
+    all_tags: set[str] = set()
+    all_languages: set[str] = set()
+    for doc in result.data:
+        meta = doc.get("metadata", {})
+        all_tags.update(meta.get("tags", []))
+        lang = meta.get("language")
+        if lang:
+            all_languages.add(lang)
+    return {"tags": sorted(all_tags), "languages": sorted(all_languages)}
+
+
+def search_chunks_fts(access_token: str, user_id: str, query_text: str, match_count: int = 10) -> list[dict]:
+    db = get_user_db(access_token)
+    result = db.rpc(
+        "search_chunks_fts",
+        {
+            "search_query": query_text,
+            "match_user_id": user_id,
+            "match_count": match_count,
+        },
+    ).execute()
+    return result.data
+
+
+def hybrid_search(
+    access_token: str,
+    user_id: str,
+    query_embedding: list[float],
+    query_text: str,
+    match_count: int = 10,
+) -> list[dict]:
+    db = get_user_db(access_token)
+    result = db.rpc(
+        "hybrid_search",
+        {
+            "query_embedding": query_embedding,
+            "search_query": query_text,
+            "match_user_id": user_id,
+            "match_count": match_count,
+        },
+    ).execute()
+    return result.data
+
+
+def delete_document_chunks(access_token: str, document_id: str) -> None:
+    db = get_user_db(access_token)
+    db.table("document_chunks").delete().eq("document_id", document_id).execute()
+
+
+# --- Agent trace functions ---
+
+def save_agent_trace(
+    access_token: str,
+    user_id: str,
+    thread_id: str,
+    agent_name: str,
+    thought: str,
+    tool_used: str | None = None,
+    tool_input: str | None = None,
+    tool_output: str | None = None,
+) -> dict:
+    db = get_user_db(access_token)
+    result = db.table("agent_traces").insert({
+        "thread_id": thread_id,
+        "user_id": user_id,
+        "agent_name": agent_name,
+        "thought": thought,
+        "tool_used": tool_used,
+        "tool_input": tool_input,
+        "tool_output": tool_output,
+    }).execute()
+    return result.data[0]
+
+
+def get_agent_traces(access_token: str, thread_id: str) -> list[dict]:
+    db = get_user_db(access_token)
+    result = (
+        db.table("agent_traces")
+        .select("*")
+        .eq("thread_id", thread_id)
+        .order("created_at")
+        .execute()
+    )
+    return result.data
