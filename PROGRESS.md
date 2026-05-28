@@ -79,3 +79,17 @@ Use this progressive check-matrix to guide your technical environment helper ass
 - [x] Debug endpoint: `GET /api/documents/check-qdrant` to verify Qdrant indexing
 - [ ] **NEXT: Verify retrieval actually returns chunks (check-qdrant endpoint)**
 - [ ] **NEXT: End-to-end test — upload doc, ask question, confirm answer from document**
+
+### Module 10: Public Landing Page & RAG Chat Widget
+- [x] Landing page at `/` (public, no auth) with dark industrial PCB/manufacturing theme
+- [x] Routing: `/` → LandingPage, `/dashboard` → ProtectedRoute + RoleRedirect (preserves old behavior)
+- [x] Navbar: sticky nav with smooth-scroll anchor links (Solutions, Capabilities, Compliance, Support)
+- [x] HeroSection: hero banner with "View Catalog" → #solutions, "Technical Specs" → #capabilities
+- [x] ServicesSection: two PCBA product cards (Large Machine, Small Machine) with "Configure Component" and "Request Prototype" → #contact
+- [x] CapabilitiesSection: technical capabilities showcase
+- [x] ComplianceSection: certifications and standards
+- [x] Footer: company info, navigation links, contact details with `id="contact"` anchor target
+- [x] ChatWidget: floating FAB (bottom-right) → expandable chat panel with RAG streaming
+- [x] Anonymous auth: `supabase.auth.signInAnonymously()` on first message, fallback to "Sign in to chat"
+- [x] All non-functional buttons wired up: navbar links, hero CTAs, service buttons, footer anchors
+- [x] Material Design 3 dark theme with crosshair-corner decorations and dot-grid background

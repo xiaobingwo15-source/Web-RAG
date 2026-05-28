@@ -52,9 +52,12 @@ export function ServicesSection() {
             </div>
           </div>
           <div className="px-6 pb-6 md:px-8 md:pb-8">
-            <button className="w-full py-4 border border-outline text-on-surface font-semibold text-xs tracking-widest uppercase hover:bg-secondary hover:border-secondary hover:text-on-secondary transition-all duration-200">
+            <a
+              href="#contact"
+              className="w-full py-4 border border-outline text-on-surface font-semibold text-xs tracking-widest uppercase hover:bg-secondary hover:border-secondary hover:text-on-secondary transition-all duration-200 block text-center"
+            >
               Configure Component
-            </button>
+            </a>
           </div>
           <div className="absolute top-4 right-4 text-white/5 font-mono text-[60px] font-bold pointer-events-none select-none">
             01
@@ -97,9 +100,12 @@ export function ServicesSection() {
             </div>
           </div>
           <div className="px-6 pb-6 md:px-8 md:pb-8">
-            <button className="w-full py-4 border border-outline text-on-surface font-semibold text-xs tracking-widest uppercase hover:bg-primary hover:border-primary hover:text-on-primary transition-all duration-200">
+            <a
+              href="#contact"
+              className="w-full py-4 border border-outline text-on-surface font-semibold text-xs tracking-widest uppercase hover:bg-primary hover:border-primary hover:text-on-primary transition-all duration-200 block text-center"
+            >
               Request Prototype
-            </button>
+            </a>
           </div>
           <div className="absolute top-4 right-4 text-white/5 font-mono text-[60px] font-bold pointer-events-none select-none">
             02

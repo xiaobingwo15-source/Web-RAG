@@ -1,7 +1,7 @@
 import logging
 from collections.abc import AsyncGenerator
 from app.services.retrieval import retrieve_context
-from app.services.gemini import get_llm_client, generate_chat_response_stream
+from app.services.gemini import get_llm_client, generate_chat_response_stream, RAG_SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -12,11 +12,12 @@ async def execute(
     message: str,
     history: list,
     retrieval_mode: str = "hybrid",
+    target_user_id: str | None = None,
     images: list[str] | None = None,
 ) -> AsyncGenerator[dict, None]:
     yield {"type": "thought", "content": "Searching documents for relevant context..."}
 
-    context_chunks = await retrieve_context(token, user_id, message, mode=retrieval_mode)
+    context_chunks = await retrieve_context(token, user_id, message, mode=retrieval_mode, target_user_id=target_user_id)
     print(f"[DOC_RAG] Retrieved {len(context_chunks)} context chunks for user_id={user_id}")
 
     if not context_chunks:
@@ -27,5 +28,5 @@ async def execute(
     yield {"type": "thought", "content": f"Found {len(context_chunks)} relevant chunks. Generating answer..."}
 
     client = get_llm_client()
-    async for chunk in generate_chat_response_stream(client, message, history, context_chunks, images=images):
+    async for chunk in generate_chat_response_stream(client, message, history, context_chunks, images=images, system_prompt=RAG_SYSTEM_PROMPT):
         yield {"type": "token", "content": chunk}

@@ -7,11 +7,13 @@ from app.services.agents import doc_rag_agent, sql_sub_agent, web_search_agent
 logger = logging.getLogger(__name__)
 
 
-def _check_shared_docs_available(token: str, user_id: str) -> bool:
-    """Check if the user is a client with access to admin's shared knowledge base documents.
-    
-    Uses the service-role client (bypasses RLS) because the client's token
-    cannot read admin profiles/documents due to cascading RLS restrictions.
+def _resolve_target_user_id(token: str, user_id: str) -> tuple[bool, str | None]:
+    """Resolve the effective user_id for RAG retrieval.
+
+    For client users with access to admin's shared knowledge base, returns
+    the admin's user_id so retrieval searches the admin's documents.
+
+    Returns (use_documents, target_user_id).
     """
     try:
         from app.services.database import get_db, get_admin_user_id
@@ -24,10 +26,11 @@ def _check_shared_docs_available(token: str, user_id: str) -> bool:
                 docs = db.table("documents").select("id, status").eq("user_id", admin_id).execute()
                 has_processed = any(d.get("status") == "processed" for d in (docs.data or []))
                 logger.info(f"Client {user_id}: admin shared docs available={has_processed} (admin_id={admin_id}, count={len(docs.data or [])})")
-                return has_processed
+                if has_processed:
+                    return True, admin_id
     except Exception as e:
         logger.warning(f"Error checking shared docs for client: {e}")
-    return False
+    return False, None
 
 
 async def route_query(
@@ -60,14 +63,22 @@ async def execute(
 ) -> AsyncGenerator[dict, None]:
     client = get_llm_client()
 
-    # Auto-enable RAG for client users who have access to admin's shared knowledge base
-    if not use_documents:
-        if _check_shared_docs_available(token, user_id):
-            use_documents = True
-            logger.info(f"Auto-enabled RAG for client user {user_id} (admin shared docs detected)")
+    # Resolve target_user_id for client users — always, even when use_documents=True
+    # (frontend may cache use_documents=True from a previous request, but we still
+    # need to redirect to the admin's knowledge base for client users)
+    target_user_id = user_id
+    auto_enabled, resolved_id = _resolve_target_user_id(token, user_id)
+    if auto_enabled:
+        target_user_id = resolved_id
+        use_documents = True  # Always use RAG for clients with shared docs
 
     yield {"type": "thought", "content": "Analyzing query intent..."}
-    route = await route_query(message, use_documents, enable_sql, enable_web_search)
+
+    # Client users with shared docs always go through doc_rag — skip keyword routing
+    if use_documents:
+        route = "doc_rag"
+    else:
+        route = await route_query(message, use_documents, enable_sql, enable_web_search)
     print(f"[AGENT] Routed to: {route} (use_documents={use_documents}, enable_sql={enable_sql}, enable_web_search={enable_web_search})")
     yield {"type": "thought", "content": f"Routed to: {route}"}
 
@@ -79,7 +90,7 @@ async def execute(
             async for event in web_search_agent.execute(message, history, images=images):
                 yield event
         elif route == "doc_rag" and use_documents:
-            async for event in doc_rag_agent.execute(token, user_id, message, history, retrieval_mode, images=images):
+            async for event in doc_rag_agent.execute(token, user_id, message, history, retrieval_mode, target_user_id=target_user_id, images=images):
                 yield event
         else:
             from app.services.gemini import generate_chat_response_stream

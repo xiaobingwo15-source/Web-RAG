@@ -1,13 +1,12 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { Menu, X, Search } from 'lucide-react'
+import { Menu, X } from 'lucide-react'
 
 const NAV_LINKS = [
   { label: 'Solutions', href: '#solutions' },
-  { label: 'Hardware', href: '#hardware' },
   { label: 'Capabilities', href: '#capabilities' },
   { label: 'Compliance', href: '#compliance' },
-  { label: 'Support', href: '#support' },
+  { label: 'Support', href: '#contact' },
 ]
 
 export function Navbar() {
@@ -22,15 +21,14 @@ export function Navbar() {
 
   return (
     <nav
-      className={`fixed top-0 left-0 right-0 z-50 border-b transition-all duration-200 ${
-        scrolled
+      className={`fixed top-0 left-0 right-0 z-50 border-b transition-all duration-200 ${scrolled
           ? 'bg-surface/95 backdrop-blur-sm shadow-xl border-outline-variant py-2'
           : 'bg-surface border-outline-variant/30 py-4'
-      }`}
+        }`}
     >
       <div className="flex items-center justify-between px-6 md:px-12 w-full max-w-[1440px] mx-auto">
-        <a href="#" className="font-sans text-xl font-bold tracking-tight text-on-surface hover:opacity-90 active:scale-95 transition-all">
-          IE Industrial Tech
+        <a href="#" className="font-sans text-lg md:text-xl font-bold tracking-tight text-on-surface hover:opacity-90 active:scale-95 transition-all">
+          IE Industrial Electronics
         </a>
 
         {/* Desktop Links */}
@@ -46,19 +44,14 @@ export function Navbar() {
           ))}
         </div>
 
-        {/* Actions & Search */}
+        {/* Actions */}
         <div className="hidden md:flex items-center gap-4">
-          <div className="hidden lg:flex items-center bg-surface-container rounded px-3 py-1 border border-outline-variant">
-            <Search className="text-on-surface-variant h-4 w-4 mr-2" />
-            <input
-              type="text"
-              className="bg-transparent border-none text-xs focus:outline-none focus:ring-0 placeholder-on-surface-variant/50 w-32 text-on-surface"
-              placeholder="Search components..."
-            />
-          </div>
-          <button className="px-4 py-2 bg-secondary text-on-secondary font-semibold text-xs rounded-sm transition-all duration-200 hover:brightness-110 active:scale-95">
+          <a
+            href="#contact"
+            className="px-4 py-2 bg-secondary text-on-secondary font-semibold text-xs rounded-sm transition-all duration-200 hover:brightness-110 active:scale-95"
+          >
             Request Quote
-          </button>
+          </a>
           <Link
             to="/login"
             className="px-4 py-2 border border-outline-variant text-on-surface font-semibold text-xs rounded-sm hover:bg-surface-variant transition-all duration-200 active:scale-95"
@@ -93,12 +86,13 @@ export function Navbar() {
           </div>
 
           <div className="flex flex-col gap-3 pt-4 border-t border-outline-variant">
-            <button
+            <a
+              href="#contact"
               onClick={() => setMobileOpen(false)}
               className="w-full py-3 bg-secondary text-on-secondary font-semibold text-xs rounded-sm text-center"
             >
               Request Quote
-            </button>
+            </a>
             <Link
               to="/login"
               onClick={() => setMobileOpen(false)}

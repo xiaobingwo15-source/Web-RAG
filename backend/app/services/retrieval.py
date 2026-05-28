@@ -1,8 +1,7 @@
 import asyncio
 import logging
 from app.services.embeddings import get_embedding_client, get_embedding
-from app.services.reranker import rerank_with_llm
-from app.services.gemini import get_llm_client
+from app.services.reranker import rerank_with_cohere
 from app.services.qdrant_db import search_similar_chunks
 from app.services.database import search_chunks_fts
 
@@ -15,22 +14,23 @@ async def retrieve_context(
     message: str,
     mode: str = "hybrid",
     match_count: int = 5,
+    target_user_id: str | None = None,
 ) -> list[str]:
-    target_user_id = user_id
-
-    # Check if user is a client, if so retrieval should ground on the shared admin knowledge base
-    try:
-        from app.services.supabase import get_supabase_client_with_token
-        from app.services.database import get_admin_user_id
-        db = get_supabase_client_with_token(token)
-        profile = db.table("profiles").select("role").eq("id", user_id).single().execute()
-        if profile.data and profile.data.get("role") == "client":
-            admin_id = get_admin_user_id(token)
-            if admin_id:
-                target_user_id = admin_id
-                logger.info(f"Redirecting RAG search to admin shared knowledge base: {admin_id}")
-    except Exception as e:
-        logger.warning(f"Error checking user role in retrieve_context: {e}")
+    if target_user_id is None:
+        target_user_id = user_id
+        # Check if user is a client, if so retrieval should ground on the shared admin knowledge base
+        try:
+            from app.services.supabase import get_supabase_client_with_token
+            from app.services.database import get_admin_user_id
+            db = get_supabase_client_with_token(token)
+            profile = db.table("profiles").select("role").eq("id", user_id).single().execute()
+            if profile.data and profile.data.get("role") == "client":
+                admin_id = get_admin_user_id(token)
+                if admin_id:
+                    target_user_id = admin_id
+                    logger.info(f"Redirecting RAG search to admin shared knowledge base: {admin_id}")
+        except Exception as e:
+            logger.warning(f"Error checking user role in retrieve_context: {e}")
 
     if mode == "fts":
         chunks = await asyncio.to_thread(search_chunks_fts, token, target_user_id, message, match_count)
@@ -38,16 +38,17 @@ async def retrieve_context(
         logger.info(f"FTS retrieval: {len(results)} chunks")
         return results
 
-    embedding_client = get_embedding_client()
-    query_embedding = await get_embedding(embedding_client, message)
     print(f"[RETRIEVAL] query='{message[:80]}...', mode={mode}, target_user_id={target_user_id}")
     logger.info(f"Retrieval: query='{message[:80]}...', mode={mode}, user_id={target_user_id}")
 
     if mode == "hybrid":
-        # Run vector search (Qdrant) and FTS (Supabase) in parallel
-        vector_task = search_similar_chunks(target_user_id, query_embedding, match_count * 2)
+        # FTS doesn't need the embedding — run it concurrently with embedding generation
+        embedding_task = get_embedding(get_embedding_client(), message)
         fts_task = asyncio.to_thread(search_chunks_fts, token, target_user_id, message, match_count * 2)
-        vector_results, fts_results = await asyncio.gather(vector_task, fts_task)
+        query_embedding, fts_results = await asyncio.gather(embedding_task, fts_task)
+
+        # Vector search starts only after embedding completes
+        vector_results = await search_similar_chunks(target_user_id, query_embedding, match_count * 2)
 
         print(f"[RETRIEVAL] Hybrid results: vector={len(vector_results)}, fts={len(fts_results)}")
         logger.info(f"Hybrid retrieval: vector={len(vector_results)} results, fts={len(fts_results)} results")
@@ -77,8 +78,7 @@ async def retrieve_context(
         logger.info(f"Hybrid RRF merge: {len(combined)} unique candidates, top {len(candidates)} selected for reranking")
 
         if candidates:
-            client = get_llm_client()
-            scored = await rerank_with_llm(client, message, candidates, top_n=match_count)
+            scored = await rerank_with_cohere(message, candidates, top_n=match_count)
             results = [candidates[s["index"]] for s in scored if s["index"] < len(candidates)]
             logger.info(f"Hybrid reranker: {len(scored)} scored -> {len(results)} final results")
             return results
@@ -89,6 +89,7 @@ async def retrieve_context(
         return [chunk["content"] for chunk in chunks]
 
     # mode == "vector"
+    query_embedding = await get_embedding(get_embedding_client(), message)
     chunks = await search_similar_chunks(target_user_id, query_embedding, match_count)
     results = [chunk["content"] for chunk in chunks]
     logger.info(f"Vector retrieval: {len(results)} chunks")

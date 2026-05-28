@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import logging
 from app.services.text_extractor import extract_text, extract_text_with_ocr
@@ -55,12 +56,16 @@ async def process_document(
             for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
         ]
 
-        logger.info(f"Document {document_id}: storing {len(chunk_data)} chunks in Qdrant")
-        await insert_chunks(user_id, document_id, chunk_data)
-        await update_chunks_metadata(document_id, metadata)
+        logger.info(f"Document {document_id}: storing {len(chunk_data)} chunks in Qdrant + Supabase FTS")
 
-        logger.info(f"Document {document_id}: storing chunk content in Supabase for FTS")
-        insert_chunks_for_fts(access_token, user_id, document_id, chunk_data)
+        async def _qdrant_store():
+            await insert_chunks(user_id, document_id, chunk_data)
+            await update_chunks_metadata(document_id, metadata)
+
+        await asyncio.gather(
+            _qdrant_store(),
+            asyncio.to_thread(insert_chunks_for_fts, access_token, user_id, document_id, chunk_data),
+        )
 
         update_document_chunk_count(access_token, document_id, len(chunk_data))
         update_document_status(access_token, document_id, "processed")

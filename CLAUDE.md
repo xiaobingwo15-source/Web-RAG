@@ -69,5 +69,21 @@ Before planning, implementing, debugging, reviewing, or executing any task — *
 4. **Verification** — Run network, API hook, and UI sanity tests.
 5. **Iteration** — Tweak code configurations based on performance verification feedback.
 
+## Frontend Routing
+| Path | Component | Auth | Notes |
+|------|-----------|------|-------|
+| `/` | `LandingPage` | None | Public landing page with embedded chat widget |
+| `/login` | `LoginPage` | None | Email/password sign in |
+| `/dashboard` | `RoleRedirect` | Required | Redirects admin → `/admin`, client → `/chat` |
+| `/admin` | `AdminPage` | Required + Admin | Document upload, conversation viewer, API settings |
+| `/chat` | `ChatPage` | Required | Client-facing RAG chat interface |
+
+## Landing Page Architecture
+- **Theme**: Dark industrial PCB/manufacturing aesthetic (Material Design 3 tokens in `index.css`)
+- **Sections**: Navbar → HeroSection → ServicesSection → CapabilitiesSection → ComplianceSection → Footer
+- **Chat Widget**: Floating FAB at bottom-right, uses `useAnonymousChat` hook with Supabase anonymous sign-in
+- **Design tokens**: `--color-surface`, `--color-on-surface`, `--color-secondary` (#ffb77d), `--color-primary` (#9fcaff)
+- **Custom CSS**: `.crosshair-corner` class for technical bracket decorations on cards
+
 ## Progress
 Reference `PROGRESS.md` to see exactly which module layers are locked in or currently under active development.

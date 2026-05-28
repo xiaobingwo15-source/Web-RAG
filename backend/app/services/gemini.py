@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import httpx
 from openai import AsyncOpenAI, APIError, RateLimitError
 from langfuse import observe, get_client
 from app.config import Settings
@@ -15,26 +16,34 @@ BACKOFF_BASE = 1.0
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
+_llm_client: AsyncOpenAI | None = None
+
 RAG_SYSTEM_PROMPT = (
-    "CRITICAL INSTRUCTION: You are a document-based assistant. You MUST ONLY answer using the reference documents provided below. "
-    "If the documents do not contain enough information to answer the question, you MUST respond with: "
+    "CRITICAL INSTRUCTION: You are a document-based assistant. You MUST ONLY answer "
+    "using the reference documents provided below. If the documents do not contain "
+    "enough information to answer the question, you MUST respond with: "
     "\"I couldn't find relevant information in your uploaded documents to answer this question.\" "
     "DO NOT use your training data, general knowledge, or external information. "
     "DO NOT make up or infer information that is not explicitly stated in the documents. "
-    "When referencing information, mention which document it came from."
+    "When referencing information, mention which document it came from. "
+    "Format your answer as a clean bullet list. Avoid unnecessary symbols."
 )
 
 
 def get_llm_client() -> AsyncOpenAI:
-    settings = Settings()
-    return AsyncOpenAI(
-        api_key=settings.get_openrouter_api_key,
-        base_url=OPENROUTER_BASE_URL,
-        default_headers={
-            "HTTP-Referer": settings.frontend_url,
-            "X-Title": "Web-RAG",
-        },
-    )
+    global _llm_client
+    if _llm_client is None:
+        settings = Settings()
+        _llm_client = AsyncOpenAI(
+            api_key=settings.get_openrouter_api_key,
+            base_url=OPENROUTER_BASE_URL,
+            default_headers={
+                "HTTP-Referer": settings.frontend_url,
+                "X-Title": "Web-RAG",
+            },
+            timeout=httpx.Timeout(timeout=60.0, connect=10.0),
+        )
+    return _llm_client
 
 
 def _build_messages(
@@ -188,12 +197,21 @@ async def generate_chat_response_stream(
                 )
 
                 full_response = ""
-                async for chunk in stream:
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        text = chunk.choices[0].delta.content
-                        full_response += text
-                        tokens_yielded = True
-                        yield text
+                try:
+                    async with asyncio.timeout(120):
+                        async for chunk in stream:
+                            if chunk.choices and chunk.choices[0].delta.content:
+                                text = chunk.choices[0].delta.content
+                                full_response += text
+                                tokens_yielded = True
+                                yield text
+                except TimeoutError:
+                    logger.error(f"Stream timeout on {model_name} after 120s (tokens_yielded={tokens_yielded})")
+                    if not tokens_yielded:
+                        raise  # retry with next model
+                    # Partial response — end gracefully
+                    langfuse.update_current_generation(output={"response": full_response})
+                    return
 
                 langfuse.update_current_generation(output={"response": full_response})
                 return
