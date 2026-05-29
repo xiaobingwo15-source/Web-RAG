@@ -15,22 +15,35 @@ export async function streamChat(
   images?: string[],
   onThought?: (thought: string) => void,
 ) {
-  const response = await fetch('/api/chat/stream', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      message,
-      thread_id: threadId,
-      use_documents: useDocuments,
-      retrieval_mode: retrievalMode,
-      ...(images && images.length > 0 ? { images } : {}),
-    }),
-  })
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 120_000)
+
+  let response: Response
+  try {
+    response = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        message,
+        thread_id: threadId,
+        use_documents: useDocuments,
+        retrieval_mode: retrievalMode,
+        ...(images && images.length > 0 ? { images } : {}),
+      }),
+      signal: controller.signal,
+    })
+  } catch (err) {
+    clearTimeout(timeout)
+    const isAbort = (err as Error).name === 'AbortError'
+    onError(new Error(isAbort ? 'Request timed out' : (err as Error).message))
+    return
+  }
 
   if (!response.ok) {
+    clearTimeout(timeout)
     onError(new Error(`HTTP ${response.status}`))
     return
   }
@@ -38,14 +51,17 @@ export async function streamChat(
   const reader = response.body?.getReader()
   const decoder = new TextDecoder()
 
-  if (!reader) return
+  if (!reader) {
+    onDone()
+    return
+  }
 
   try {
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
       const chunk = decoder.decode(value, { stream: true })
-      const lines = chunk.split('\n')
+      const lines = chunk.split('\n').map(l => l.trimEnd())
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           try {
@@ -54,11 +70,13 @@ export async function streamChat(
             if (data.type === 'error') {
               const err: StreamError = new Error(data.content)
               err.error_code = data.error_code
+              clearTimeout(timeout)
               onError(err)
               return
             } else if (data.type === 'thought' && onThought) {
               onThought(data.content)
             } else if (data.done || data.type === 'done') {
+              clearTimeout(timeout)
               onDone()
               return
             } else if (data.content) {
@@ -70,8 +88,10 @@ export async function streamChat(
         }
       }
     }
+    clearTimeout(timeout)
     onDone()
   } catch (err) {
+    clearTimeout(timeout)
     onError(err as Error)
   }
 }
@@ -217,6 +237,18 @@ export async function getDocumentMetadata(token: string): Promise<DocumentMetada
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!response.ok) throw new Error(`Fetch metadata failed: ${response.status}`)
+  return response.json()
+}
+
+export async function deleteDocument(
+  documentId: string,
+  token: string,
+): Promise<{ message: string; filename: string }> {
+  const response = await fetch(`/api/documents/${documentId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Delete document failed: ${response.status}`)
   return response.json()
 }
 

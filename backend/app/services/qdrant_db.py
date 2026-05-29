@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 import time
@@ -19,11 +20,12 @@ async def get_qdrant_client() -> AsyncQdrantClient:
         _client = AsyncQdrantClient(
             url=settings.get_qdrant_url,
             api_key=settings.get_qdrant_api_key or None,
+            timeout=10,
         )
     return _client
 
 
-async def ensure_collection():
+async def _ensure_collection_inner():
     client = await get_qdrant_client()
     collections = await client.get_collections()
     names = [c.name for c in collections.collections]
@@ -54,6 +56,15 @@ async def ensure_collection():
         logger.info("Created Qdrant collection '%s' with payload indexes", COLLECTION_NAME)
     else:
         logger.info("Qdrant collection '%s' already exists", COLLECTION_NAME)
+
+
+async def ensure_collection():
+    try:
+        await asyncio.wait_for(_ensure_collection_inner(), timeout=15)
+    except asyncio.TimeoutError:
+        logger.warning("Qdrant connection timed out — server starting in degraded mode")
+    except Exception as e:
+        logger.warning("Qdrant unavailable: %s — server starting in degraded mode", e)
 
 
 async def insert_chunks(

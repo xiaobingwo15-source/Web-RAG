@@ -6,7 +6,7 @@ from app.models.documents import DocumentUploadResponse, DocumentStatus, Documen
 from app.services.file_search_store import process_document, compute_content_hash
 from app.services.database import (
     create_document, get_user_documents, get_document, get_user_store, create_store,
-    get_document_by_hash, get_user_document_metadata,
+    get_document_by_hash, get_user_document_metadata, delete_document,
 )
 
 router = APIRouter()
@@ -146,3 +146,24 @@ async def check_qdrant(user=Depends(get_current_user)):
         "chunk_count": chunk_count,
         "samples": samples,
     }
+
+
+@router.delete("/{document_id}")
+async def delete_document_endpoint(document_id: str, user=Depends(get_current_user)):
+    """Delete a document and all its chunks (admin only)."""
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    doc = get_document(user.access_token, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    # Delete vectors from Qdrant
+    from app.services.qdrant_db import delete_document_chunks as qdrant_delete
+    await qdrant_delete(document_id)
+
+    # Delete from Supabase (chunks + document row)
+    deleted = delete_document(user.access_token, document_id)
+    filename = deleted["filename"] if deleted else doc["filename"]
+
+    return {"message": f"Document '{filename}' deleted", "filename": filename}

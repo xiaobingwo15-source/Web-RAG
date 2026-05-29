@@ -36,6 +36,7 @@ import {
   EyeOff,
   Save,
   AlertTriangle,
+  FileJson,
 } from 'lucide-react'
 
 export function AdminPage() {
@@ -44,6 +45,7 @@ export function AdminPage() {
   const {
     documents,
     uploadDocument,
+    deleteDocument,
     isUploading,
     duplicateWarning,
     clearDuplicateWarning,
@@ -262,6 +264,15 @@ export function AdminPage() {
           </button>
         </div>
 
+        {/* API Docs link */}
+        <button
+          onClick={() => navigate('/admin/scalar')}
+          className="flex w-full items-center gap-2 border-b border-border px-4 py-2.5 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+        >
+          <FileJson className="h-4 w-4" />
+          <span className="text-xs font-semibold">API Docs</span>
+        </button>
+
         {/* Shared Knowledge Base documents section */}
         <div className="flex items-center gap-2 border-b border-border px-4 py-2.5 bg-muted/5">
           <Database className="h-4 w-4 text-primary" />
@@ -273,6 +284,7 @@ export function AdminPage() {
             documents={documents}
             isUploading={isUploading}
             onUpload={uploadDocument}
+            onDelete={deleteDocument}
             duplicateWarning={duplicateWarning}
             onDismissWarning={clearDuplicateWarning}
             uploadFailure={uploadFailure}

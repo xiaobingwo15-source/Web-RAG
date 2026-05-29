@@ -1,5 +1,5 @@
-import { useRef, useState, type DragEvent } from 'react'
-import { Upload, FileText, CheckCircle, XCircle, Loader2, AlertTriangle } from 'lucide-react'
+import { useRef, useState, useEffect, type DragEvent } from 'react'
+import { Upload, FileText, CheckCircle, XCircle, Loader2, AlertTriangle, Trash2 } from 'lucide-react'
 import type { DocumentStatus } from '@/lib/api'
 
 const ACCEPTED_TYPES = ['.pdf', '.md', '.txt', '.csv', '.xlsx', '.xls']
@@ -8,6 +8,7 @@ export function DocumentUpload({
   documents,
   isUploading,
   onUpload,
+  onDelete,
   duplicateWarning,
   onDismissWarning,
   uploadFailure,
@@ -16,6 +17,7 @@ export function DocumentUpload({
   documents: DocumentStatus[]
   isUploading: boolean
   onUpload: (file: File, useOcr?: boolean) => void
+  onDelete?: (documentId: string) => Promise<{ message: string; filename: string }>
   duplicateWarning?: string | null
   onDismissWarning?: () => void
   uploadFailure?: { filename: string; error: string } | null
@@ -23,6 +25,39 @@ export function DocumentUpload({
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [useOcr, setUseOcr] = useState(false)
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current)
+    }
+  }, [])
+
+  const handleDeleteClick = async (docId: string) => {
+    if (!onDelete) return
+    if (confirmDeleteId === docId) {
+      // Second click — actually delete
+      setConfirmDeleteId(null)
+      setDeletingId(docId)
+      setDeleteError(null)
+      try {
+        await onDelete(docId)
+      } catch (err: any) {
+        setDeleteError(err.message || 'Failed to delete document')
+      } finally {
+        setDeletingId(null)
+      }
+    } else {
+      // First click — enter confirm state
+      setDeleteError(null)
+      setConfirmDeleteId(docId)
+      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current)
+      confirmTimerRef.current = setTimeout(() => setConfirmDeleteId(null), 3000)
+    }
+  }
 
   const handleDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault()
@@ -84,6 +119,18 @@ export function DocumentUpload({
         </div>
       )}
 
+      {deleteError && (
+        <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2">
+          <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+          <div className="flex-1">
+            <p className="text-xs text-red-200">{deleteError}</p>
+          </div>
+          <button onClick={() => setDeleteError(null)} className="text-red-400 hover:text-red-200">
+            <XCircle className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       <div
         onDrop={handleDrop}
         onDragOver={handleDragOver}
@@ -128,7 +175,7 @@ export function DocumentUpload({
           {documents.map((doc) => (
             <div
               key={doc.id}
-              className="rounded-md border border-border px-3 py-2"
+              className="group rounded-md border border-border px-3 py-2"
             >
               <div className="flex items-center gap-2">
                 <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -136,6 +183,23 @@ export function DocumentUpload({
                   {doc.metadata?.title || doc.filename}
                 </span>
                 {statusIcon(doc.status)}
+                {onDelete && (
+                  deletingId === doc.id ? (
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  ) : (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleDeleteClick(doc.id) }}
+                      className={`h-4 w-4 shrink-0 transition-colors ${
+                        confirmDeleteId === doc.id
+                          ? 'text-red-400 hover:text-red-300'
+                          : 'text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-red-400'
+                      }`}
+                      title={confirmDeleteId === doc.id ? 'Click again to confirm' : 'Delete document'}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  )
+                )}
               </div>
               {doc.metadata?.tags && doc.metadata.tags.length > 0 && (
                 <div className="mt-1.5 flex flex-wrap gap-1">

@@ -17,7 +17,7 @@ async def execute(
 
     if not results:
         yield {"type": "thought", "content": "No web results found."}
-        yield {"type": "token", "content": "I couldn't find relevant information on the web for your question."}
+        yield {"type": "token", "content": "I appreciate you reaching out. I wasn't able to find reliable information on that topic at the moment. Is there anything else I can assist you with?"}
         return
 
     yield {"type": "thought", "content": f"Found {len(results)} results. Synthesizing answer..."}

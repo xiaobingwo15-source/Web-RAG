@@ -88,14 +88,23 @@ class Settings(BaseSettings):
 @functools.lru_cache(maxsize=128)
 def _get_cached_setting(key_name: str, expiry_time: float) -> str | None:
     try:
-        from supabase import create_client
-        # We must load the base supabase URL & service role key directly from environment
-        # to construct the client to read system settings.
+        import httpx
         settings = Settings()
-        db = create_client(settings.supabase_url, settings.supabase_service_role_key)
-        result = db.table("system_settings").select("value").eq("key", key_name).execute()
-        if result.data and len(result.data) > 0:
-            return result.data[0]["value"]
+        url = f"{settings.supabase_url}/rest/v1/system_settings"
+        headers = {
+            "apikey": settings.supabase_service_role_key,
+            "Authorization": f"Bearer {settings.supabase_service_role_key}",
+        }
+        resp = httpx.get(
+            url,
+            headers=headers,
+            params={"select": "value", "key": f"eq.{key_name}"},
+            timeout=5.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data and len(data) > 0:
+            return data[0]["value"]
     except Exception:
         pass
     return None

@@ -3,20 +3,18 @@ import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { isAdmin } from '@/lib/roles'
 import { 
-  User, 
   Lock, 
   Mail, 
   ArrowRight, 
-  ArrowLeft, 
-  ShieldCheck, 
-  Database, 
-  LockKeyhole, 
-  Menu
+  ArrowLeft,
+  Eye,
+  EyeOff
 } from 'lucide-react'
 
 export function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [isSignUp, setIsSignUp] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -64,21 +62,13 @@ export function LoginPage() {
       <header className="fixed top-0 left-0 right-0 z-50 bg-surface border-b border-outline-variant">
         <div className="flex justify-between items-center w-full px-6 md:px-12 h-16 max-w-[1440px] mx-auto">
           <Link to="/" className="text-lg md:text-xl font-bold text-primary hover:opacity-90 active:scale-95 transition-all">
-            IE Industrial Portal
+            IE Industrial Electronics
           </Link>
           
-          <nav className="hidden md:flex gap-6 items-center">
-            <Link to="/" className="text-xs font-semibold text-on-surface-variant hover:text-primary transition-all uppercase tracking-wider">
-              Main Site
-            </Link>
-            <a href="#support" className="text-xs font-semibold text-on-surface-variant hover:text-primary transition-all uppercase tracking-wider">
-              Technical Support
-            </a>
-          </nav>
-          
-          <div className="md:hidden">
-            <Menu className="h-5 w-5 text-primary cursor-pointer" />
-          </div>
+          <Link to="/" className="flex items-center gap-1.5 text-xs font-semibold text-on-surface-variant hover:text-primary transition-all uppercase tracking-wider group">
+            <ArrowLeft className="h-3.5 w-3.5 group-hover:-translate-x-0.5 transition-transform" />
+            <span>Back to main site</span>
+          </Link>
         </div>
       </header>
 
@@ -120,30 +110,26 @@ export function LoginPage() {
             {/* Card Header */}
             <div className="mb-6">
               <h1 className="text-2xl font-bold tracking-tight text-on-surface mb-1">
-                {isSignUp ? 'Initialize Access' : 'Systems Access'}
+                {isSignUp ? 'Create Portal Account' : 'Portal Access'}
               </h1>
               <p className="text-sm text-on-surface-variant">
                 {isSignUp 
-                  ? 'Create your secure industrial node credentials.' 
-                  : 'Secure terminal for Industrial Tech Corp personnel.'}
+                  ? 'Initialize your secure portal access credentials.' 
+                  : 'Sign in to access your secure workspace.'}
               </p>
             </div>
 
             {/* Form */}
             <form onSubmit={handleSubmit} className="space-y-6">
               
-              {/* Email / Operator ID Field */}
+              {/* Email Field */}
               <div className="space-y-2">
                 <label className="text-xs font-bold text-on-surface-variant uppercase tracking-wider block" htmlFor="email">
-                  {isSignUp ? 'Network Email Identifier' : 'Operator ID / Email'}
+                  Email Address
                 </label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                    {isSignUp ? (
-                      <Mail className="h-4.5 w-4.5 text-outline" />
-                    ) : (
-                      <User className="h-4.5 w-4.5 text-outline" />
-                    )}
+                    <Mail className="h-4.5 w-4.5 text-outline" />
                   </div>
                   <input
                     id="email"
@@ -152,7 +138,7 @@ export function LoginPage() {
                     onChange={(e) => setEmail(e.target.value)}
                     required
                     className="w-full bg-surface-container-lowest border border-outline-variant text-on-surface text-sm rounded-none py-3 pl-11 pr-4 outline-none focus:border-primary transition-all duration-200"
-                    placeholder={isSignUp ? 'user@industrial.tech' : 'name@ind-tech.com'}
+                    placeholder="name@example.com"
                   />
                 </div>
               </div>
@@ -161,12 +147,12 @@ export function LoginPage() {
               <div className="space-y-2">
                 <div className="flex justify-between items-center">
                   <label className="text-xs font-bold text-on-surface-variant uppercase tracking-wider block" htmlFor="password">
-                    {isSignUp ? 'Security Passphrase' : 'Access Token / Password'}
+                    Password
                   </label>
                   {!isSignUp && (
-                    <a href="#forgot" className="text-xs text-primary hover:underline transition-all">
+                    <Link to="/forgot-password" className="text-xs text-primary hover:underline transition-all">
                       Forgot?
-                    </a>
+                    </Link>
                   )}
                 </div>
                 <div className="relative">
@@ -175,14 +161,25 @@ export function LoginPage() {
                   </div>
                   <input
                     id="password"
-                    type="password"
+                    type={showPassword ? 'text' : 'password'}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
                     minLength={6}
-                    className="w-full bg-surface-container-lowest border border-outline-variant text-on-surface text-sm rounded-none py-3 pl-11 pr-4 outline-none focus:border-primary transition-all duration-200"
-                    placeholder={isSignUp ? '••••••••••••' : '••••••••'}
+                    className="w-full bg-surface-container-lowest border border-outline-variant text-on-surface text-sm rounded-none py-3 pl-11 pr-11 outline-none focus:border-primary transition-all duration-200"
+                    placeholder="••••••••"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center cursor-pointer focus:outline-none"
+                  >
+                    {showPassword ? (
+                      <EyeOff className="h-4.5 w-4.5 text-white hover:opacity-80 transition-opacity" />
+                    ) : (
+                      <Eye className="h-4.5 w-4.5 text-white hover:opacity-80 transition-opacity" />
+                    )}
+                  </button>
                 </div>
               </div>
 
@@ -201,10 +198,10 @@ export function LoginPage() {
                   className="group w-full bg-primary-container text-on-primary-container font-bold text-xs py-3.5 flex justify-center items-center gap-2 hover:bg-opacity-90 transition-all active:scale-[0.98] uppercase tracking-widest cursor-pointer disabled:opacity-50"
                 >
                   {loading ? (
-                    'AUTHORIZING NODE...'
+                    'Authorizing...'
                   ) : (
                     <>
-                      <span>{isSignUp ? 'CREATE ACCOUNT' : 'Initialize Login'}</span>
+                      <span>{isSignUp ? 'Create Account' : 'Sign In'}</span>
                       <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
                     </>
                   )}
@@ -222,7 +219,7 @@ export function LoginPage() {
                       className="text-on-surface-variant font-medium hover:text-primary transition-colors text-xs flex items-center justify-center gap-1 group mx-auto cursor-pointer"
                     >
                       <ArrowLeft className="h-3.5 w-3.5 group-hover:-translate-x-0.5 transition-transform" />
-                      <span>Back to Login</span>
+                      <span>Back to Sign In</span>
                     </button>
                   ) : (
                     <p className="text-xs text-on-surface-variant">
@@ -242,64 +239,19 @@ export function LoginPage() {
                 </div>
               </div>
             </form>
-
-            {/* Technical Footer of Card */}
-            {isSignUp ? (
-              <div className="mt-8 pt-4 border-t border-outline-variant/30 flex justify-between items-center">
-                <div className="flex flex-col">
-                  <span className="text-[10px] font-bold text-outline tracking-wider uppercase">SECURITY STATUS</span>
-                  <span className="text-secondary flex items-center gap-1.5 font-medium text-xs">
-                    <span className="w-1.5 h-1.5 bg-secondary rounded-full animate-pulse"></span>
-                    AES-256 Encrypted
-                  </span>
-                </div>
-                <div className="flex gap-2">
-                  <div className="w-8 h-8 rounded border border-outline-variant flex items-center justify-center text-outline hover:text-primary hover:border-primary transition-all cursor-pointer">
-                    <ShieldCheck className="h-4.5 w-4.5" />
-                  </div>
-                  <div className="w-8 h-8 rounded border border-outline-variant flex items-center justify-center text-outline hover:text-primary hover:border-primary transition-all cursor-pointer">
-                    <Database className="h-4.5 w-4.5" />
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="mt-8 pt-4 border-t border-outline-variant/30 flex justify-between items-center opacity-40 text-[10px] font-bold text-outline">
-                <div className="flex items-center gap-1">
-                  <LockKeyhole className="h-3 w-3" />
-                  <span>SSL 256-BIT ENCRYPTION</span>
-                </div>
-                <div>v4.1.0-NODE_8</div>
-              </div>
-            )}
           </div>
         </div>
-
-        {/* System Coordinates (Sign Up View Coordinate marker) */}
-        {isSignUp && (
-          <div className="hidden xl:block absolute bottom-12 left-12 z-10">
-            <div className="flex flex-col gap-1 text-outline/40">
-              <span className="text-[10px] font-bold tracking-wider">SYSTEM_COORD</span>
-              <span className="font-mono text-[11px]">40.7128° N, 74.0060° W</span>
-            </div>
-          </div>
-        )}
       </main>
 
       {/* Global Page Footer */}
       <footer className="w-full mt-auto bg-surface-container border-t border-outline-variant z-10">
-        <div className="flex flex-col md:flex-row justify-between items-center w-full px-6 md:px-12 py-6 max-w-[1440px] mx-auto gap-4">
-          <div className="flex flex-col md:items-start items-center">
-            <span className="text-sm font-bold text-primary mb-0.5">IE Industrial Portal</span>
-            <span className="text-xs text-on-surface-variant">© 2026 Industrial Tech Corp. All rights reserved.</span>
-          </div>
-          <div className="flex flex-wrap justify-center gap-6 text-xs text-on-surface-variant font-semibold uppercase tracking-wider">
-            <a className="hover:text-secondary transition-colors" href="#privacy">Privacy Policy</a>
-            <a className="hover:text-secondary transition-colors" href="#terms">Terms of Service</a>
-            <a className="hover:text-secondary transition-colors" href="#security">Security Architecture</a>
-            <a className="hover:text-secondary transition-colors" href="#support">Contact Support</a>
-          </div>
+        <div className="flex justify-center items-center w-full px-6 py-6 max-w-[1440px] mx-auto">
+          <span className="text-xs text-on-surface-variant">
+            © 2026 IE Industrial Electronics. All rights reserved.
+          </span>
         </div>
       </footer>
     </div>
   )
 }
+

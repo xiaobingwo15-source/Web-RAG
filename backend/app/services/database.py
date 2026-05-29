@@ -256,6 +256,21 @@ def delete_document_chunks(access_token: str, document_id: str) -> None:
     db.table("document_chunks").delete().eq("document_id", document_id).execute()
 
 
+def delete_document(access_token: str, document_id: str) -> dict | None:
+    """Delete a document and its chunks from Supabase. Returns the deleted document info."""
+    db = get_user_db(access_token)
+    # Fetch first so we can return info after deletion
+    doc = db.table("documents").select("id, filename, user_id").eq("id", document_id).execute()
+    if not doc.data:
+        return None
+    doc_info = doc.data[0]
+    # Delete chunks first (explicit, even though FK cascade exists)
+    db.table("document_chunks").delete().eq("document_id", document_id).execute()
+    # Delete the document row
+    db.table("documents").delete().eq("id", document_id).execute()
+    return doc_info
+
+
 # --- Agent trace functions ---
 
 def save_agent_trace(

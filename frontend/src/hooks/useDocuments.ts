@@ -4,6 +4,7 @@ import {
   uploadDocument as apiUpload,
   getDocuments as apiGetDocuments,
   getDocumentStatus,
+  deleteDocument as apiDeleteDocument,
   DuplicateError,
   type DocumentStatus,
 } from '@/lib/api'
@@ -57,6 +58,13 @@ export function useDocuments() {
     }
   }
 
+  const deleteDocument = async (documentId: string): Promise<{ message: string; filename: string }> => {
+    if (!session?.access_token) throw new Error('Not authenticated')
+    const result = await apiDeleteDocument(documentId, session.access_token)
+    setDocuments((prev) => prev.filter((d) => d.id !== documentId))
+    return result
+  }
+
   useEffect(() => {
     fetchDocuments()
   }, [fetchDocuments])
@@ -64,6 +72,7 @@ export function useDocuments() {
   return {
     documents: documents.filter((d) => d.status !== 'failed'),
     uploadDocument,
+    deleteDocument,
     fetchDocuments,
     isUploading,
     hasProcessed,

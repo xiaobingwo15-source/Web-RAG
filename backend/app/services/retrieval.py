@@ -48,7 +48,7 @@ async def retrieve_context(
         query_embedding, fts_results = await asyncio.gather(embedding_task, fts_task)
 
         # Vector search starts only after embedding completes
-        vector_results = await search_similar_chunks(target_user_id, query_embedding, match_count * 2)
+        vector_results = await search_similar_chunks(target_user_id, query_embedding, match_count * 2, similarity_threshold=0.5)
 
         print(f"[RETRIEVAL] Hybrid results: vector={len(vector_results)}, fts={len(fts_results)}")
         logger.info(f"Hybrid retrieval: vector={len(vector_results)} results, fts={len(fts_results)} results")
@@ -85,12 +85,12 @@ async def retrieve_context(
 
         # Fallback to vector-only
         logger.warning("Hybrid: RRF merge produced 0 candidates, falling back to vector-only")
-        chunks = await search_similar_chunks(target_user_id, query_embedding, match_count)
+        chunks = await search_similar_chunks(target_user_id, query_embedding, match_count, similarity_threshold=0.5)
         return [chunk["content"] for chunk in chunks]
 
     # mode == "vector"
     query_embedding = await get_embedding(get_embedding_client(), message)
-    chunks = await search_similar_chunks(target_user_id, query_embedding, match_count)
+    chunks = await search_similar_chunks(target_user_id, query_embedding, match_count, similarity_threshold=0.5)
     results = [chunk["content"] for chunk in chunks]
     logger.info(f"Vector retrieval: {len(results)} chunks")
     return results

@@ -1,6 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from scalar_fastapi import get_scalar_api_reference
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import Settings
 from app.services.langfuse import configure_langfuse, get_langfuse
@@ -20,7 +21,12 @@ configure_langfuse()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await ensure_collection()
+    try:
+        await ensure_collection()
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "Startup: Qdrant init failed (%s) — running in degraded mode", e
+        )
     yield
     # Flush pending Langfuse events on shutdown
     langfuse = get_langfuse()
@@ -43,3 +49,11 @@ app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
 app.include_router(tools.router, prefix="/api/tools", tags=["tools"])
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
+
+
+@app.get("/scalar", include_in_schema=False)
+async def scalar_html():
+    return get_scalar_api_reference(
+        openapi_url=app.openapi_url,
+        title=app.title,
+    )

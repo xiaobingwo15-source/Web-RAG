@@ -10,6 +10,16 @@ logger = logging.getLogger(__name__)
 COHERE_MODEL = "rerank-english-v3.0"
 
 
+def _keyword_overlap_score(query: str, document: str) -> float:
+    """Simple term-overlap scoring when Cohere is unavailable."""
+    query_terms = set(query.lower().split())
+    doc_terms = set(document.lower().split())
+    if not query_terms:
+        return 0.0
+    overlap = query_terms & doc_terms
+    return len(overlap) / len(query_terms)
+
+
 def _get_cohere_client() -> cohere.ClientV2:
     return cohere.ClientV2(api_key=os.environ["COHERE_API_KEY"])
 
@@ -34,8 +44,13 @@ async def rerank_with_cohere(
             return_documents=False,
         )
     except Exception as e:
-        logger.warning(f"Cohere rerank failed, using default scoring: {e}")
-        return [{"index": i, "score": 1.0 - i * 0.1} for i in range(min(top_n, len(documents)))]
+        logger.warning(f"Cohere rerank failed, using keyword-overlap fallback: {e}")
+        scored = [
+            {"index": i, "score": _keyword_overlap_score(query, doc)}
+            for i, doc in enumerate(documents)
+        ]
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        return scored[:top_n]
 
     scored = [{"index": r.index, "score": r.relevance_score} for r in response.results]
     logger.info(f"Cohere reranked {len(documents)} documents -> top {len(scored)}")
