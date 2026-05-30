@@ -1,6 +1,7 @@
 import type { ChatMessage as ChatMessageType } from '@/hooks/useChat'
 import { ThoughtTrace } from '@/components/ThoughtTrace'
 import { Shield } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
 
 export function ChatMessage({ message }: { message: ChatMessageType }) {
   const isUser = message.role === 'user'
@@ -31,7 +32,13 @@ export function ChatMessage({ message }: { message: ChatMessageType }) {
             </div>
           )}
           {message.content && (
-            <p className="whitespace-pre-wrap text-sm">{message.content}</p>
+            isUser ? (
+              <p className="whitespace-pre-wrap text-sm">{message.content}</p>
+            ) : (
+              <div className="chat-markdown text-sm">
+                <ReactMarkdown>{message.content}</ReactMarkdown>
+              </div>
+            )
           )}
         </div>
         {!isUser && message.adminResponse && (

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { AnonymousMessage } from '@/hooks/useAnonymousChat'
+import ReactMarkdown from 'react-markdown'
 
 export function ChatWidgetMessages({
   messages,
@@ -38,7 +39,15 @@ export function ChatWidgetMessages({
                 : 'bg-muted text-foreground'
             }`}
           >
-            {msg.content || (
+            {msg.content ? (
+              msg.role === 'user' ? (
+                msg.content
+              ) : (
+                <div className="chat-markdown">
+                  <ReactMarkdown>{msg.content}</ReactMarkdown>
+                </div>
+              )
+            ) : (
               <span className="inline-block animate-pulse">...</span>
             )}
           </div>
