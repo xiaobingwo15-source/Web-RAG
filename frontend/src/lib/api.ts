@@ -230,7 +230,7 @@ export async function getDocumentStatus(
 }
 
 export async function getDocuments(token: string): Promise<DocumentListResponse> {
-  const response = await fetch('/api/documents/', {
+  const response = await fetch('/api/documents', {
     headers: { Authorization: `Bearer ${token}` },
   })
 
@@ -444,4 +444,3 @@ export async function submitAdminResponse(
   if (!response.ok) throw new Error(`Submit admin response failed: ${response.status}`)
   return response.json()
 }
-

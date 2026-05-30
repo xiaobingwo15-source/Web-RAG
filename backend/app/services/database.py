@@ -158,6 +158,22 @@ def update_document_status(access_token: str, document_id: str, status: str, err
     return result.data[0]
 
 
+def mark_document_retrying(access_token: str, document_id: str, filename: str, mime_type: str) -> dict:
+    db = get_user_db(access_token)
+    result = (
+        db.table("documents")
+        .update({
+            "filename": filename,
+            "mime_type": mime_type,
+            "status": "pending",
+            "error_message": None,
+        })
+        .eq("id", document_id)
+        .execute()
+    )
+    return result.data[0]
+
+
 def get_document_by_hash(access_token: str, user_id: str, content_hash: str) -> dict | None:
     db = get_user_db(access_token)
     result = (
@@ -551,4 +567,3 @@ def clear_thread_attention_flags(thread_id: str) -> None:
     """Clear all needs_attention flags in a thread."""
     db = get_db()
     db.table("messages").update({"needs_attention": False}).eq("thread_id", thread_id).eq("needs_attention", True).execute()
-

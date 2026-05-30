@@ -7,7 +7,7 @@ from app.services.file_search_store import process_document, compute_content_has
 from app.services.database import (
     create_document, get_user_documents, get_document, get_user_store, create_store,
     get_document_by_hash, get_user_document_metadata, delete_document,
-    get_document_chunks,
+    get_document_chunks, mark_document_retrying,
 )
 
 router = APIRouter()
@@ -56,7 +56,7 @@ async def upload(
 
     content_hash = compute_content_hash(file_bytes)
     existing = get_document_by_hash(token, user.id, content_hash)
-    if existing:
+    if existing and existing["status"] != "failed":
         raise HTTPException(
             status_code=409,
             detail={
@@ -70,14 +70,17 @@ async def upload(
     if not store:
         store = create_store(token, user.id, "", "local-qdrant")
 
-    doc = create_document(
-        token, user.id, store["id"],
-        file.filename or "unnamed", mime_type, "",
-    )
+    if existing:
+        doc = mark_document_retrying(token, existing["id"], file.filename or "unnamed", mime_type)
+    else:
+        doc = create_document(
+            token, user.id, store["id"],
+            file.filename or "unnamed", mime_type, "",
+        )
 
-    await process_document(token, user.id, doc["id"], file_bytes, mime_type, use_ocr=use_ocr)
+    process_result = await process_document(token, user.id, doc["id"], file_bytes, mime_type, use_ocr=use_ocr)
 
-    return DocumentUploadResponse(id=doc["id"], filename=doc["filename"], status="processed")
+    return DocumentUploadResponse(id=doc["id"], filename=doc["filename"], status=process_result["status"])
 
 
 @router.get("/status/{document_id}", response_model=DocumentStatus)
@@ -93,7 +96,8 @@ async def status(document_id: str, user=Depends(get_current_user)):
     )
 
 
-@router.get("/", response_model=DocumentListResponse)
+@router.get("", response_model=DocumentListResponse)
+@router.get("/", response_model=DocumentListResponse, include_in_schema=False)
 async def list_documents(user=Depends(get_current_user)):
     target_user_id = user.id
     if user.role == "client":
