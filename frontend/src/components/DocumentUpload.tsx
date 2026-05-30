@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect, type DragEvent } from 'react'
-import { Upload, FileText, CheckCircle, XCircle, Loader2, AlertTriangle, Trash2 } from 'lucide-react'
+import { Upload, FileText, CheckCircle, XCircle, Loader2, AlertTriangle, Trash2, Eye } from 'lucide-react'
 import type { DocumentStatus } from '@/lib/api'
+import { DocumentPreviewModal } from './DocumentPreviewModal'
 
 const ACCEPTED_TYPES = ['.pdf', '.md', '.txt', '.csv', '.xlsx', '.xls']
 
@@ -13,6 +14,7 @@ export function DocumentUpload({
   onDismissWarning,
   uploadFailure,
   onDismissFailure,
+  token,
 }: {
   documents: DocumentStatus[]
   isUploading: boolean
@@ -22,12 +24,14 @@ export function DocumentUpload({
   onDismissWarning?: () => void
   uploadFailure?: { filename: string; error: string } | null
   onDismissFailure?: () => void
+  token?: string
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [useOcr, setUseOcr] = useState(false)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [previewDocId, setPreviewDocId] = useState<string | null>(null)
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -183,6 +187,15 @@ export function DocumentUpload({
                   {doc.metadata?.title || doc.filename}
                 </span>
                 {statusIcon(doc.status)}
+                {token && doc.status === 'processed' && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setPreviewDocId(doc.id) }}
+                    className="h-4 w-4 shrink-0 text-muted-foreground opacity-0 transition-colors group-hover:opacity-100 hover:text-primary"
+                    title="Preview document"
+                  >
+                    <Eye className="h-4 w-4" />
+                  </button>
+                )}
                 {onDelete && (
                   deletingId === doc.id ? (
                     <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -221,6 +234,14 @@ export function DocumentUpload({
             </div>
           ))}
         </div>
+      )}
+
+      {previewDocId && token && (
+        <DocumentPreviewModal
+          documentId={previewDocId}
+          token={token}
+          onClose={() => setPreviewDocId(null)}
+        />
       )}
     </div>
   )

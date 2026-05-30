@@ -5,6 +5,7 @@ from app.services.text_extractor import extract_text, extract_text_with_ocr
 from app.services.chunker import chunk_text
 from app.services.embeddings import get_embedding_client, get_embeddings
 from app.services.metadata_extractor import extract_metadata
+from app.services.document_enrichment import emphasize_document_text
 from app.services.gemini import get_llm_client
 from app.services.database import (
     insert_chunks_for_fts, update_document_status, update_document_hash,
@@ -43,6 +44,8 @@ async def process_document(
         update_document_metadata(access_token, document_id, metadata)
         logger.info(f"Document {document_id}: metadata extracted — {metadata}")
 
+        text = emphasize_document_text(text, metadata)
+
         logger.info(f"Document {document_id}: chunking text ({len(text)} chars)")
         chunks = chunk_text(text)
         logger.info(f"Document {document_id}: created {len(chunks)} chunks")
@@ -56,16 +59,15 @@ async def process_document(
             for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
         ]
 
-        logger.info(f"Document {document_id}: storing {len(chunk_data)} chunks in Qdrant + Supabase FTS")
+        logger.info(f"Document {document_id}: storing {len(chunk_data)} chunks in Supabase FTS + Qdrant")
 
-        async def _qdrant_store():
-            await insert_chunks(user_id, document_id, chunk_data)
-            await update_chunks_metadata(document_id, metadata)
+        # Insert into Supabase first to get canonical chunk IDs
+        fts_rows = await asyncio.to_thread(insert_chunks_for_fts, access_token, user_id, document_id, chunk_data)
 
-        await asyncio.gather(
-            _qdrant_store(),
-            asyncio.to_thread(insert_chunks_for_fts, access_token, user_id, document_id, chunk_data),
-        )
+        # Use Supabase IDs as Qdrant point IDs so RRF merge can match across stores
+        supabase_ids = [str(row["id"]) for row in fts_rows]
+        await insert_chunks(user_id, document_id, chunk_data, point_ids=supabase_ids)
+        await update_chunks_metadata(document_id, metadata)
 
         update_document_chunk_count(access_token, document_id, len(chunk_data))
         update_document_status(access_token, document_id, "processed")

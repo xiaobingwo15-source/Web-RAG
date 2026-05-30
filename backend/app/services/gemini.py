@@ -27,6 +27,9 @@ RAG_SYSTEM_PROMPT = (
     "files\", or \"retrieval\" — speak naturally as a person would.\n\n"
     "DO NOT use your training data, general knowledge, or external information. "
     "DO NOT make up or infer information that is not explicitly stated in the documents.\n\n"
+    "Reference chunks may contain double-asterisk importance markers like **Title** or "
+    "**Keywords**. Treat those markers only as internal relevance hints. Do NOT reproduce "
+    "double asterisks or bold Markdown markers in the client-facing answer.\n\n"
     "You must always structure your output using clean, well-spaced Markdown. Adhere "
     "strictly to the following formatting rules:\n\n"
     "1. **Context Grounding**: Begin your answer by explicitly stating the document "
@@ -38,12 +41,38 @@ RAG_SYSTEM_PROMPT = (
     "   - Use bullet points (`-`) to isolate specific parameters, conditions, or penalties.\n\n"
     "3. **Visual Highlights**:\n"
     "   - Wrap general industry-specific nomenclature or roles in single quotes (e.g., 'offensive player', 'the paint').\n"
-    "   - Wrap critical constraints, absolute limits, and negative rules in double asterisks for bold emphasis (e.g., **not allowed to remain for more than three seconds**, **loss of the ball**).\n\n"
+    "   - State critical constraints, absolute limits, and negative rules in plain text without double asterisks.\n\n"
     "4. **Disambiguation Guardrails**: If a query matches multiple completely separate "
     "contexts across the documents, list them cleanly using `###` headers for each domain, "
     "append a `**Note:**` callout for critical warnings, and end with an explicit "
     "clarification question using a `####` header asking the user which context they meant."
 )
+
+
+def strip_importance_markers(text: str) -> str:
+    return text.replace("**", "")
+
+
+class ImportanceMarkerStripper:
+    def __init__(self) -> None:
+        self._pending_star = False
+
+    def feed(self, text: str) -> str:
+        if not text:
+            return ""
+
+        combined = ("*" if self._pending_star else "") + text
+        self._pending_star = combined.endswith("*")
+        if self._pending_star:
+            combined = combined[:-1]
+
+        return strip_importance_markers(combined)
+
+    def flush(self) -> str:
+        if not self._pending_star:
+            return ""
+        self._pending_star = False
+        return "*"
 
 
 def get_llm_client() -> AsyncOpenAI:
@@ -156,7 +185,7 @@ async def generate_chat_response(
                     max_tokens=2048,
                 )
 
-                output = response.choices[0].message.content or ""
+                output = strip_importance_markers(response.choices[0].message.content or "")
                 langfuse.update_current_generation(output={"response": output})
                 return output
 
@@ -197,6 +226,7 @@ async def generate_chat_response_stream(
 
     last_error = None
     tokens_yielded = False
+    marker_stripper = ImportanceMarkerStripper()
 
     for model_name in _models_to_try():
         for attempt in range(MAX_RETRIES):
@@ -217,7 +247,9 @@ async def generate_chat_response_stream(
                     async with asyncio.timeout(120):
                         async for chunk in stream:
                             if chunk.choices and chunk.choices[0].delta.content:
-                                text = chunk.choices[0].delta.content
+                                text = marker_stripper.feed(chunk.choices[0].delta.content)
+                                if not text:
+                                    continue
                                 full_response += text
                                 tokens_yielded = True
                                 yield text
@@ -226,8 +258,17 @@ async def generate_chat_response_stream(
                     if not tokens_yielded:
                         raise  # retry with next model
                     # Partial response — end gracefully
+                    tail = marker_stripper.flush()
+                    if tail:
+                        full_response += tail
+                        yield tail
                     langfuse.update_current_generation(output={"response": full_response})
                     return
+
+                tail = marker_stripper.flush()
+                if tail:
+                    full_response += tail
+                    yield tail
 
                 langfuse.update_current_generation(output={"response": full_response})
                 return

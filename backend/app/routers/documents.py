@@ -7,6 +7,7 @@ from app.services.file_search_store import process_document, compute_content_has
 from app.services.database import (
     create_document, get_user_documents, get_document, get_user_store, create_store,
     get_document_by_hash, get_user_document_metadata, delete_document,
+    get_document_chunks,
 )
 
 router = APIRouter()
@@ -145,6 +146,28 @@ async def check_qdrant(user=Depends(get_current_user)):
         "user_id": target_user_id,
         "chunk_count": chunk_count,
         "samples": samples,
+    }
+
+
+@router.get("/{document_id}/chunks")
+async def get_chunks(document_id: str, user=Depends(get_current_user)):
+    """Return all text chunks for a document (admin only). Used for document preview."""
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    doc = get_document(user.access_token, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    chunks = get_document_chunks(user.access_token, document_id)
+    full_text = "\n\n".join(chunk["content"] for chunk in chunks)
+
+    return {
+        "document_id": document_id,
+        "filename": doc["filename"],
+        "metadata": doc.get("metadata"),
+        "chunk_count": len(chunks),
+        "full_text": full_text,
     }
 
 

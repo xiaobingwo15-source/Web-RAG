@@ -12,21 +12,61 @@ async def execute(
     history: list,
     images: list[str] | None = None,
 ) -> AsyncGenerator[dict, None]:
-    yield {"type": "thought", "content": "Analyzing question for SQL query generation..."}
+    yield {
+        "type": "thought",
+        "content": f"Preparing to query database for: \"{message[:80]}{'...' if len(message) > 80 else ''}\"",
+        "action_type": "analyzing",
+        "action_source": "sql",
+        "action_data": {"question": message},
+    }
 
     client = get_llm_client()
     schema = get_schema_description()
 
-    yield {"type": "thought", "content": "Generating SQL query..."}
+    yield {
+        "type": "thought",
+        "content": "Generating SQL from schema...",
+        "action_type": "generating_sql",
+        "action_source": "sql",
+    }
     sql = await generate_sql(client, message, schema)
-    yield {"type": "thought", "content": f"Generated SQL: {sql}"}
+    yield {
+        "type": "thought",
+        "content": f"Generated SQL: {sql}",
+        "action_type": "reading",
+        "action_source": "sql",
+        "action_data": {"sql": sql},
+    }
 
-    yield {"type": "thought", "content": "Executing query..."}
+    yield {
+        "type": "thought",
+        "content": "Executing query...",
+        "action_type": "executing_sql",
+        "action_source": "sql",
+        "action_data": {"sql": sql},
+    }
     try:
         result = execute_readonly_sql(sql)
-        yield {"type": "thought", "content": f"Query returned {len(result['rows'])} rows."}
+        yield {
+            "type": "thought",
+            "content": f"Query returned {len(result['rows'])} rows.",
+            "action_type": "reading",
+            "action_source": "sql",
+            "action_data": {
+                "row_count": len(result["rows"]),
+                "columns": result["columns"],
+                "rows": result["rows"][:10],
+                "sql": sql
+            },
+        }
     except Exception as e:
-        yield {"type": "thought", "content": f"SQL execution failed: {e}"}
+        yield {
+            "type": "thought",
+            "content": f"SQL execution failed: {e}",
+            "action_type": "no_results",
+            "action_source": "sql",
+            "action_data": {"error": str(e)},
+        }
         yield {"type": "token", "content": f"I encountered an error querying the database: {e}"}
         return
 
@@ -34,7 +74,13 @@ async def execute(
     for row in result["rows"][:20]:
         result_text += str(row) + "\n"
 
-    yield {"type": "thought", "content": "Summarizing results..."}
+    yield {
+        "type": "thought",
+        "content": "Summarizing results...",
+        "action_type": "synthesizing",
+        "action_source": "sql",
+        "action_data": {"sql": sql, "row_count": len(result["rows"])},
+    }
     summary_prompt = f"Based on the following database query results, answer the user's question.\n\nQuestion: {message}\n\n{result_text}"
 
     async for chunk in generate_chat_response_stream(client, summary_prompt, history, images=images):

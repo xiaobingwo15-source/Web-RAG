@@ -72,7 +72,13 @@ async def execute(
         target_user_id = resolved_id
         use_documents = True  # Always use RAG for clients with shared docs
 
-    yield {"type": "thought", "content": "Analyzing query intent..."}
+    yield {
+        "type": "thought",
+        "content": f"Analyzing query: \"{message[:80]}{'...' if len(message) > 80 else ''}\"",
+        "action_type": "analyzing",
+        "action_source": "supervisor",
+        "action_data": {"query": message},
+    }
 
     # Client users with shared docs always go through doc_rag — skip keyword routing
     if use_documents:
@@ -80,7 +86,21 @@ async def execute(
     else:
         route = await route_query(message, use_documents, enable_sql, enable_web_search)
     print(f"[AGENT] Routed to: {route} (use_documents={use_documents}, enable_sql={enable_sql}, enable_web_search={enable_web_search})")
-    yield {"type": "thought", "content": f"Routed to: {route}"}
+
+    route_labels = {
+        "doc_rag": "Document knowledge base",
+        "sql": "Database query",
+        "web_search": "Web search",
+        "general": "General assistant",
+    }
+    route_label = route_labels.get(route, route)
+    yield {
+        "type": "thought",
+        "content": f"Routing to: {route_label}",
+        "action_type": "routing",
+        "action_source": "supervisor",
+        "action_data": {"route": route},
+    }
 
     try:
         if route == "sql" and enable_sql:

@@ -2,6 +2,12 @@ export interface StreamError extends Error {
   error_code?: string
 }
 
+export interface ActionMeta {
+  type: string
+  source: string
+  data: Record<string, unknown>
+}
+
 export async function streamChat(
   message: string,
   threadId: string | null,
@@ -13,7 +19,7 @@ export async function streamChat(
   useDocuments: boolean = false,
   retrievalMode: string = 'hybrid',
   images?: string[],
-  onThought?: (thought: string) => void,
+  onThought?: (thought: string, action?: ActionMeta) => void,
 ) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 120_000)
@@ -74,7 +80,15 @@ export async function streamChat(
               onError(err)
               return
             } else if (data.type === 'thought' && onThought) {
-              onThought(data.content)
+              if (data.action_type) {
+                onThought(data.content, {
+                  type: data.action_type,
+                  source: data.action_source,
+                  data: data.action_data || {},
+                })
+              } else {
+                onThought(data.content)
+              }
             } else if (data.done || data.type === 'done') {
               clearTimeout(timeout)
               onDone()
@@ -249,6 +263,30 @@ export async function deleteDocument(
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!response.ok) throw new Error(`Delete document failed: ${response.status}`)
+  return response.json()
+}
+
+export interface DocumentChunksResponse {
+  document_id: string
+  filename: string
+  metadata?: {
+    title?: string
+    summary?: string
+    tags?: string[]
+    language?: string
+  }
+  chunk_count: number
+  full_text: string
+}
+
+export async function fetchDocumentChunks(
+  documentId: string,
+  token: string,
+): Promise<DocumentChunksResponse> {
+  const response = await fetch(`/api/documents/${documentId}/chunks`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Fetch chunks failed: ${response.status}`)
   return response.json()
 }
 

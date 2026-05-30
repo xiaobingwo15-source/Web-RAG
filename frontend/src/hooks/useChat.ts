@@ -1,12 +1,14 @@
 import { useState, useCallback, useRef } from 'react'
 import { useAuth } from './useAuth'
 import { streamChat, getThreadMessages, type StreamError } from '@/lib/api'
+import type { AgentAction, ActionType, ActionSource } from '@/lib/agent-types'
 
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   images?: string[]
   thoughts?: string[]
+  actions?: AgentAction[]
   adminResponse?: string
 }
 
@@ -15,6 +17,8 @@ export function useChat() {
   const [isStreaming, setIsStreaming] = useState(false)
   const [threadId, setThreadId] = useState<string | null>(null)
   const currentThoughts = useRef<string[]>([])
+  const currentActionRef = useRef<AgentAction | null>(null)
+  const actionIdCounter = useRef(0)
   const { session } = useAuth()
 
   const loadThread = useCallback(async (id: string) => {
@@ -63,8 +67,9 @@ export function useChat() {
     setMessages((prev) => [...prev, userMsg])
     setIsStreaming(true)
     currentThoughts.current = []
+    currentActionRef.current = null
 
-    setMessages((prev) => [...prev, { role: 'assistant', content: '', thoughts: [] }])
+    setMessages((prev) => [...prev, { role: 'assistant', content: '', thoughts: [], actions: [] }])
 
     await streamChat(
       content,
@@ -81,7 +86,22 @@ export function useChat() {
           return updated
         })
       },
-      () => setIsStreaming(false),
+      () => {
+        setIsStreaming(false)
+        if (currentActionRef.current) {
+          setMessages((prev) => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            if (last.actions && last.actions.length > 0) {
+              const actions = [...last.actions]
+              actions[actions.length - 1] = { ...actions[actions.length - 1], status: "completed" }
+              updated[updated.length - 1] = { ...last, actions }
+            }
+            return updated
+          })
+          currentActionRef.current = null
+        }
+      },
       (err: StreamError) => {
         console.error('Stream error:', err)
         const message = err.error_code === 'rate_limit'
@@ -94,27 +114,63 @@ export function useChat() {
             updated[updated.length - 1] = {
               ...last,
               content: last.content || message,
+              actions: last.actions?.map(a => ({ ...a, status: "completed" as const })),
             }
           }
           return updated
         })
+        currentActionRef.current = null
         setIsStreaming(false)
       },
       (id) => setThreadId(id),
       useDocuments,
       retrievalMode,
       images,
-      (thought) => {
+      (thought, actionMeta?) => {
         currentThoughts.current.push(thought)
-        setMessages((prev) => {
-          const updated = [...prev]
-          const last = updated[updated.length - 1]
-          updated[updated.length - 1] = {
-            ...last,
-            thoughts: [...currentThoughts.current],
+
+        if (actionMeta) {
+          actionIdCounter.current += 1
+          const newAction: AgentAction = {
+            id: `action-${actionIdCounter.current}`,
+            type: actionMeta.type as ActionType,
+            source: actionMeta.source as ActionSource,
+            content: thought,
+            data: actionMeta.data,
+            timestamp: Date.now(),
+            status: "active",
           }
-          return updated
-        })
+
+          currentActionRef.current = newAction
+
+          setMessages((prev) => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            
+            let actions = last.actions ? [...last.actions] : []
+            actions = actions.map(a => 
+              a.status === 'active' ? { ...a, status: 'completed' as const } : a
+            )
+            actions.push(newAction)
+
+            updated[updated.length - 1] = {
+              ...last,
+              actions,
+              thoughts: [...currentThoughts.current],
+            }
+            return updated
+          })
+        } else {
+          setMessages((prev) => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            updated[updated.length - 1] = {
+              ...last,
+              thoughts: [...currentThoughts.current],
+            }
+            return updated
+          })
+        }
       },
     )
   }
@@ -124,5 +180,9 @@ export function useChat() {
     setThreadId(null)
   }
 
-  return { messages, sendMessage, isStreaming, threadId, clearMessages, loadThread }
+  const currentAction = messages.length > 0
+    ? messages[messages.length - 1].actions?.find(a => a.status === "active") || null
+    : null
+
+  return { messages, sendMessage, isStreaming, threadId, clearMessages, loadThread, currentAction }
 }

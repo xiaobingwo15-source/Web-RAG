@@ -251,6 +251,19 @@ def insert_chunks_for_fts(access_token: str, user_id: str, document_id: str, chu
     return result.data
 
 
+def get_document_chunks(access_token: str, document_id: str) -> list[dict]:
+    """Fetch all text chunks for a document, ordered by chunk_index."""
+    db = get_user_db(access_token)
+    result = (
+        db.table("document_chunks")
+        .select("content, chunk_index")
+        .eq("document_id", document_id)
+        .order("chunk_index")
+        .execute()
+    )
+    return result.data or []
+
+
 def delete_document_chunks(access_token: str, document_id: str) -> None:
     db = get_user_db(access_token)
     db.table("document_chunks").delete().eq("document_id", document_id).execute()

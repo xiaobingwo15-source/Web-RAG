@@ -12,7 +12,7 @@ import { ChatHistoryPanel } from '@/components/ChatHistoryPanel'
 import { PanelRightOpen, PanelRightClose, MessageSquare, User, LogOut } from 'lucide-react'
 
 export function ChatPage() {
-  const { messages, sendMessage, isStreaming, clearMessages, loadThread } = useChat()
+  const { messages, sendMessage, isStreaming, clearMessages, loadThread, currentAction } = useChat()
   const {
     documents,
     uploadDocument,
@@ -138,7 +138,8 @@ export function ChatPage() {
                 {messages.map((msg, i) => (
                   <ChatMessage key={i} message={msg} />
                 ))}
-                {isStreaming && (
+
+                {isStreaming && !currentAction && (
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <div className="h-2 w-2 animate-pulse rounded-full bg-primary" />
                     Thinking...

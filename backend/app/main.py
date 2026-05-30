@@ -13,6 +13,14 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
+
+class _SuppressProactorWarning(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "_ProactorSocketTransport" not in record.getMessage()
+
+
+logging.getLogger("asyncio").addFilter(_SuppressProactorWarning())
+
 settings = Settings()
 
 # Configure Langfuse env vars before client init

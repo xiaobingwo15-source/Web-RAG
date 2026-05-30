@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 
 import cohere
 from langfuse import observe
@@ -9,11 +10,32 @@ logger = logging.getLogger(__name__)
 
 COHERE_MODEL = "rerank-english-v3.0"
 
+_STOP_WORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "can", "shall", "must",
+    "i", "me", "my", "we", "our", "you", "your", "he", "she", "it",
+    "they", "them", "his", "her", "its", "their",
+    "this", "that", "these", "those", "what", "which", "who", "whom",
+    "where", "when", "why", "how",
+    "in", "on", "at", "to", "for", "of", "with", "by", "from", "as",
+    "into", "about", "between", "through", "after", "before",
+    "and", "but", "or", "not", "no", "nor",
+    "if", "then", "else", "so", "than", "too", "very",
+    "just", "also", "now", "here", "there",
+})
+
+
+def _tokenize(text: str) -> set[str]:
+    """Lowercase, strip punctuation, remove stop words."""
+    tokens = re.findall(r'[a-z0-9]+', text.lower())
+    return {t for t in tokens if t not in _STOP_WORDS and len(t) > 1}
+
 
 def _keyword_overlap_score(query: str, document: str) -> float:
-    """Simple term-overlap scoring when Cohere is unavailable."""
-    query_terms = set(query.lower().split())
-    doc_terms = set(document.lower().split())
+    """Term-overlap scoring with punctuation stripping and stop word removal."""
+    query_terms = _tokenize(query)
+    doc_terms = _tokenize(document)
     if not query_terms:
         return 0.0
     overlap = query_terms & doc_terms

@@ -65,7 +65,8 @@ async def chat(request: ChatRequest, user=Depends(get_current_user)):
 
         context_chunks = None
         if request.use_documents:
-            context_chunks = await retrieve_context(token, user.id, request.message, mode=request.retrieval_mode)
+            retrieval_result = await retrieve_context(token, user.id, request.message, mode=request.retrieval_mode)
+            context_chunks = retrieval_result["chunks"]
             logger.info(f"Retrieved {len(context_chunks)} context chunks for user={user.id}")
 
         try:
@@ -122,13 +123,15 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                     images=request.images,
                 ):
                     if event["type"] == "thought":
-                        yield {
-                            "data": json_lib.dumps({
-                                "type": "thought",
-                                "content": event["content"],
-                                "thread_id": thread_id,
-                            })
+                        payload = {
+                            "type": "thought",
+                            "content": event["content"],
+                            "thread_id": thread_id,
                         }
+                        for key in ("action_type", "action_source", "action_data"):
+                            if key in event:
+                                payload[key] = event[key]
+                        yield {"data": json_lib.dumps(payload)}
                     elif event["type"] == "token":
                         full_response += event["content"]
                         yield {

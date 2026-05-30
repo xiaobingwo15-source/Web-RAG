@@ -71,9 +71,11 @@ async def insert_chunks(
     user_id: str,
     document_id: str,
     chunks: list[dict],
+    point_ids: list[str] | None = None,
 ) -> list[str]:
     client = await get_qdrant_client()
-    point_ids = [str(uuid.uuid4()) for _ in chunks]
+    if point_ids is None:
+        point_ids = [str(uuid.uuid4()) for _ in chunks]
     points = [
         models.PointStruct(
             id=point_ids[i],

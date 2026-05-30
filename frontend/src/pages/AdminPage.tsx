@@ -289,6 +289,7 @@ export function AdminPage() {
             onDismissWarning={clearDuplicateWarning}
             uploadFailure={uploadFailure}
             onDismissFailure={clearUploadFailure}
+            token={session?.access_token}
           />
         </div>
 

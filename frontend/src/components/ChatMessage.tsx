@@ -7,9 +7,9 @@ export function ChatMessage({ message }: { message: ChatMessageType }) {
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className="max-w-[80%]">
-        {!isUser && message.thoughts && message.thoughts.length > 0 && (
-          <ThoughtTrace thoughts={message.thoughts} />
+      <div className={isUser ? "max-w-[80%]" : "w-full max-w-[90%] md:max-w-[85%]"}>
+        {!isUser && ((message.thoughts && message.thoughts.length > 0) || (message.actions && message.actions.length > 0)) && (
+          <ThoughtTrace thoughts={message.thoughts} actions={message.actions} />
         )}
         <div
           className={`rounded-lg px-4 py-2 ${
