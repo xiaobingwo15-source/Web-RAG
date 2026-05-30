@@ -4,6 +4,10 @@
     {
       "source": "/api/:path*",
       "destination": "https://web-rag-163b.onrender.com/api/:path*"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ],
   "headers": [

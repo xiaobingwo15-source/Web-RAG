@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
-import { isAdmin } from '@/lib/roles'
 import { 
   Lock, 
   Mail, 
@@ -45,12 +44,7 @@ export function LoginPage() {
     if (error) {
       setError(error.message)
     } else {
-      // Redirect based on role
-      if (isAdmin(email)) {
-        navigate('/admin')
-      } else {
-        navigate('/chat')
-      }
+      navigate('/dashboard')
     }
     setLoading(false)
   }
@@ -254,4 +248,3 @@ export function LoginPage() {
     </div>
   )
 }
-
