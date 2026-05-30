@@ -12,6 +12,8 @@ import {
 export function useDocuments() {
   const [documents, setDocuments] = useState<DocumentStatus[]>([])
   const [isUploading, setIsUploading] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null)
   const [uploadFailure, setUploadFailure] = useState<{ filename: string; error: string } | null>(null)
   const { session } = useAuth()
@@ -20,11 +22,16 @@ export function useDocuments() {
 
   const fetchDocuments = useCallback(async () => {
     if (!session?.access_token) return
+    setIsLoading(true)
+    setLoadError(null)
     try {
       const res = await apiGetDocuments(session.access_token)
       setDocuments(res.documents)
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to fetch documents:', err)
+      setLoadError(err.message || 'Failed to load documents')
+    } finally {
+      setIsLoading(false)
     }
   }, [session?.access_token])
 
@@ -38,11 +45,14 @@ export function useDocuments() {
       
       // Query completed status to confirm it didn't fail processing in the backend
       const statusRes = await getDocumentStatus(res.id, session.access_token)
+      setDocuments((prev) => [
+        { ...statusRes, error_message: statusRes.error_message },
+        ...prev.filter((doc) => doc.id !== statusRes.id),
+      ])
+
       if (statusRes.status === 'failed') {
         throw new Error(statusRes.error_message || 'Processing failed')
       }
-
-      setDocuments((prev) => [{ ...statusRes, error_message: undefined }, ...prev])
     } catch (err: any) {
       if (err instanceof DuplicateError) {
         setDuplicateWarning(err.message)
@@ -70,11 +80,13 @@ export function useDocuments() {
   }, [fetchDocuments])
 
   return {
-    documents: documents.filter((d) => d.status !== 'failed'),
+    documents,
     uploadDocument,
     deleteDocument,
     fetchDocuments,
     isUploading,
+    isLoading,
+    loadError,
     hasProcessed,
     duplicateWarning,
     clearDuplicateWarning: () => setDuplicateWarning(null),

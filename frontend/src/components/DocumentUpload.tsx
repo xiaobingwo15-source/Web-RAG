@@ -14,6 +14,7 @@ export function DocumentUpload({
   onDismissWarning,
   uploadFailure,
   onDismissFailure,
+  loadError,
   token,
 }: {
   documents: DocumentStatus[]
@@ -24,6 +25,7 @@ export function DocumentUpload({
   onDismissWarning?: () => void
   uploadFailure?: { filename: string; error: string } | null
   onDismissFailure?: () => void
+  loadError?: string | null
   token?: string
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
@@ -135,6 +137,16 @@ export function DocumentUpload({
         </div>
       )}
 
+      {loadError && (
+        <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+          <div className="flex-1">
+            <h5 className="text-xs font-bold text-red-400">Documents Unavailable</h5>
+            <p className="mt-0.5 text-xs text-red-200">{loadError}</p>
+          </div>
+        </div>
+      )}
+
       <div
         onDrop={handleDrop}
         onDragOver={handleDragOver}
@@ -230,6 +242,11 @@ export function DocumentUpload({
                     </span>
                   )}
                 </div>
+              )}
+              {doc.status === 'failed' && doc.error_message && (
+                <p className="mt-1.5 text-xs text-red-300">
+                  {doc.error_message}
+                </p>
               )}
             </div>
           ))}

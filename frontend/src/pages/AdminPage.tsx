@@ -47,6 +47,7 @@ export function AdminPage() {
     uploadDocument,
     deleteDocument,
     isUploading,
+    loadError,
     duplicateWarning,
     clearDuplicateWarning,
     uploadFailure,
@@ -289,6 +290,7 @@ export function AdminPage() {
             onDismissWarning={clearDuplicateWarning}
             uploadFailure={uploadFailure}
             onDismissFailure={clearUploadFailure}
+            loadError={loadError}
             token={session?.access_token}
           />
         </div>
