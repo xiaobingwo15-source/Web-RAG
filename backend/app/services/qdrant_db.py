@@ -42,6 +42,10 @@ async def _ensure_collection_inner():
             field_schema=models.PayloadSchemaType.KEYWORD,
         )
         await client.create_payload_index(
+            COLLECTION_NAME, field_name="tenant_id",
+            field_schema=models.PayloadSchemaType.KEYWORD,
+        )
+        await client.create_payload_index(
             COLLECTION_NAME, field_name="document_id",
             field_schema=models.PayloadSchemaType.KEYWORD,
         )
@@ -55,6 +59,13 @@ async def _ensure_collection_inner():
         )
         logger.info("Created Qdrant collection '%s' with payload indexes", COLLECTION_NAME)
     else:
+        try:
+            await client.create_payload_index(
+                COLLECTION_NAME, field_name="tenant_id",
+                field_schema=models.PayloadSchemaType.KEYWORD,
+            )
+        except Exception:
+            pass
         logger.info("Qdrant collection '%s' already exists", COLLECTION_NAME)
 
 
@@ -72,6 +83,7 @@ async def insert_chunks(
     document_id: str,
     chunks: list[dict],
     point_ids: list[str] | None = None,
+    tenant_id: str | None = None,
 ) -> list[str]:
     client = await get_qdrant_client()
     if point_ids is None:
@@ -82,6 +94,7 @@ async def insert_chunks(
             vector=chunk["embedding"],
             payload={
                 "user_id": user_id,
+                **({"tenant_id": tenant_id} if tenant_id else {}),
                 "document_id": document_id,
                 "content": chunk["content"],
                 "chunk_index": chunk["chunk_index"],
@@ -126,15 +139,18 @@ async def search_similar_chunks(
     query_embedding: list[float],
     match_count: int = 5,
     similarity_threshold: float = 0.1,
+    tenant_id: str | None = None,
 ) -> list[dict]:
     client = await get_qdrant_client()
+    filter_key = "tenant_id" if tenant_id else "user_id"
+    filter_value = tenant_id or user_id
     results = await client.query_points(
         collection_name=COLLECTION_NAME,
         query=query_embedding,
         query_filter=models.Filter(
             must=[models.FieldCondition(
-                key="user_id",
-                match=models.MatchValue(value=user_id),
+                key=filter_key,
+                match=models.MatchValue(value=filter_value),
             )]
         ),
         limit=match_count,
@@ -155,8 +171,8 @@ async def search_similar_chunks(
         print(f"[QDRANT] Vector search: {len(hits)} results, scores=[{', '.join(scores)}], threshold={similarity_threshold}")
         logger.info(f"Qdrant vector search: {len(hits)} results, scores=[{', '.join(scores)}], threshold={similarity_threshold}")
     else:
-        print(f"[QDRANT] Vector search: 0 results (threshold={similarity_threshold}, user_id={user_id})")
-        logger.warning(f"Qdrant vector search: 0 results (threshold={similarity_threshold}, user_id={user_id})")
+        print(f"[QDRANT] Vector search: 0 results (threshold={similarity_threshold}, {filter_key}={filter_value})")
+        logger.warning(f"Qdrant vector search: 0 results (threshold={similarity_threshold}, {filter_key}={filter_value})")
     return hits
 
 
@@ -167,12 +183,15 @@ async def search_similar_chunks_filtered(
     similarity_threshold: float = 0.1,
     filter_tags: list[str] | None = None,
     filter_language: str | None = None,
+    tenant_id: str | None = None,
 ) -> list[dict]:
     client = await get_qdrant_client()
+    filter_key = "tenant_id" if tenant_id else "user_id"
+    filter_value = tenant_id or user_id
     must_conditions = [
         models.FieldCondition(
-            key="user_id",
-            match=models.MatchValue(value=user_id),
+            key=filter_key,
+            match=models.MatchValue(value=filter_value),
         )
     ]
     if filter_tags:
@@ -225,28 +244,32 @@ async def delete_document_chunks(document_id: str) -> None:
     logger.info("Deleted chunks for document %s from Qdrant", document_id)
 
 
-async def count_user_chunks(user_id: str) -> int:
+async def count_user_chunks(user_id: str, tenant_id: str | None = None) -> int:
     client = await get_qdrant_client()
+    filter_key = "tenant_id" if tenant_id else "user_id"
+    filter_value = tenant_id or user_id
     count_result = await client.count(
         collection_name=COLLECTION_NAME,
         count_filter=models.Filter(
             must=[models.FieldCondition(
-                key="user_id",
-                match=models.MatchValue(value=user_id),
+                key=filter_key,
+                match=models.MatchValue(value=filter_value),
             )]
         ),
     )
     return count_result.count
 
 
-async def get_sample_chunks(user_id: str, limit: int = 3) -> list[dict]:
+async def get_sample_chunks(user_id: str, limit: int = 3, tenant_id: str | None = None) -> list[dict]:
     client = await get_qdrant_client()
+    filter_key = "tenant_id" if tenant_id else "user_id"
+    filter_value = tenant_id or user_id
     results, _ = await client.scroll(
         collection_name=COLLECTION_NAME,
         scroll_filter=models.Filter(
             must=[models.FieldCondition(
-                key="user_id",
-                match=models.MatchValue(value=user_id),
+                key=filter_key,
+                match=models.MatchValue(value=filter_value),
             )]
         ),
         limit=limit,

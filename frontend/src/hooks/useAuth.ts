@@ -17,8 +17,7 @@ export function useAuth() {
           setRole(profile.role)
         } catch (err) {
           console.error('Failed to load user role:', err)
-          const isHardcodedAdmin = sess.user?.email?.toLowerCase() === 'admin@example.com'
-          setRole(isHardcodedAdmin ? 'admin' : 'client')
+          setRole('client')
         }
       } else {
         setRole(null)
@@ -73,4 +72,3 @@ export function useAuth() {
 
   return { user, session, role, loading, signIn, signUp, signOut, resetPassword, updatePassword }
 }
-

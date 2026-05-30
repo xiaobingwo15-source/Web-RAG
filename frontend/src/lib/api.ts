@@ -346,6 +346,7 @@ export interface UserProfileResponse {
   id: string
   email: string
   role: string
+  tenant_id?: string | null
 }
 
 export async function getUserProfile(token: string): Promise<UserProfileResponse> {

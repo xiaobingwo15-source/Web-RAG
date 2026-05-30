@@ -59,13 +59,14 @@ async def rewrite_query(message: str, history: list, client) -> str:
 
 
 async def execute(
-    token: str,
-    user_id: str,
+    token: str | None,
+    user_id: str | None,
     message: str,
     history: list,
     retrieval_mode: str = "hybrid",
     target_user_id: str | None = None,
     images: list[str] | None = None,
+    tenant_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     yield {
         "type": "thought",
@@ -86,7 +87,7 @@ async def execute(
             "action_data": {"original_query": message, "expanded_query": augmented_query},
         }
 
-    retrieval_result = await retrieve_context(token, user_id, augmented_query, mode=retrieval_mode, target_user_id=target_user_id)
+    retrieval_result = await retrieve_context(token, user_id, augmented_query, mode=retrieval_mode, target_user_id=target_user_id, tenant_id=tenant_id)
     context_chunks = retrieval_result["chunks"]
     sources = retrieval_result["sources"]
     print(f"[DOC_RAG] Retrieved {len(context_chunks)} context chunks for user_id={user_id}")

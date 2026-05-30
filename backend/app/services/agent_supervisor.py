@@ -7,7 +7,7 @@ from app.services.agents import doc_rag_agent, sql_sub_agent, web_search_agent
 logger = logging.getLogger(__name__)
 
 
-def _resolve_target_user_id(token: str, user_id: str) -> tuple[bool, str | None]:
+def _resolve_target_user_id(token: str, user_id: str, tenant_id: str | None = None) -> tuple[bool, str | None]:
     """Resolve the effective user_id for RAG retrieval.
 
     For client users with access to admin's shared knowledge base, returns
@@ -16,14 +16,14 @@ def _resolve_target_user_id(token: str, user_id: str) -> tuple[bool, str | None]
     Returns (use_documents, target_user_id).
     """
     try:
-        from app.services.database import get_db, get_admin_user_id
+        from app.services.database import get_db, get_tenant_admin_user_id
 
         db = get_db()  # service-role client — bypasses RLS
         profile = db.table("profiles").select("role").eq("id", user_id).single().execute()
         if profile.data and profile.data.get("role") == "client":
-            admin_id = get_admin_user_id()
+            admin_id = get_tenant_admin_user_id(tenant_id) if tenant_id else None
             if admin_id:
-                docs = db.table("documents").select("id, status").eq("user_id", admin_id).execute()
+                docs = db.table("documents").select("id, status").eq("tenant_id", tenant_id).eq("user_id", admin_id).execute()
                 has_processed = any(d.get("status") == "processed" for d in (docs.data or []))
                 logger.info(f"Client {user_id}: admin shared docs available={has_processed} (admin_id={admin_id}, count={len(docs.data or [])})")
                 if has_processed:
@@ -60,6 +60,7 @@ async def execute(
     enable_web_search: bool = True,
     enable_sql: bool = True,
     images: list[str] | None = None,
+    tenant_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     client = get_llm_client()
 
@@ -67,7 +68,7 @@ async def execute(
     # (frontend may cache use_documents=True from a previous request, but we still
     # need to redirect to the admin's knowledge base for client users)
     target_user_id = user_id
-    auto_enabled, resolved_id = _resolve_target_user_id(token, user_id)
+    auto_enabled, resolved_id = _resolve_target_user_id(token, user_id, tenant_id)
     if auto_enabled:
         target_user_id = resolved_id
         use_documents = True  # Always use RAG for clients with shared docs
@@ -110,7 +111,7 @@ async def execute(
             async for event in web_search_agent.execute(message, history, images=images):
                 yield event
         elif route == "doc_rag" and use_documents:
-            async for event in doc_rag_agent.execute(token, user_id, message, history, retrieval_mode, target_user_id=target_user_id, images=images):
+            async for event in doc_rag_agent.execute(token, user_id, message, history, retrieval_mode, target_user_id=target_user_id, images=images, tenant_id=tenant_id):
                 yield event
         else:
             from app.services.gemini import generate_chat_response_stream

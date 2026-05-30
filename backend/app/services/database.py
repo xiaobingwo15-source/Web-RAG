@@ -14,28 +14,127 @@ def get_user_db(access_token: str) -> Client:
     return get_supabase_client_with_token(access_token)
 
 
-def create_thread(access_token: str, user_id: str, thread_id: str, title: str = "New Chat") -> dict:
-    db = get_user_db(access_token)
+def get_tenant_by_slug(slug: str) -> dict | None:
+    db = get_db()
     result = (
-        db.table("threads")
-        .insert({"id": thread_id, "user_id": user_id, "title": title})
-        .execute()
-    )
-    return result.data[0]
-
-
-def get_thread(access_token: str, thread_id: str) -> dict | None:
-    db = get_user_db(access_token)
-    result = (
-        db.table("threads")
+        db.table("tenants")
         .select("*")
-        .eq("id", thread_id)
+        .eq("slug", slug)
+        .eq("status", "active")
+        .limit(1)
         .execute()
     )
     return result.data[0] if result.data else None
 
 
-def save_message(access_token: str, user_id: str, thread_id: str, role: str, content: str) -> dict:
+def create_tenant(name: str, slug: str, allowed_origins: list[str]) -> dict:
+    db = get_db()
+    result = (
+        db.table("tenants")
+        .insert({
+            "name": name,
+            "slug": slug,
+            "allowed_origins": allowed_origins,
+            "status": "active",
+        })
+        .execute()
+    )
+    return result.data[0]
+
+
+def create_tenant_admin_invite(tenant_id: str, email: str, token_hash: str, expires_at: str) -> dict:
+    db = get_db()
+    result = (
+        db.table("tenant_admin_invites")
+        .insert({
+            "tenant_id": tenant_id,
+            "email": email,
+            "token_hash": token_hash,
+            "expires_at": expires_at,
+        })
+        .execute()
+    )
+    return result.data[0]
+
+
+def get_tenant_admin_invite(token_hash: str) -> dict | None:
+    db = get_db()
+    result = (
+        db.table("tenant_admin_invites")
+        .select("*")
+        .eq("token_hash", token_hash)
+        .is_("accepted_at", "null")
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def accept_tenant_admin_invite(invite_id: str, tenant_id: str, user_id: str, email: str) -> dict:
+    db = get_db()
+    profile = (
+        db.table("profiles")
+        .update({"tenant_id": tenant_id, "role": "admin", "email": email})
+        .eq("id", user_id)
+        .execute()
+    )
+    db.table("tenant_admin_invites").update({"accepted_at": "now()"}).eq("id", invite_id).execute()
+    return profile.data[0] if profile.data else {}
+
+
+def _apply_tenant(query, tenant_id: str | None):
+    return query.eq("tenant_id", tenant_id) if tenant_id else query
+
+
+def _tenant_payload(tenant_id: str | None) -> dict:
+    return {"tenant_id": tenant_id} if tenant_id else {}
+
+
+def create_thread(access_token: str, user_id: str, thread_id: str, title: str = "New Chat", tenant_id: str | None = None) -> dict:
+    db = get_user_db(access_token)
+    result = (
+        db.table("threads")
+        .insert({"id": thread_id, "user_id": user_id, "title": title, **_tenant_payload(tenant_id)})
+        .execute()
+    )
+    return result.data[0]
+
+
+def create_widget_thread(tenant_id: str, client_session_id: str, thread_id: str, title: str = "New Chat") -> dict:
+    db = get_db()
+    result = (
+        db.table("threads")
+        .insert({
+            "id": thread_id,
+            "tenant_id": tenant_id,
+            "client_session_id": client_session_id,
+            "title": title,
+        })
+        .execute()
+    )
+    return result.data[0]
+
+
+def get_thread(access_token: str, thread_id: str, tenant_id: str | None = None) -> dict | None:
+    db = get_user_db(access_token)
+    query = db.table("threads").select("*").eq("id", thread_id)
+    result = _apply_tenant(query, tenant_id).execute()
+    return result.data[0] if result.data else None
+
+
+def get_thread_service(tenant_id: str, thread_id: str) -> dict | None:
+    db = get_db()
+    result = (
+        db.table("threads")
+        .select("*")
+        .eq("id", thread_id)
+        .eq("tenant_id", tenant_id)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def save_message(access_token: str, user_id: str, thread_id: str, role: str, content: str, tenant_id: str | None = None) -> dict:
     db = get_user_db(access_token)
     result = (
         db.table("messages")
@@ -44,60 +143,76 @@ def save_message(access_token: str, user_id: str, thread_id: str, role: str, con
             "user_id": user_id,
             "role": role,
             "content": content,
+            **_tenant_payload(tenant_id),
         })
         .execute()
     )
     return result.data[0]
 
 
-def get_thread_messages(access_token: str, thread_id: str) -> list[dict]:
+def save_widget_message(tenant_id: str, client_session_id: str, thread_id: str, role: str, content: str) -> dict:
+    db = get_db()
+    result = (
+        db.table("messages")
+        .insert({
+            "tenant_id": tenant_id,
+            "client_session_id": client_session_id,
+            "thread_id": thread_id,
+            "role": role,
+            "content": content,
+        })
+        .execute()
+    )
+    return result.data[0]
+
+
+def get_thread_messages(access_token: str, thread_id: str, tenant_id: str | None = None) -> list[dict]:
     db = get_user_db(access_token)
+    query = db.table("messages").select("*").eq("thread_id", thread_id)
+    result = _apply_tenant(query, tenant_id).order("created_at").execute()
+    return result.data
+
+
+def get_thread_messages_service(tenant_id: str, thread_id: str) -> list[dict]:
+    db = get_db()
     result = (
         db.table("messages")
         .select("*")
         .eq("thread_id", thread_id)
+        .eq("tenant_id", tenant_id)
         .order("created_at")
         .execute()
     )
     return result.data
 
 
-def get_user_threads(access_token: str, user_id: str) -> list[dict]:
+def get_user_threads(access_token: str, user_id: str, tenant_id: str | None = None) -> list[dict]:
     db = get_user_db(access_token)
-    result = (
-        db.table("threads")
-        .select("*")
-        .eq("user_id", user_id)
-        .order("created_at", desc=True)
-        .execute()
-    )
+    query = db.table("threads").select("*").eq("user_id", user_id)
+    result = _apply_tenant(query, tenant_id).order("created_at", desc=True).execute()
     return result.data
 
 
-def delete_thread(access_token: str, thread_id: str) -> None:
+def delete_thread(access_token: str, thread_id: str, tenant_id: str | None = None) -> None:
     db = get_user_db(access_token)
-    db.table("messages").delete().eq("thread_id", thread_id).execute()
-    db.table("threads").delete().eq("id", thread_id).execute()
+    _apply_tenant(db.table("messages").delete().eq("thread_id", thread_id), tenant_id).execute()
+    _apply_tenant(db.table("threads").delete().eq("id", thread_id), tenant_id).execute()
 
 
 # --- File Search Store functions ---
 
-def get_user_store(access_token: str, user_id: str) -> dict | None:
+def get_user_store(access_token: str, user_id: str, tenant_id: str | None = None) -> dict | None:
     db = get_user_db(access_token)
-    result = (
-        db.table("file_search_stores")
-        .select("*")
-        .eq("user_id", user_id)
-        .execute()
-    )
+    query = db.table("file_search_stores").select("*").eq("user_id", user_id)
+    result = _apply_tenant(query, tenant_id).execute()
     return result.data[0] if result.data else None
 
 
-def create_store(access_token: str, user_id: str, store_name: str, display_name: str) -> dict:
+def create_store(access_token: str, user_id: str, store_name: str, display_name: str, tenant_id: str | None = None) -> dict:
     db = get_user_db(access_token)
     result = (
         db.table("file_search_stores")
-        .insert({"user_id": user_id, "store_name": store_name, "display_name": display_name})
+        .insert({"user_id": user_id, "store_name": store_name, "display_name": display_name, **_tenant_payload(tenant_id)})
         .execute()
     )
     return result.data[0]
@@ -105,7 +220,7 @@ def create_store(access_token: str, user_id: str, store_name: str, display_name:
 
 # --- Document functions ---
 
-def create_document(access_token: str, user_id: str, store_id: str, filename: str, mime_type: str, operation_name: str) -> dict:
+def create_document(access_token: str, user_id: str, store_id: str, filename: str, mime_type: str, operation_name: str, tenant_id: str | None = None) -> dict:
     db = get_user_db(access_token)
     result = (
         db.table("documents")
@@ -115,32 +230,26 @@ def create_document(access_token: str, user_id: str, store_id: str, filename: st
             "filename": filename,
             "mime_type": mime_type,
             "operation_name": operation_name,
+            **_tenant_payload(tenant_id),
         })
         .execute()
     )
     return result.data[0]
 
 
-def get_document(access_token: str, document_id: str) -> dict | None:
+def get_document(access_token: str, document_id: str, tenant_id: str | None = None) -> dict | None:
     db = get_user_db(access_token)
-    result = (
-        db.table("documents")
-        .select("*")
-        .eq("id", document_id)
-        .execute()
-    )
+    query = db.table("documents").select("*").eq("id", document_id)
+    result = _apply_tenant(query, tenant_id).execute()
     return result.data[0] if result.data else None
 
 
-def get_user_documents(access_token: str, user_id: str) -> list[dict]:
+def get_user_documents(access_token: str, user_id: str | None = None, tenant_id: str | None = None) -> list[dict]:
     db = get_user_db(access_token)
-    result = (
-        db.table("documents")
-        .select("*")
-        .eq("user_id", user_id)
-        .order("created_at", desc=True)
-        .execute()
-    )
+    query = db.table("documents").select("*")
+    if user_id:
+        query = query.eq("user_id", user_id)
+    result = _apply_tenant(query, tenant_id).order("created_at", desc=True).execute()
     return result.data
 
 
@@ -174,15 +283,10 @@ def mark_document_retrying(access_token: str, document_id: str, filename: str, m
     return result.data[0]
 
 
-def get_document_by_hash(access_token: str, user_id: str, content_hash: str) -> dict | None:
+def get_document_by_hash(access_token: str, user_id: str, content_hash: str, tenant_id: str | None = None) -> dict | None:
     db = get_user_db(access_token)
-    result = (
-        db.table("documents")
-        .select("*")
-        .eq("user_id", user_id)
-        .eq("content_hash", content_hash)
-        .execute()
-    )
+    query = db.table("documents").select("*").eq("user_id", user_id).eq("content_hash", content_hash)
+    result = _apply_tenant(query, tenant_id).execute()
     return result.data[0] if result.data else None
 
 
@@ -219,14 +323,12 @@ def update_document_metadata(access_token: str, document_id: str, metadata: dict
     return result.data[0]
 
 
-def get_user_document_metadata(access_token: str, user_id: str) -> dict:
+def get_user_document_metadata(access_token: str, user_id: str | None = None, tenant_id: str | None = None) -> dict:
     db = get_user_db(access_token)
-    result = (
-        db.table("documents")
-        .select("metadata")
-        .eq("user_id", user_id)
-        .execute()
-    )
+    query = db.table("documents").select("metadata")
+    if user_id:
+        query = query.eq("user_id", user_id)
+    result = _apply_tenant(query, tenant_id).execute()
     all_tags: set[str] = set()
     all_languages: set[str] = set()
     for doc in result.data:
@@ -238,20 +340,23 @@ def get_user_document_metadata(access_token: str, user_id: str) -> dict:
     return {"tags": sorted(all_tags), "languages": sorted(all_languages)}
 
 
-def search_chunks_fts(access_token: str, user_id: str, query_text: str, match_count: int = 10) -> list[dict]:
-    db = get_user_db(access_token)
+def search_chunks_fts(access_token: str | None, user_id: str | None, query_text: str, match_count: int = 10, tenant_id: str | None = None) -> list[dict]:
+    db = get_user_db(access_token) if access_token else get_db()
+    params = {
+        "search_query": query_text,
+        "match_user_id": user_id,
+        "match_count": match_count,
+    }
+    if tenant_id:
+        params["match_tenant_id"] = tenant_id
     result = db.rpc(
         "search_chunks_fts",
-        {
-            "search_query": query_text,
-            "match_user_id": user_id,
-            "match_count": match_count,
-        },
+        params,
     ).execute()
     return result.data
 
 
-def insert_chunks_for_fts(access_token: str, user_id: str, document_id: str, chunks: list[dict]) -> list[dict]:
+def insert_chunks_for_fts(access_token: str, user_id: str, document_id: str, chunks: list[dict], tenant_id: str | None = None) -> list[dict]:
     """Insert chunk content into Supabase for full-text search (no embeddings)."""
     db = get_user_db(access_token)
     rows = [
@@ -260,6 +365,7 @@ def insert_chunks_for_fts(access_token: str, user_id: str, document_id: str, chu
             "document_id": document_id,
             "content": chunk["content"],
             "chunk_index": chunk["chunk_index"],
+            **_tenant_payload(tenant_id),
         }
         for chunk in chunks
     ]
@@ -311,6 +417,7 @@ def save_agent_trace(
     tool_used: str | None = None,
     tool_input: str | None = None,
     tool_output: str | None = None,
+    tenant_id: str | None = None,
 ) -> dict:
     db = get_user_db(access_token)
     result = db.table("agent_traces").insert({
@@ -321,60 +428,42 @@ def save_agent_trace(
         "tool_used": tool_used,
         "tool_input": tool_input,
         "tool_output": tool_output,
+        **_tenant_payload(tenant_id),
     }).execute()
     return result.data[0]
 
 
-def get_agent_traces(access_token: str, thread_id: str) -> list[dict]:
+def get_agent_traces(access_token: str, thread_id: str, tenant_id: str | None = None) -> list[dict]:
     db = get_user_db(access_token)
-    result = (
-        db.table("agent_traces")
-        .select("*")
-        .eq("thread_id", thread_id)
-        .order("created_at")
-        .execute()
-    )
+    query = db.table("agent_traces").select("*").eq("thread_id", thread_id)
+    result = _apply_tenant(query, tenant_id).order("created_at").execute()
     return result.data
 
 
 # --- Admin functions ---
 
-def get_all_threads_grouped(access_token: str) -> list[dict]:
-    """Fetch all threads across all users, grouped by user email.
-    Note: This requires RLS policies that allow the admin to read all threads,
-    OR a properly configured service_role_key. If RLS blocks access,
-    only the admin's own threads will be returned.
+def get_all_threads_grouped(tenant_id: str) -> list[dict]:
+    """Fetch threads for one tenant, grouped by user or widget session.
+
     Returns: [{ email, user_id, threads: [{ id, title, created_at, message_count }] }]
     """
-    # Try service role first, fall back to user token
     db = get_db()
-    used_service_role = True
-    try:
-        threads_result = (
-            db.table("threads")
-            .select("*")
-            .order("created_at", desc=True)
-            .execute()
-        )
-        logger.info("Service role query succeeded, found %d threads", len(threads_result.data))
-    except Exception as e:
-        logger.warning("Service role query failed, falling back to user token: %s", e)
-        used_service_role = False
-        db = get_user_db(access_token)
-        threads_result = (
-            db.table("threads")
-            .select("*")
-            .order("created_at", desc=True)
-            .execute()
-        )
-        logger.info("User token query found %d threads", len(threads_result.data))
+    threads_result = (
+        db.table("threads")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    logger.info("Tenant-scoped admin query found %d threads", len(threads_result.data))
 
     # Group threads by user_id
     user_threads: dict[str, list[dict]] = {}
     user_ids: set[str] = set()
     for t in threads_result.data:
-        uid = t["user_id"]
-        user_ids.add(uid)
+        uid = t.get("user_id") or t.get("client_session_id") or "unknown"
+        if t.get("user_id"):
+            user_ids.add(uid)
         if uid not in user_threads:
             user_threads[uid] = []
         user_threads[uid].append({
@@ -385,7 +474,7 @@ def get_all_threads_grouped(access_token: str) -> list[dict]:
 
     # Fetch message counts per thread
     try:
-        messages_result = db.table("messages").select("thread_id").execute()
+        messages_result = db.table("messages").select("thread_id").eq("tenant_id", tenant_id).execute()
         logger.info("Found %d messages for thread count", len(messages_result.data))
     except Exception as e:
         logger.warning("Failed to fetch message counts: %s", e)
@@ -418,8 +507,11 @@ def get_all_threads_grouped(access_token: str) -> list[dict]:
     # Build grouped result
     clients = []
     for uid, threads in user_threads.items():
+        label = user_emails.get(uid)
+        if not label:
+            label = f"visitor-{uid[:8]}" if uid != "unknown" else "unknown visitor"
         clients.append({
-            "email": user_emails.get(uid, uid),
+            "email": label,
             "user_id": uid,
             "threads": threads,
         })
@@ -429,45 +521,42 @@ def get_all_threads_grouped(access_token: str) -> list[dict]:
     return clients
 
 
-def get_thread_messages_admin(access_token: str, thread_id: str) -> list[dict]:
-    """Fetch all messages for a thread. Tries service role first, falls back to user token."""
+def get_thread_messages_admin(tenant_id: str, thread_id: str) -> list[dict]:
+    """Fetch messages for a tenant-owned thread."""
     db = get_db()
-    try:
-        result = (
-            db.table("messages")
-            .select("*")
-            .eq("thread_id", thread_id)
-            .order("created_at")
-            .execute()
-        )
-    except Exception as e:
-        logger.warning("Service role query failed for messages, falling back to user token: %s", e)
-        db = get_user_db(access_token)
-        result = (
-            db.table("messages")
-            .select("*")
-            .eq("thread_id", thread_id)
-            .order("created_at")
-            .execute()
-        )
+    result = (
+        db.table("messages")
+        .select("*")
+        .eq("thread_id", thread_id)
+        .eq("tenant_id", tenant_id)
+        .order("created_at")
+        .execute()
+    )
     return result.data
 
 
-def get_admin_user_id(access_token: str | None = None) -> str | None:
-    """Find the shared admin user ID using the service role client."""
+def get_tenant_admin_user_id(tenant_id: str) -> str | None:
+    """Find the single admin user ID for a tenant."""
     db = get_db()
     try:
-        result = db.table("profiles").select("id").eq("role", "admin").limit(1).execute()
+        result = (
+            db.table("profiles")
+            .select("id")
+            .eq("role", "admin")
+            .eq("tenant_id", tenant_id)
+            .limit(1)
+            .execute()
+        )
         if result.data:
             return result.data[0]["id"]
     except Exception as e:
-        logger.warning("Failed to fetch admin user_id from profiles: %s", e)
+        logger.warning("Failed to fetch tenant admin user_id from profiles: %s", e)
     return None
 
 
 # --- Admin Manual Answer functions ---
 
-def save_admin_message(thread_id: str, admin_user_id: str, client_user_id: str, content: str) -> dict:
+def save_admin_message(tenant_id: str, thread_id: str, admin_user_id: str, client_user_id: str | None, content: str) -> dict:
     """Insert an admin response into a client's thread.
 
     Uses service-role client (bypasses RLS). Sets user_id to the client's ID
@@ -481,19 +570,21 @@ def save_admin_message(thread_id: str, admin_user_id: str, client_user_id: str, 
             "user_id": client_user_id,
             "role": "admin",
             "content": content,
+            "tenant_id": tenant_id,
         })
         .execute()
     )
     return result.data[0]
 
 
-def get_flagged_messages() -> list[dict]:
+def get_flagged_messages(tenant_id: str) -> list[dict]:
     """Return all messages flagged as needing admin attention, with thread context."""
     db = get_db()
     result = (
         db.table("messages")
         .select("*, threads(id, title, user_id)")
         .eq("needs_attention", True)
+        .eq("tenant_id", tenant_id)
         .order("created_at", desc=True)
         .execute()
     )
@@ -520,6 +611,7 @@ def get_flagged_messages() -> list[dict]:
             .select("id")
             .eq("thread_id", msg["thread_id"])
             .eq("role", "admin")
+            .eq("tenant_id", tenant_id)
             .gt("created_at", msg["created_at"])
             .limit(1)
             .execute()
@@ -539,13 +631,14 @@ def get_flagged_messages() -> list[dict]:
     return flagged
 
 
-def get_flagged_count() -> int:
+def get_flagged_count(tenant_id: str) -> int:
     """Return the count of flagged messages for the badge counter."""
     db = get_db()
     result = (
         db.table("messages")
         .select("id", count="exact")
         .eq("needs_attention", True)
+        .eq("tenant_id", tenant_id)
         .execute()
     )
     return result.count or 0
@@ -563,7 +656,7 @@ def clear_attention_flag(message_id: str) -> dict:
     return result.data[0] if result.data else {}
 
 
-def clear_thread_attention_flags(thread_id: str) -> None:
+def clear_thread_attention_flags(tenant_id: str, thread_id: str) -> None:
     """Clear all needs_attention flags in a thread."""
     db = get_db()
-    db.table("messages").update({"needs_attention": False}).eq("thread_id", thread_id).eq("needs_attention", True).execute()
+    db.table("messages").update({"needs_attention": False}).eq("thread_id", thread_id).eq("tenant_id", tenant_id).eq("needs_attention", True).execute()

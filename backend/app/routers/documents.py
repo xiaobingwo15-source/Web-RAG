@@ -28,6 +28,8 @@ async def upload(
     use_ocr: bool = False,
     user=Depends(get_current_user),
 ):
+    if user.role != "admin" or not user.tenant_id:
+        raise HTTPException(status_code=403, detail="Admin access required")
     token = user.access_token
 
     filename_lower = (file.filename or "").lower()
@@ -55,7 +57,7 @@ async def upload(
     file_bytes = await file.read()
 
     content_hash = compute_content_hash(file_bytes)
-    existing = get_document_by_hash(token, user.id, content_hash)
+    existing = get_document_by_hash(token, user.id, content_hash, tenant_id=user.tenant_id)
     if existing and existing["status"] != "failed":
         raise HTTPException(
             status_code=409,
@@ -66,26 +68,26 @@ async def upload(
             },
         )
 
-    store = get_user_store(token, user.id)
+    store = get_user_store(token, user.id, tenant_id=user.tenant_id)
     if not store:
-        store = create_store(token, user.id, "", "local-qdrant")
+        store = create_store(token, user.id, "", "local-qdrant", tenant_id=user.tenant_id)
 
     if existing:
         doc = mark_document_retrying(token, existing["id"], file.filename or "unnamed", mime_type)
     else:
         doc = create_document(
             token, user.id, store["id"],
-            file.filename or "unnamed", mime_type, "",
+            file.filename or "unnamed", mime_type, "", tenant_id=user.tenant_id,
         )
 
-    process_result = await process_document(token, user.id, doc["id"], file_bytes, mime_type, use_ocr=use_ocr)
+    process_result = await process_document(token, user.id, doc["id"], file_bytes, mime_type, use_ocr=use_ocr, tenant_id=user.tenant_id)
 
     return DocumentUploadResponse(id=doc["id"], filename=doc["filename"], status=process_result["status"])
 
 
 @router.get("/status/{document_id}", response_model=DocumentStatus)
 async def status(document_id: str, user=Depends(get_current_user)):
-    doc = get_document(user.access_token, document_id)
+    doc = get_document(user.access_token, document_id, tenant_id=user.tenant_id)
     if not doc:
         return DocumentStatus(id=document_id, filename="", status="not_found")
     return DocumentStatus(
@@ -99,14 +101,7 @@ async def status(document_id: str, user=Depends(get_current_user)):
 @router.get("", response_model=DocumentListResponse)
 @router.get("/", response_model=DocumentListResponse, include_in_schema=False)
 async def list_documents(user=Depends(get_current_user)):
-    target_user_id = user.id
-    if user.role == "client":
-        from app.services.database import get_admin_user_id
-        admin_id = get_admin_user_id(user.access_token)
-        if admin_id:
-            target_user_id = admin_id
-
-    docs = get_user_documents(user.access_token, target_user_id)
+    docs = get_user_documents(user.access_token, tenant_id=user.tenant_id)
     result = [
         DocumentStatus(
             id=doc["id"],
@@ -122,14 +117,7 @@ async def list_documents(user=Depends(get_current_user)):
 
 @router.get("/metadata", response_model=DocumentMetadataResponse)
 async def get_metadata(user=Depends(get_current_user)):
-    target_user_id = user.id
-    if user.role == "client":
-        from app.services.database import get_admin_user_id
-        admin_id = get_admin_user_id(user.access_token)
-        if admin_id:
-            target_user_id = admin_id
-
-    data = get_user_document_metadata(user.access_token, target_user_id)
+    data = get_user_document_metadata(user.access_token, tenant_id=user.tenant_id)
     return DocumentMetadataResponse(tags=data["tags"], languages=data["languages"])
 
 
@@ -137,14 +125,9 @@ async def get_metadata(user=Depends(get_current_user)):
 async def check_qdrant(user=Depends(get_current_user)):
     from app.services.qdrant_db import count_user_chunks, get_sample_chunks
     target_user_id = user.id
-    if user.role == "client":
-        from app.services.database import get_admin_user_id
-        admin_id = get_admin_user_id(user.access_token)
-        if admin_id:
-            target_user_id = admin_id
 
-    chunk_count = await count_user_chunks(target_user_id)
-    samples = await get_sample_chunks(target_user_id, limit=3)
+    chunk_count = await count_user_chunks(target_user_id, tenant_id=user.tenant_id)
+    samples = await get_sample_chunks(target_user_id, limit=3, tenant_id=user.tenant_id)
     print(f"[DEBUG] check-qdrant: user_id={target_user_id}, chunks={chunk_count}")
     return {
         "user_id": target_user_id,
@@ -159,7 +142,7 @@ async def get_chunks(document_id: str, user=Depends(get_current_user)):
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
 
-    doc = get_document(user.access_token, document_id)
+    doc = get_document(user.access_token, document_id, tenant_id=user.tenant_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
@@ -181,7 +164,7 @@ async def delete_document_endpoint(document_id: str, user=Depends(get_current_us
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
 
-    doc = get_document(user.access_token, document_id)
+    doc = get_document(user.access_token, document_id, tenant_id=user.tenant_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 

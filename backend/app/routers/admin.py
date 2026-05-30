@@ -1,30 +1,30 @@
 """Admin-only API endpoints for viewing all clients' conversation records."""
 
 import logging
+from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from app.middleware.auth import get_current_user
 from app.services.database import (
+    accept_tenant_admin_invite,
     get_all_threads_grouped,
+    get_tenant_admin_invite,
     get_thread_messages_admin,
     save_admin_message,
     get_flagged_messages,
     get_flagged_count,
     clear_thread_attention_flags,
 )
+from app.services.widget_tokens import hash_token
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Admin email whitelist — must match frontend/src/lib/roles.ts
-ADMIN_EMAILS = ["admin@example.com"]
-
 
 def _verify_admin(user) -> None:
     """Raise 403 if the user is not an admin."""
-    # Check database role first, then fallback to email whitelist
-    if user.role != "admin" and user.email.lower() not in ADMIN_EMAILS:
+    if user.role != "admin" or not user.tenant_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
@@ -36,7 +36,7 @@ def _verify_admin(user) -> None:
 async def list_all_conversations(user=Depends(get_current_user)):
     """Return every client's threads grouped by user email."""
     _verify_admin(user)
-    data = get_all_threads_grouped(user.access_token)
+    data = get_all_threads_grouped(user.tenant_id)
     logger.info("Admin conversations: %d clients found", len(data))
     for client in data:
         logger.info("  Client: %s, threads: %d", client.get("email"), len(client.get("threads", [])))
@@ -47,7 +47,7 @@ async def list_all_conversations(user=Depends(get_current_user)):
 async def get_conversation_messages(thread_id: str, user=Depends(get_current_user)):
     """Return all messages for a specific thread (admin access)."""
     _verify_admin(user)
-    messages = get_thread_messages_admin(user.access_token, thread_id)
+    messages = get_thread_messages_admin(user.tenant_id, thread_id)
     return {"messages": messages}
 
 
@@ -60,6 +60,24 @@ class SystemSettingsSchema(BaseModel):
     LANGFUSE_BASE_URL: str | None = None
 
 
+class AcceptInviteRequest(BaseModel):
+    token: str
+
+
+@router.post("/invites/accept")
+async def accept_invite(request: AcceptInviteRequest, user=Depends(get_current_user)):
+    invite = get_tenant_admin_invite(hash_token(request.token))
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found or already accepted")
+    expires_at = datetime.fromisoformat(invite["expires_at"].replace("Z", "+00:00"))
+    if expires_at < datetime.now(UTC):
+        raise HTTPException(status_code=410, detail="Invite expired")
+    if invite["email"].lower() != user.email.lower():
+        raise HTTPException(status_code=403, detail="Invite email does not match signed-in user")
+    profile = accept_tenant_admin_invite(invite["id"], invite["tenant_id"], user.id, user.email.lower())
+    return {"status": "accepted", "profile": profile}
+
+
 @router.get("/settings")
 async def get_settings(user=Depends(get_current_user)):
     """Return all system settings (API keys redacted)."""
@@ -69,7 +87,7 @@ async def get_settings(user=Depends(get_current_user)):
     db = get_user_db(user.access_token)
     
     try:
-        result = db.table("system_settings").select("*").execute()
+        result = db.table("system_settings").select("*").eq("tenant_id", user.tenant_id).execute()
         settings_dict = {row["key"]: row["value"] for row in result.data}
     except Exception as e:
         logger.warning(f"Error reading system settings from DB: {e}")
@@ -115,6 +133,7 @@ async def save_settings(settings: SystemSettingsSchema, user=Depends(get_current
         # Save or update key-value pair in system_settings
         try:
             db.table("system_settings").upsert({
+                "tenant_id": user.tenant_id,
                 "key": key,
                 "value": value,
                 "description": f"Admin configured {key}",
@@ -144,7 +163,7 @@ class AdminRespondRequest(BaseModel):
 async def get_flagged(user=Depends(get_current_user)):
     """Return all messages flagged as needing admin attention."""
     _verify_admin(user)
-    flagged = get_flagged_messages()
+    flagged = get_flagged_messages(user.tenant_id)
     return {"flagged": flagged}
 
 
@@ -152,7 +171,7 @@ async def get_flagged(user=Depends(get_current_user)):
 async def get_flagged_count_endpoint(user=Depends(get_current_user)):
     """Return the count of flagged messages for the badge counter."""
     _verify_admin(user)
-    count = get_flagged_count()
+    count = get_flagged_count(user.tenant_id)
     return {"count": count}
 
 
@@ -166,17 +185,16 @@ async def respond_to_thread(thread_id: str, request: AdminRespondRequest, user=D
 
     # Look up the thread to get the client's user_id
     from app.services.database import get_thread
-    thread = get_thread(user.access_token, thread_id)
+    thread = get_thread(user.access_token, thread_id, tenant_id=user.tenant_id)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
 
-    client_user_id = thread["user_id"]
+    client_user_id = thread.get("user_id")
 
     # Save admin message (user_id set to client for RLS compatibility)
-    saved = save_admin_message(thread_id, user.id, client_user_id, request.content.strip())
+    saved = save_admin_message(user.tenant_id, thread_id, user.id, client_user_id, request.content.strip())
 
     # Clear all attention flags in this thread
-    clear_thread_attention_flags(thread_id)
+    clear_thread_attention_flags(user.tenant_id, thread_id)
 
     return {"status": "success", "message_id": saved["id"]}
-

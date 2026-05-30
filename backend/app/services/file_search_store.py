@@ -27,6 +27,7 @@ async def process_document(
     file_bytes: bytes,
     mime_type: str,
     use_ocr: bool = False,
+    tenant_id: str | None = None,
 ) -> dict:
     try:
         content_hash = compute_content_hash(file_bytes)
@@ -62,11 +63,11 @@ async def process_document(
         logger.info(f"Document {document_id}: storing {len(chunk_data)} chunks in Supabase FTS + Qdrant")
 
         # Insert into Supabase first to get canonical chunk IDs
-        fts_rows = await asyncio.to_thread(insert_chunks_for_fts, access_token, user_id, document_id, chunk_data)
+        fts_rows = await asyncio.to_thread(insert_chunks_for_fts, access_token, user_id, document_id, chunk_data, tenant_id)
 
         # Use Supabase IDs as Qdrant point IDs so RRF merge can match across stores
         supabase_ids = [str(row["id"]) for row in fts_rows]
-        await insert_chunks(user_id, document_id, chunk_data, point_ids=supabase_ids)
+        await insert_chunks(user_id, document_id, chunk_data, point_ids=supabase_ids, tenant_id=tenant_id)
         await update_chunks_metadata(document_id, metadata)
 
         update_document_chunk_count(access_token, document_id, len(chunk_data))

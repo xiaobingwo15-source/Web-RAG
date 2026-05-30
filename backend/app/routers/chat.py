@@ -55,17 +55,17 @@ async def chat(request: ChatRequest, user=Depends(get_current_user)):
             if len(title) > 40:
                 title = title[:37] + "..."
             title = title or "New Chat"
-            create_thread(token, user.id, thread_id, title=title)
+            create_thread(token, user.id, thread_id, title=title, tenant_id=user.tenant_id)
 
         stored_content = json_lib.dumps({"text": request.message, "images": request.images}) if request.images else request.message
-        save_message(token, user.id, thread_id, "user", stored_content)
+        save_message(token, user.id, thread_id, "user", stored_content, tenant_id=user.tenant_id)
 
-        history_messages = get_thread_messages(token, thread_id)[:-1]
+        history_messages = get_thread_messages(token, thread_id, tenant_id=user.tenant_id)[:-1]
         history = build_history(history_messages)
 
         context_chunks = None
         if request.use_documents:
-            retrieval_result = await retrieve_context(token, user.id, request.message, mode=request.retrieval_mode)
+            retrieval_result = await retrieve_context(token, user.id, request.message, mode=request.retrieval_mode, tenant_id=user.tenant_id)
             context_chunks = retrieval_result["chunks"]
             logger.info(f"Retrieved {len(context_chunks)} context chunks for user={user.id}")
 
@@ -77,7 +77,7 @@ async def chat(request: ChatRequest, user=Depends(get_current_user)):
         except APIError:
             raise HTTPException(status_code=503, detail="The AI service is temporarily unavailable. Please try again in a moment.")
 
-        save_message(token, user.id, thread_id, "assistant", response_text)
+        save_message(token, user.id, thread_id, "assistant", response_text, tenant_id=user.tenant_id)
 
     return ChatResponse(response=response_text, thread_id=thread_id)
 
@@ -99,12 +99,12 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
             if len(title) > 40:
                 title = title[:37] + "..."
             title = title or "New Chat"
-            create_thread(token, user.id, thread_id, title=title)
+            create_thread(token, user.id, thread_id, title=title, tenant_id=user.tenant_id)
 
         stored_content = json_lib.dumps({"text": request.message, "images": request.images}) if request.images else request.message
-        save_message(token, user.id, thread_id, "user", stored_content)
+        save_message(token, user.id, thread_id, "user", stored_content, tenant_id=user.tenant_id)
 
-        history_messages = get_thread_messages(token, thread_id)[:-1]
+        history_messages = get_thread_messages(token, thread_id, tenant_id=user.tenant_id)[:-1]
         history = build_history(history_messages)
 
         async def event_generator():
@@ -121,6 +121,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                     enable_web_search=request.enable_web_search,
                     enable_sql=request.enable_sql,
                     images=request.images,
+                    tenant_id=user.tenant_id,
                 ):
                     if event["type"] == "thought":
                         payload = {
@@ -146,7 +147,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                         # Persist error message so the DB trigger can flag it
                         if thread_id:
                             try:
-                                save_message(token, user.id, thread_id, "assistant", event["content"])
+                                save_message(token, user.id, thread_id, "assistant", event["content"], tenant_id=user.tenant_id)
                             except Exception:
                                 logger.warning("Failed to save error message to DB", exc_info=True)
                         yield {
@@ -159,7 +160,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                         }
                         return
 
-                save_message(token, user.id, thread_id, "assistant", full_response)
+                save_message(token, user.id, thread_id, "assistant", full_response, tenant_id=user.tenant_id)
 
                 yield {
                     "data": json_lib.dumps({
@@ -187,7 +188,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
 
 @router.get("/threads", response_model=ThreadListResponse)
 async def list_threads(user=Depends(get_current_user)):
-    threads = get_user_threads(user.access_token, user.id)
+    threads = get_user_threads(user.access_token, user.id, tenant_id=user.tenant_id)
     return ThreadListResponse(
         threads=[
             ThreadSummary(id=t["id"], title=t["title"], created_at=t["created_at"])
@@ -198,10 +199,10 @@ async def list_threads(user=Depends(get_current_user)):
 
 @router.get("/threads/{thread_id}/messages", response_model=MessageListResponse)
 async def list_thread_messages(thread_id: str, user=Depends(get_current_user)):
-    thread = get_thread(user.access_token, thread_id)
+    thread = get_thread(user.access_token, thread_id, tenant_id=user.tenant_id)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
-    messages = get_thread_messages(user.access_token, thread_id)
+    messages = get_thread_messages(user.access_token, thread_id, tenant_id=user.tenant_id)
     return MessageListResponse(
         messages=[
             MessageResponse(
@@ -217,8 +218,8 @@ async def list_thread_messages(thread_id: str, user=Depends(get_current_user)):
 
 @router.delete("/threads/{thread_id}")
 async def delete_thread_endpoint(thread_id: str, user=Depends(get_current_user)):
-    thread = get_thread(user.access_token, thread_id)
+    thread = get_thread(user.access_token, thread_id, tenant_id=user.tenant_id)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
-    db_delete_thread(user.access_token, thread_id)
+    db_delete_thread(user.access_token, thread_id, tenant_id=user.tenant_id)
     return {"status": "deleted"}

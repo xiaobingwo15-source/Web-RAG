@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     qdrant_api_key: str = ""
     backend_url: str = "http://localhost:8000"
     frontend_url: str = "http://localhost:5173"
+    owner_api_key: str = ""
+    widget_token_secret: str = ""
 
     @property
     def cors_origins(self) -> list[str]:
@@ -113,4 +115,3 @@ def _get_cached_setting(key_name: str, expiry_time: float) -> str | None:
     except Exception:
         pass
     return None
-
