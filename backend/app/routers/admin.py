@@ -14,6 +14,8 @@ from app.services.database import (
     get_flagged_messages,
     get_flagged_count,
     clear_thread_attention_flags,
+    get_tenant_users,
+    update_user_status,
 )
 from app.services.widget_tokens import hash_token
 
@@ -198,3 +200,35 @@ async def respond_to_thread(thread_id: str, request: AdminRespondRequest, user=D
     clear_thread_attention_flags(user.tenant_id, thread_id)
 
     return {"status": "success", "message_id": saved["id"]}
+
+
+# --- User Management endpoints ---
+
+@router.get("/users")
+async def list_tenant_users(user=Depends(get_current_user)):
+    """List all users in the admin's tenant."""
+    _verify_admin(user)
+    users = get_tenant_users(user.tenant_id)
+    return {"users": users}
+
+
+@router.post("/users/{user_id}/approve")
+async def approve_user(user_id: str, user=Depends(get_current_user)):
+    """Approve a pending user."""
+    _verify_admin(user)
+    result = update_user_status(user.tenant_id, user_id, "approved")
+    if not result:
+        raise HTTPException(status_code=404, detail="User not found in this tenant")
+    return {"status": "approved"}
+
+
+@router.post("/users/{user_id}/suspend")
+async def suspend_user(user_id: str, user=Depends(get_current_user)):
+    """Suspend a user."""
+    _verify_admin(user)
+    if user_id == user.id:
+        raise HTTPException(status_code=400, detail="Cannot suspend yourself")
+    result = update_user_status(user.tenant_id, user_id, "suspended")
+    if not result:
+        raise HTTPException(status_code=404, detail="User not found in this tenant")
+    return {"status": "suspended"}

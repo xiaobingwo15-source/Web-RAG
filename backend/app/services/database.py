@@ -27,6 +27,24 @@ def get_tenant_by_slug(slug: str) -> dict | None:
     return result.data[0] if result.data else None
 
 
+def get_tenant_by_origin(origin: str) -> dict | None:
+    """Find a tenant whose allowed_origins contains the given origin."""
+    db = get_db()
+    # Get all active tenants and match in Python since allowed_origins
+    # may store full URLs (e.g. with path) while we pass clean origins
+    result = (
+        db.table("tenants")
+        .select("*")
+        .eq("status", "active")
+        .execute()
+    )
+    for tenant in result.data:
+        for allowed in (tenant.get("allowed_origins") or []):
+            if allowed.startswith(origin) or origin.startswith(allowed):
+                return tenant
+    return None
+
+
 def create_tenant(name: str, slug: str, allowed_origins: list[str]) -> dict:
     db = get_db()
     result = (
@@ -40,6 +58,39 @@ def create_tenant(name: str, slug: str, allowed_origins: list[str]) -> dict:
         .execute()
     )
     return result.data[0]
+
+
+def delete_tenant(tenant_id: str) -> bool:
+    """Delete a tenant and all its associated data. Returns True if deleted."""
+    db = get_db()
+
+    # 1. Delete document chunks
+    db.table("document_chunks").delete().eq("tenant_id", tenant_id).execute()
+
+    # 2. Delete documents
+    db.table("documents").delete().eq("tenant_id", tenant_id).execute()
+
+    # 3. Delete file search stores
+    db.table("file_search_stores").delete().eq("tenant_id", tenant_id).execute()
+
+    # 4. Delete threads (CASCADE will delete messages)
+    db.table("threads").delete().eq("tenant_id", tenant_id).execute()
+
+    # 5. Delete agent traces
+    db.table("agent_traces").delete().eq("tenant_id", tenant_id).execute()
+
+    # 6. Delete system settings
+    db.table("system_settings").delete().eq("tenant_id", tenant_id).execute()
+
+    # 7. Delete admin invites
+    db.table("tenant_admin_invites").delete().eq("tenant_id", tenant_id).execute()
+
+    # 8. Unlink profiles from this tenant (users keep their auth account)
+    db.table("profiles").update({"tenant_id": None, "role": "client", "status": "pending"}).eq("tenant_id", tenant_id).execute()
+
+    # 9. Delete the tenant
+    result = db.table("tenants").delete().eq("id", tenant_id).execute()
+    return len(result.data) > 0
 
 
 def create_tenant_admin_invite(tenant_id: str, email: str, token_hash: str, expires_at: str) -> dict:
@@ -74,12 +125,38 @@ def accept_tenant_admin_invite(invite_id: str, tenant_id: str, user_id: str, ema
     db = get_db()
     profile = (
         db.table("profiles")
-        .update({"tenant_id": tenant_id, "role": "admin", "email": email})
+        .update({"tenant_id": tenant_id, "role": "admin", "email": email, "status": "approved"})
         .eq("id", user_id)
         .execute()
     )
     db.table("tenant_admin_invites").update({"accepted_at": "now()"}).eq("id", invite_id).execute()
     return profile.data[0] if profile.data else {}
+
+
+def get_tenant_users(tenant_id: str) -> list[dict]:
+    """Fetch all profiles for a tenant."""
+    db = get_db()
+    result = (
+        db.table("profiles")
+        .select("id, email, role, status, created_at")
+        .eq("tenant_id", tenant_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return result.data
+
+
+def update_user_status(tenant_id: str, user_id: str, new_status: str) -> dict | None:
+    """Update a user's status within a tenant. Returns updated profile or None."""
+    db = get_db()
+    result = (
+        db.table("profiles")
+        .update({"status": new_status})
+        .eq("id", user_id)
+        .eq("tenant_id", tenant_id)
+        .execute()
+    )
+    return result.data[0] if result.data else None
 
 
 def _apply_tenant(query, tenant_id: str | None):

@@ -8,9 +8,10 @@ interface AuthContextValue {
   user: User | null
   session: Session | null
   role: string | null
+  status: string | null
   loading: boolean
   signIn: (email: string, password: string) => Promise<{ error: AuthError | null }>
-  signUp: (email: string, password: string) => Promise<{ error: AuthError | null }>
+  signUp: (email: string, password: string, tenantSlug?: string) => Promise<{ error: AuthError | null }>
   signOut: () => Promise<{ error: AuthError | null }>
   resetPassword: (email: string) => Promise<{ error: AuthError | null }>
   updatePassword: (newPassword: string) => Promise<{ error: AuthError | null }>
@@ -22,6 +23,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [session, setSession] = useState<Session | null>(null)
   const [role, setRole] = useState<string | null>(null)
+  const [status, setStatus] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const initialLoadDone = useRef(false)
 
@@ -39,13 +41,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (sess?.access_token) {
         try {
           const profile = await getUserProfile(sess.access_token)
-          if (mounted) setRole(profile.role)
+          if (mounted) {
+            setRole(profile.role)
+            setStatus(profile.status ?? null)
+          }
         } catch (err) {
           console.error('Failed to load user role:', err)
-          if (mounted) setRole('client')
+          if (mounted) {
+            setRole('client')
+            setStatus(null)
+          }
         }
       } else {
         setRole(null)
+        setStatus(null)
       }
 
       if (mounted) {
@@ -75,8 +84,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error }
   }
 
-  const signUp = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signUp({ email, password })
+  const signUp = async (email: string, password: string, tenantSlug?: string) => {
+    const { error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: tenantSlug ? { tenant_slug: tenantSlug } : undefined,
+      },
+    })
     return { error }
   }
 
@@ -101,6 +116,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     user,
     session,
     role,
+    status,
     loading,
     signIn,
     signUp,

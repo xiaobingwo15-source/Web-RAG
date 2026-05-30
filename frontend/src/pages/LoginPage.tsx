@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
-import { 
-  Lock, 
-  Mail, 
-  ArrowRight, 
+import { validateTenantSlug, resolveTenant } from '@/lib/api'
+import type { TenantInfo } from '@/lib/api'
+import {
+  Lock,
+  Mail,
+  ArrowRight,
   ArrowLeft,
   Eye,
   EyeOff
@@ -17,10 +19,40 @@ export function LoginPage() {
   const [isSignUp, setIsSignUp] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [tenantInfo, setTenantInfo] = useState<TenantInfo | null>(null)
+  const [tenantValidating, setTenantValidating] = useState(true)
   const { signIn, signUp } = useAuth()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
 
   const overlayRef = useRef<HTMLDivElement>(null)
+
+  // Resolve tenant: try ?tenant= slug first, then auto-detect from domain
+  useEffect(() => {
+    const slug = searchParams.get('tenant')
+    if (slug) {
+      validateTenantSlug(slug)
+        .then((info) => {
+          setTenantInfo(info)
+          setTenantValidating(false)
+        })
+        .catch(() => {
+          setError('Invalid or inactive tenant. Please check your link.')
+          setTenantValidating(false)
+        })
+    } else {
+      // Auto-detect tenant from the current domain
+      resolveTenant()
+        .then((info) => {
+          setTenantInfo(info)
+          setTenantValidating(false)
+        })
+        .catch(() => {
+          setError('This domain is not configured for portal access.')
+          setTenantValidating(false)
+        })
+    }
+  }, [searchParams])
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -39,12 +71,25 @@ export function LoginPage() {
     setError('')
     setLoading(true)
 
-    const { error } = isSignUp ? await signUp(email, password) : await signIn(email, password)
-
-    if (error) {
-      setError(error.message)
+    if (isSignUp) {
+      if (!tenantInfo) {
+        setError('Cannot sign up without a valid tenant link.')
+        setLoading(false)
+        return
+      }
+      const { error } = await signUp(email, password, tenantInfo.slug)
+      if (error) {
+        setError(error.message)
+      } else {
+        navigate('/dashboard')
+      }
     } else {
-      navigate('/dashboard')
+      const { error } = await signIn(email, password)
+      if (error) {
+        setError(error.message)
+      } else {
+        navigate('/dashboard')
+      }
     }
     setLoading(false)
   }
@@ -114,7 +159,7 @@ export function LoginPage() {
             </div>
 
             {/* Form */}
-            <form onSubmit={handleSubmit} className="space-y-6">
+            <form onSubmit={handleSubmit} className="space-y-6" aria-disabled={tenantValidating}>
               
               {/* Email Field */}
               <div className="space-y-2">
@@ -188,11 +233,13 @@ export function LoginPage() {
               <div className="pt-2 space-y-4">
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || tenantValidating}
                   className="group w-full bg-primary-container text-on-primary-container font-bold text-xs py-3.5 flex justify-center items-center gap-2 hover:bg-opacity-90 transition-all active:scale-[0.98] uppercase tracking-widest cursor-pointer disabled:opacity-50"
                 >
                   {loading ? (
                     'Authorizing...'
+                  ) : tenantValidating ? (
+                    'Validating...'
                   ) : (
                     <>
                       <span>{isSignUp ? 'Create Account' : 'Sign In'}</span>
@@ -215,7 +262,7 @@ export function LoginPage() {
                       <ArrowLeft className="h-3.5 w-3.5 group-hover:-translate-x-0.5 transition-transform" />
                       <span>Back to Sign In</span>
                     </button>
-                  ) : (
+                  ) : tenantInfo ? (
                     <p className="text-xs text-on-surface-variant">
                       Need access?{' '}
                       <button
@@ -229,7 +276,7 @@ export function LoginPage() {
                         Create an account
                       </button>
                     </p>
-                  )}
+                  ) : null}
                 </div>
               </div>
             </form>

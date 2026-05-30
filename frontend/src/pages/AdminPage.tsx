@@ -11,10 +11,13 @@ import {
   saveAdminSettings,
   getFlaggedMessages,
   submitAdminResponse,
+  getAdminUsers,
+  updateUserStatus,
   type AdminClient,
   type AdminMessage,
   type SystemSettings,
   type FlaggedMessage,
+  type AdminUser,
 } from '@/lib/api'
 import {
   Shield,
@@ -36,7 +39,6 @@ import {
   EyeOff,
   Save,
   AlertTriangle,
-  FileJson,
 } from 'lucide-react'
 
 export function AdminPage() {
@@ -54,7 +56,7 @@ export function AdminPage() {
     clearUploadFailure
   } = useDocuments()
 
-  const [activeTab, setActiveTab] = useState<'conversations' | 'settings'>('conversations')
+  const [activeTab, setActiveTab] = useState<'conversations' | 'settings' | 'users'>('conversations')
   const [clients, setClients] = useState<AdminClient[]>([])
   const [loading, setLoading] = useState(true)
   const [expandedClient, setExpandedClient] = useState<string | null>(null)
@@ -84,6 +86,10 @@ export function AdminPage() {
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [settingsSuccess, setSettingsSuccess] = useState(false)
   const [settingsError, setSettingsError] = useState<string | null>(null)
+
+  // User Management State
+  const [tenantUsers, setTenantUsers] = useState<AdminUser[]>([])
+  const [usersLoading, setUsersLoading] = useState(false)
 
   const fetchConversations = useCallback(async () => {
     if (!session?.access_token) return
@@ -143,6 +149,35 @@ export function AdminPage() {
       fetchSettings()
     }
   }, [activeTab, fetchSettings])
+
+  const fetchUsers = useCallback(async () => {
+    if (!session?.access_token) return
+    setUsersLoading(true)
+    try {
+      const data = await getAdminUsers(session.access_token)
+      setTenantUsers(data.users)
+    } catch (err) {
+      console.error('Failed to fetch users:', err)
+    } finally {
+      setUsersLoading(false)
+    }
+  }, [session?.access_token])
+
+  useEffect(() => {
+    if (activeTab === 'users') {
+      fetchUsers()
+    }
+  }, [activeTab, fetchUsers])
+
+  const handleUpdateUserStatus = async (userId: string, action: 'approve' | 'suspend') => {
+    if (!session?.access_token) return
+    try {
+      await updateUserStatus(userId, action, session.access_token)
+      await fetchUsers()
+    } catch (err) {
+      console.error(`Failed to ${action} user:`, err)
+    }
+  }
 
   const handleSelectThread = async (threadId: string, title: string) => {
     if (!session?.access_token) return
@@ -263,16 +298,20 @@ export function AdminPage() {
             <Settings className="h-3.5 w-3.5" />
             API Keys
           </button>
+          <button
+            onClick={() => setActiveTab('users')}
+            className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold transition-all ${
+              activeTab === 'users'
+                ? 'bg-primary text-primary-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+            }`}
+          >
+            <Users className="h-3.5 w-3.5" />
+            Users
+          </button>
         </div>
 
-        {/* API Docs link */}
-        <button
-          onClick={() => navigate('/admin/scalar')}
-          className="flex w-full items-center gap-2 border-b border-border px-4 py-2.5 text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-        >
-          <FileJson className="h-4 w-4" />
-          <span className="text-xs font-semibold">API Docs</span>
-        </button>
+
 
         {/* Shared Knowledge Base documents section */}
         <div className="flex items-center gap-2 border-b border-border px-4 py-2.5 bg-muted/5">
@@ -318,7 +357,7 @@ export function AdminPage() {
         </div>
       </aside>
 
-      {/* ── Right Panel: Toggle between Chats and Settings ── */}
+      {/* ── Right Panel: Toggle between Chats, Settings, and Users ── */}
       {activeTab === 'conversations' ? (
         <main className="flex flex-1 flex-col overflow-hidden">
           {/* Top bar */}
@@ -599,6 +638,110 @@ export function AdminPage() {
                       Choose a client and thread from the left panel to view their conversation
                     </p>
                   </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </main>
+      ) : activeTab === 'users' ? (
+        /* ── User Management ── */
+        <main className="flex flex-1 flex-col overflow-hidden">
+          <div className="flex items-center justify-between border-b border-border px-6 py-3 bg-card/50">
+            <div className="flex items-center gap-3">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+                <Users className="h-4 w-4 text-primary" />
+              </div>
+              <div>
+                <h1 className="text-sm font-semibold text-foreground">User Management</h1>
+                <p className="text-[10px] text-muted-foreground">
+                  {tenantUsers.length} user{tenantUsers.length !== 1 ? 's' : ''} in your organization
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={fetchUsers}
+              disabled={usersLoading}
+              className="flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${usersLoading ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-6 bg-card/10">
+            <div className="mx-auto max-w-4xl">
+              {usersLoading ? (
+                <div className="flex h-64 items-center justify-center">
+                  <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : tenantUsers.length === 0 ? (
+                <div className="flex h-64 items-center justify-center">
+                  <p className="text-xs text-muted-foreground">No users found</p>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-border bg-card shadow-sm overflow-hidden">
+                  {/* Table header */}
+                  <div className="grid grid-cols-[1fr_80px_100px_120px_120px] gap-4 px-5 py-2.5 border-b border-border bg-muted/30 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                    <span>Email</span>
+                    <span>Role</span>
+                    <span>Status</span>
+                    <span>Joined</span>
+                    <span>Actions</span>
+                  </div>
+                  {/* Table rows */}
+                  {tenantUsers.map((u) => (
+                    <div
+                      key={u.id}
+                      className="grid grid-cols-[1fr_80px_100px_120px_120px] gap-4 items-center px-5 py-3 border-b border-border/50 hover:bg-muted/20 transition-colors"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 flex-shrink-0">
+                          <User className="h-3.5 w-3.5 text-primary" />
+                        </div>
+                        <span className="truncate text-xs text-foreground">{u.email}</span>
+                      </div>
+                      <span className={`text-xs font-medium ${u.role === 'admin' ? 'text-amber-500' : 'text-muted-foreground'}`}>
+                        {u.role}
+                      </span>
+                      <span>
+                        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                          u.status === 'approved'
+                            ? 'bg-green-500/10 text-green-500'
+                            : u.status === 'pending'
+                              ? 'bg-amber-500/10 text-amber-500'
+                              : 'bg-destructive/10 text-destructive'
+                        }`}>
+                          {u.status}
+                        </span>
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {new Date(u.created_at).toLocaleDateString(undefined, {
+                          month: 'short',
+                          day: 'numeric',
+                          year: 'numeric',
+                        })}
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        {u.id === user?.id ? (
+                          <span className="text-[10px] text-muted-foreground italic">You</span>
+                        ) : u.status === 'pending' || u.status === 'suspended' ? (
+                          <button
+                            onClick={() => handleUpdateUserStatus(u.id, 'approve')}
+                            className="rounded-md bg-green-500/10 px-2.5 py-1 text-[10px] font-semibold text-green-500 hover:bg-green-500/20 transition-colors cursor-pointer"
+                          >
+                            Approve
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleUpdateUserStatus(u.id, 'suspend')}
+                            className="rounded-md bg-destructive/10 px-2.5 py-1 text-[10px] font-semibold text-destructive hover:bg-destructive/20 transition-colors cursor-pointer"
+                          >
+                            Suspend
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>

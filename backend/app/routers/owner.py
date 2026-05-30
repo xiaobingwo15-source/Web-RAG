@@ -3,7 +3,7 @@ import re
 from fastapi import APIRouter, Header, HTTPException, status
 from pydantic import BaseModel, Field
 from app.config import Settings
-from app.services.database import create_tenant, create_tenant_admin_invite
+from app.services.database import create_tenant, create_tenant_admin_invite, delete_tenant, get_tenant_by_slug
 from app.services.widget_tokens import hash_token, new_invite_token
 
 router = APIRouter()
@@ -50,3 +50,12 @@ async def create_tenant_endpoint(request: CreateTenantRequest, x_owner_key: str 
             "expires_at": invite["expires_at"],
         },
     }
+
+
+@router.delete("/tenants/{tenant_id}")
+async def delete_tenant_endpoint(tenant_id: str, x_owner_key: str | None = Header(default=None)):
+    _verify_owner(x_owner_key)
+    deleted = delete_tenant(tenant_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return {"status": "deleted", "tenant_id": tenant_id}

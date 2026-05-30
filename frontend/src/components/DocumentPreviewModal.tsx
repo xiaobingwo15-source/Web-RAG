@@ -411,7 +411,7 @@ export function DocumentPreviewModal({
 
   const renderDocumentContent = (): ReactNode => (
     <div
-      className={`${contentFullscreen ? 'flex-1 min-h-0' : 'max-h-[50vh]'} overflow-y-auto rounded-lg border border-border bg-white p-5 text-slate-700 shadow-sm doc-content`}
+      className={`${contentFullscreen ? 'flex-1 min-h-0' : 'max-h-[50vh]'} overflow-y-auto rounded-lg border border-border bg-white px-6 py-8 sm:px-8 text-slate-700 shadow-sm doc-content`}
     >
       <div
         className="doc-rich-text max-w-none"
@@ -443,34 +443,56 @@ export function DocumentPreviewModal({
             transform: translateY(0);
           }
         }
+
+        /* === Blog-style article typography === */
         .doc-rich-text {
-          color: #334155;
-          font-size: 0.9375rem;
-          line-height: 1.65;
+          color: #1e293b;
+          font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          font-size: 1.0625rem;
+          line-height: 1.8;
+          letter-spacing: -0.006em;
           width: 100%;
           overflow-wrap: anywhere;
           word-break: normal;
+          max-width: 72ch;
+          margin: 0 auto;
         }
+
+        /* Headings — clear hierarchy with breathing room */
         .doc-rich-text h1,
         .doc-rich-text h2,
         .doc-rich-text h3 {
-          color: #111827;
-          font-weight: 700;
-          letter-spacing: 0;
-          line-height: 1.25;
-          margin: 0 0 1rem;
+          color: #0f172a;
+          font-weight: 800;
+          letter-spacing: -0.025em;
+          line-height: 1.3;
         }
         .doc-rich-text h1 {
-          font-size: 1.5rem;
+          font-size: 1.875rem;
+          margin: 2.5rem 0 1rem;
+          padding-bottom: 0.625rem;
+          border-bottom: 2px solid #e2e8f0;
         }
         .doc-rich-text h2 {
-          font-size: 1.25rem;
+          font-size: 1.5rem;
+          margin: 2.25rem 0 0.875rem;
+          padding-bottom: 0.5rem;
+          border-bottom: 1px solid #e2e8f0;
         }
         .doc-rich-text h3 {
-          font-size: 1.0625rem;
+          font-size: 1.25rem;
+          margin: 1.75rem 0 0.75rem;
+          color: #334155;
         }
+        .doc-rich-text h1:first-child,
+        .doc-rich-text h2:first-child,
+        .doc-rich-text h3:first-child {
+          margin-top: 0;
+        }
+
+        /* Paragraphs — generous spacing for readability */
         .doc-rich-text p {
-          margin: 0 0 1.15rem;
+          margin: 0 0 1.5rem;
           width: 100%;
           max-width: none;
           white-space: normal;
@@ -478,56 +500,86 @@ export function DocumentPreviewModal({
         .doc-rich-text p:last-child {
           margin-bottom: 0;
         }
+
+        /* Reflowed text lines from document parsing */
         .doc-rich-text .doc-text-line {
           display: block;
-          margin: 0 0 0.35rem;
+          margin: 0 0 0.5rem;
           max-width: none;
+          line-height: 1.8;
         }
         .doc-rich-text .doc-key-line {
-          color: #111827;
+          color: #0f172a;
           font-weight: 700;
+          font-size: 1.0625rem;
+          margin-top: 1.25rem;
+          margin-bottom: 0.375rem;
         }
+
+        /* Inline formatting */
         .doc-rich-text strong {
-          color: #111827;
+          color: #0f172a;
           font-weight: 700;
         }
+
+        /* Lists — clean bullets with good indentation */
         .doc-rich-text ul {
-          margin: 0.75rem 0 1.35rem;
-          padding-left: 1.55rem;
-          list-style: disc;
+          margin: 1rem 0 1.5rem;
+          padding-left: 1.75rem;
+          list-style: none;
         }
-        .doc-rich-text li {
-          margin: 0.4rem 0;
-          padding-left: 0.15rem;
+        .doc-rich-text ul li {
+          position: relative;
+          margin: 0.5rem 0;
+          padding-left: 0.25rem;
+          line-height: 1.75;
         }
+        .doc-rich-text ul li::before {
+          content: '';
+          position: absolute;
+          left: -1.25rem;
+          top: 0.7em;
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: #94a3b8;
+        }
+
+        /* Horizontal rule — subtle section divider */
         .doc-rich-text hr {
           border: 0;
-          border-top: 1px solid #dbe3ee;
-          margin: 1.5rem 0;
+          height: 1px;
+          background: linear-gradient(to right, transparent, #cbd5e1, transparent);
+          margin: 2.5rem 0;
         }
+
+        /* Tables — clean, modern, with rounded corners */
         .doc-content .table-scroll {
           overflow-x: auto;
-          margin: 2rem 0 0.5rem;
-          border: 1px solid #dbe3ee;
-          border-radius: 0;
+          margin: 1.75rem 0 2rem;
+          border: 1px solid #e2e8f0;
+          border-radius: 10px;
           background: #ffffff;
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
         }
         .doc-content table {
           width: 100%;
           border-collapse: collapse;
-          font-size: 0.875rem;
-          line-height: 1.5;
+          font-size: 0.9375rem;
+          line-height: 1.6;
         }
         .doc-content thead {
           background: #f8fafc;
         }
         .doc-content th {
-          padding: 0.75rem 1rem;
+          padding: 0.875rem 1.125rem;
           text-align: left;
           font-weight: 700;
-          color: #111827;
-          border-right: 1px solid #dbe3ee;
-          border-bottom: 1px solid #dbe3ee;
+          color: #0f172a;
+          font-size: 0.8125rem;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          border-bottom: 2px solid #e2e8f0;
           white-space: normal;
         }
         .doc-content th:last-child,
@@ -535,9 +587,8 @@ export function DocumentPreviewModal({
           border-right: 0;
         }
         .doc-content td {
-          padding: 0.75rem 1rem;
-          border-right: 1px solid #dbe3ee;
-          border-bottom: 1px solid #dbe3ee;
+          padding: 0.875rem 1.125rem;
+          border-bottom: 1px solid #f1f5f9;
           color: #334155;
           vertical-align: top;
         }
@@ -546,6 +597,19 @@ export function DocumentPreviewModal({
         }
         .doc-content tbody tr:hover {
           background: #f8fafc;
+        }
+        .doc-content tbody tr:hover td {
+          color: #0f172a;
+        }
+
+        /* Fullscreen article mode — wider, centered reading */
+        .doc-content-fullscreen .doc-rich-text {
+          max-width: 78ch;
+          font-size: 1.125rem;
+          line-height: 1.85;
+        }
+        .doc-content-fullscreen .doc-content {
+          background: #fafbfc;
         }
       `}</style>
       <div
@@ -576,7 +640,7 @@ export function DocumentPreviewModal({
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto px-6 py-4 min-h-0">
+        <div className="flex-1 overflow-y-auto px-6 py-5 min-h-0">
           {loading ? (
             <div className="flex flex-col items-center justify-center gap-3 py-16">
               <Loader2 className="h-8 w-8 animate-spin text-primary" />
@@ -624,9 +688,11 @@ export function DocumentPreviewModal({
               {/* Full text */}
               <div className="transition-all duration-300 ease-out">
                 {contentFullscreen ? (
-                  <div className="doc-content-fullscreen fixed inset-0 z-[60] flex flex-col bg-background p-4 sm:p-6">
-                    {renderContentToolbar()}
-                    {renderDocumentContent()}
+                  <div className="doc-content-fullscreen fixed inset-0 z-[60] flex flex-col bg-[#f8f9fb] p-4 sm:p-8">
+                    <div className="mx-auto w-full max-w-4xl flex flex-col flex-1 min-h-0">
+                      {renderContentToolbar()}
+                      {renderDocumentContent()}
+                    </div>
                   </div>
                 ) : (
                   <>

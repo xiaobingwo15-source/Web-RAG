@@ -39,6 +39,8 @@ def build_history(messages: list[dict]) -> list[dict]:
 
 @router.post("/", response_model=ChatResponse)
 async def chat(request: ChatRequest, user=Depends(get_current_user)):
+    if user.status != "approved":
+        raise HTTPException(status_code=403, detail="Your account is pending approval. Please wait for an admin to approve your access.")
     client = get_llm_client()
     is_new_thread = not request.thread_id
     thread_id = request.thread_id or str(uuid.uuid4())
@@ -84,6 +86,8 @@ async def chat(request: ChatRequest, user=Depends(get_current_user)):
 
 @router.post("/stream")
 async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
+    if user.status != "approved":
+        raise HTTPException(status_code=403, detail="Your account is pending approval. Please wait for an admin to approve your access.")
     is_new_thread = not request.thread_id
     thread_id = request.thread_id or str(uuid.uuid4())
     token = user.access_token

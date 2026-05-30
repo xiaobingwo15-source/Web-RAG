@@ -9,7 +9,7 @@ import { ChatSidebar } from '@/components/ChatSidebar'
 import { ChatMessage } from '@/components/ChatMessage'
 import { ChatInput } from '@/components/ChatInput'
 import { ChatHistoryPanel } from '@/components/ChatHistoryPanel'
-import { PanelRightOpen, PanelRightClose, MessageSquare, User, LogOut } from 'lucide-react'
+import { PanelRightOpen, PanelRightClose, MessageSquare, User, LogOut, Clock, AlertTriangle } from 'lucide-react'
 
 export function ChatPage() {
   const { messages, sendMessage, isStreaming, clearMessages, loadThread, currentAction } = useChat()
@@ -24,7 +24,7 @@ export function ChatPage() {
     clearUploadFailure
   } = useDocuments()
   const { threads, selectedThreadId, setSelectedThreadId, refreshThreads, removeThread } = useThreads()
-  const { user, role, signOut } = useAuth()
+  const { user, role, status, signOut } = useAuth()
   const navigate = useNavigate()
   const admin = isAdmin(role || user?.email)
   const [showPanel, setShowPanel] = useState(true)
@@ -32,6 +32,56 @@ export function ChatPage() {
   const handleLogout = async () => {
     await signOut()
     navigate('/login')
+  }
+
+  // Pending approval screen
+  if (status === 'pending') {
+    return (
+      <div className="flex h-screen bg-background items-center justify-center">
+        <div className="text-center max-w-md p-8">
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 border border-primary/20">
+            <Clock className="h-7 w-7 text-primary" />
+          </div>
+          <h2 className="text-xl font-semibold text-foreground mb-2">
+            Account Pending Approval
+          </h2>
+          <p className="text-sm text-muted-foreground mb-6">
+            Your account has been created successfully. An administrator will review and approve your access shortly.
+          </p>
+          <button
+            onClick={handleLogout}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+          >
+            Sign out
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // Suspended screen
+  if (status === 'suspended') {
+    return (
+      <div className="flex h-screen bg-background items-center justify-center">
+        <div className="text-center max-w-md p-8">
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-destructive/10 border border-destructive/20">
+            <AlertTriangle className="h-7 w-7 text-destructive" />
+          </div>
+          <h2 className="text-xl font-semibold text-foreground mb-2">
+            Account Suspended
+          </h2>
+          <p className="text-sm text-muted-foreground mb-6">
+            Your account has been suspended. Please contact your administrator for more information.
+          </p>
+          <button
+            onClick={handleLogout}
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+          >
+            Sign out
+          </button>
+        </div>
+      </div>
+    )
   }
 
   const handleNewChat = () => {

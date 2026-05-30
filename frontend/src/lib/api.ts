@@ -347,6 +347,7 @@ export interface UserProfileResponse {
   email: string
   role: string
   tenant_id?: string | null
+  status?: string
 }
 
 export async function getUserProfile(token: string): Promise<UserProfileResponse> {
@@ -443,5 +444,62 @@ export async function submitAdminResponse(
     body: JSON.stringify({ content }),
   })
   if (!response.ok) throw new Error(`Submit admin response failed: ${response.status}`)
+  return response.json()
+}
+
+
+// --- Admin User Management API ---
+
+export interface AdminUser {
+  id: string
+  email: string
+  role: string
+  status: string
+  created_at: string
+}
+
+export interface AdminUsersResponse {
+  users: AdminUser[]
+}
+
+export async function getAdminUsers(token: string): Promise<AdminUsersResponse> {
+  const response = await fetch('/api/admin/users', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Fetch admin users failed: ${response.status}`)
+  return response.json()
+}
+
+export async function updateUserStatus(
+  userId: string,
+  action: 'approve' | 'suspend',
+  token: string,
+): Promise<{ status: string }> {
+  const response = await fetch(`/api/admin/users/${userId}/${action}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Update user status failed: ${response.status}`)
+  return response.json()
+}
+
+
+// --- Tenant Validation ---
+
+export interface TenantInfo {
+  id: string
+  name: string
+  slug: string
+}
+
+export async function validateTenantSlug(slug: string): Promise<TenantInfo> {
+  const response = await fetch(`/api/auth/tenant/${encodeURIComponent(slug)}`)
+  if (!response.ok) throw new Error(`Invalid tenant: ${response.status}`)
+  return response.json()
+}
+
+export async function resolveTenant(): Promise<TenantInfo> {
+  const response = await fetch('/api/auth/tenant/resolve')
+  if (!response.ok) throw new Error(`Could not resolve tenant: ${response.status}`)
   return response.json()
 }
