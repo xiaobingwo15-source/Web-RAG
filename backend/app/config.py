@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     backend_url: str = "http://localhost:8000"
     frontend_url: str = "http://localhost:5173"
 
+    @property
+    def cors_origins(self) -> list[str]:
+        """Parse comma-separated FRONTEND_URL into a list of allowed origins."""
+        return [o.strip() for o in self.frontend_url.split(",") if o.strip()]
+
     model_config = {
         "env_file": "../.env",
         "env_file_encoding": "utf-8",

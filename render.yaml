@@ -1,0 +1,41 @@
+# render.yaml — Infrastructure-as-code for Render deployment
+# This file tells Render how to build and run your backend.
+# You can also configure via the Render dashboard UI instead.
+
+services:
+  - type: web
+    name: web-rag-backend
+    runtime: python
+    plan: free
+    buildCommand: cd backend && pip install -r requirements.txt
+    startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      # Supabase
+      - key: SUPABASE_URL
+        sync: false  # set manually in dashboard
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      # Qdrant
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      # LLM
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      # Langfuse
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_BASE_URL
+        sync: false
+      # Frontend URL (for CORS) — comma-separated list of allowed origins
+      # Example: http://localhost:5173,https://web-rag.vercel.app
+      - key: FRONTEND_URL
+        sync: false
