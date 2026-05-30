@@ -1,4 +1,4 @@
-import { createContext, createElement, useContext, useEffect, useState } from 'react'
+import { createContext, createElement, useContext, useEffect, useRef, useState } from 'react'
 import type { AuthError, Session, User } from '@supabase/supabase-js'
 import type { ReactNode } from 'react'
 import { supabase } from '@/lib/supabase'
@@ -23,12 +23,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null)
   const [role, setRole] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const initialLoadDone = useRef(false)
 
   useEffect(() => {
     let mounted = true
 
-    const loadSession = async (sess: Session | null) => {
-      setLoading(true)
+    const loadSession = async (sess: Session | null, isInitial = false) => {
+      // Only show loading spinner on the very first load, not on token refreshes
+      if (isInitial || !initialLoadDone.current) {
+        setLoading(true)
+      }
       setSession(sess)
       setUser(sess?.user ?? null)
 
@@ -44,17 +48,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setRole(null)
       }
 
-      if (mounted) setLoading(false)
+      if (mounted) {
+        initialLoadDone.current = true
+        setLoading(false)
+      }
     }
 
     supabase.auth.getSession().then(({ data: { session } }) => {
-      loadSession(session)
+      loadSession(session, true)
     })
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      await loadSession(session)
+      await loadSession(session, false)
     })
 
     return () => {
