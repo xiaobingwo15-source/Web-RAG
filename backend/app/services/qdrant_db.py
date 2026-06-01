@@ -244,34 +244,59 @@ async def delete_document_chunks(document_id: str) -> None:
     logger.info("Deleted chunks for document %s from Qdrant", document_id)
 
 
-async def count_user_chunks(user_id: str, tenant_id: str | None = None) -> int:
+async def count_user_chunks(
+    user_id: str,
+    tenant_id: str | None = None,
+    document_id: str | None = None,
+) -> int:
     client = await get_qdrant_client()
     filter_key = "tenant_id" if tenant_id else "user_id"
     filter_value = tenant_id or user_id
+    must_conditions = [
+        models.FieldCondition(
+            key=filter_key,
+            match=models.MatchValue(value=filter_value),
+        )
+    ]
+    if document_id:
+        must_conditions.append(
+            models.FieldCondition(
+                key="document_id",
+                match=models.MatchValue(value=document_id),
+            )
+        )
     count_result = await client.count(
         collection_name=COLLECTION_NAME,
-        count_filter=models.Filter(
-            must=[models.FieldCondition(
-                key=filter_key,
-                match=models.MatchValue(value=filter_value),
-            )]
-        ),
+        count_filter=models.Filter(must=must_conditions),
     )
     return count_result.count
 
 
-async def get_sample_chunks(user_id: str, limit: int = 3, tenant_id: str | None = None) -> list[dict]:
+async def get_sample_chunks(
+    user_id: str,
+    limit: int = 3,
+    tenant_id: str | None = None,
+    document_id: str | None = None,
+) -> list[dict]:
     client = await get_qdrant_client()
     filter_key = "tenant_id" if tenant_id else "user_id"
     filter_value = tenant_id or user_id
+    must_conditions = [
+        models.FieldCondition(
+            key=filter_key,
+            match=models.MatchValue(value=filter_value),
+        )
+    ]
+    if document_id:
+        must_conditions.append(
+            models.FieldCondition(
+                key="document_id",
+                match=models.MatchValue(value=document_id),
+            )
+        )
     results, _ = await client.scroll(
         collection_name=COLLECTION_NAME,
-        scroll_filter=models.Filter(
-            must=[models.FieldCondition(
-                key=filter_key,
-                match=models.MatchValue(value=filter_value),
-            )]
-        ),
+        scroll_filter=models.Filter(must=must_conditions),
         limit=limit,
         with_payload=True,
         with_vectors=False,

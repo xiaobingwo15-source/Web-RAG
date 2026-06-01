@@ -4,6 +4,7 @@ import { ForgotPasswordPage } from './pages/ForgotPasswordPage'
 import { ResetPasswordPage } from './pages/ResetPasswordPage'
 import { ChatPage } from './pages/ChatPage'
 import { AdminPage } from './pages/AdminPage'
+import { OwnerLockPage } from './pages/OwnerLockPage'
 import { ApiDocsPage } from './pages/ApiDocsPage'
 import { LandingPage } from './pages/LandingPage'
 import { ProtectedRoute } from './components/ProtectedRoute'
@@ -17,6 +18,7 @@ export default function App() {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         <Route path="/reset-password" element={<ResetPasswordPage />} />
+        <Route path="/owner-lock" element={<OwnerLockPage />} />
         <Route
           path="/dashboard"
           element={

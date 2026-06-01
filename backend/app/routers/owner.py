@@ -1,9 +1,16 @@
 from datetime import UTC, datetime, timedelta
 import re
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from app.config import Settings
-from app.services.database import create_tenant, create_tenant_admin_invite, delete_tenant, get_tenant_by_slug
+from app.services.database import (
+    approve_owner_admin,
+    create_tenant,
+    create_tenant_admin_invite,
+    delete_tenant,
+    list_owner_admins,
+    reject_owner_admin,
+)
 from app.services.widget_tokens import hash_token, new_invite_token
 
 router = APIRouter()
@@ -16,10 +23,46 @@ class CreateTenantRequest(BaseModel):
     allowed_origins: list[str] = Field(min_length=1)
 
 
+class OwnerAdminListResponse(BaseModel):
+    admins: list[dict]
+    page: int
+    limit: int
+    total: int
+
+
 def _verify_owner(x_owner_key: str | None) -> None:
     expected = Settings().owner_api_key
     if not expected or x_owner_key != expected:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Owner access required")
+
+
+@router.get("/admins", response_model=OwnerAdminListResponse)
+async def list_admins_endpoint(
+    status_filter: str = Query(default="pending", alias="status", pattern="^(pending|approved|suspended|all)$"),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=50, ge=1, le=200),
+    x_owner_key: str | None = Header(default=None),
+):
+    _verify_owner(x_owner_key)
+    return list_owner_admins(status_filter=status_filter, page=page, limit=limit)
+
+
+@router.post("/admins/{user_id}/approve")
+async def approve_admin_endpoint(user_id: str, x_owner_key: str | None = Header(default=None)):
+    _verify_owner(x_owner_key)
+    updated = approve_owner_admin(user_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Admin profile not found")
+    return {"status": "approved", "admin": updated}
+
+
+@router.post("/admins/{user_id}/reject")
+async def reject_admin_endpoint(user_id: str, x_owner_key: str | None = Header(default=None)):
+    _verify_owner(x_owner_key)
+    updated = reject_owner_admin(user_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Admin profile not found")
+    return {"status": "suspended", "admin": updated}
 
 
 @router.post("/tenants")

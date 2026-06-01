@@ -7,6 +7,8 @@ from app.services.database import search_chunks_fts
 
 logger = logging.getLogger(__name__)
 
+VECTOR_SIMILARITY_THRESHOLD = 0.1
+
 
 async def retrieve_context(
     token: str | None,
@@ -64,7 +66,13 @@ async def retrieve_context(
         query_embedding, fts_results = await asyncio.gather(embedding_task, fts_task)
 
         # Vector search starts only after embedding completes
-        vector_results = await search_similar_chunks(target_user_id or "", query_embedding, match_count * 2, similarity_threshold=0.5, tenant_id=tenant_id)
+        vector_results = await search_similar_chunks(
+            target_user_id or "",
+            query_embedding,
+            match_count * 2,
+            similarity_threshold=VECTOR_SIMILARITY_THRESHOLD,
+            tenant_id=tenant_id,
+        )
 
         print(f"[RETRIEVAL] Hybrid results: vector={len(vector_results)}, fts={len(fts_results)}")
         logger.info(f"Hybrid retrieval: vector={len(vector_results)} results, fts={len(fts_results)} results")
@@ -112,7 +120,13 @@ async def retrieve_context(
 
         # Fallback to vector-only
         logger.warning("Hybrid: RRF merge produced 0 candidates, falling back to vector-only")
-        chunks = await search_similar_chunks(target_user_id or "", query_embedding, match_count, similarity_threshold=0.5, tenant_id=tenant_id)
+        chunks = await search_similar_chunks(
+            target_user_id or "",
+            query_embedding,
+            match_count,
+            similarity_threshold=VECTOR_SIMILARITY_THRESHOLD,
+            tenant_id=tenant_id,
+        )
         if not chunks:
             return _empty()
         sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0)} for c in chunks]
@@ -120,7 +134,13 @@ async def retrieve_context(
 
     # mode == "vector"
     query_embedding = await get_embedding(get_embedding_client(), message)
-    chunks = await search_similar_chunks(target_user_id or "", query_embedding, match_count, similarity_threshold=0.5, tenant_id=tenant_id)
+    chunks = await search_similar_chunks(
+        target_user_id or "",
+        query_embedding,
+        match_count,
+        similarity_threshold=VECTOR_SIMILARITY_THRESHOLD,
+        tenant_id=tenant_id,
+    )
     if not chunks:
         return _empty()
     sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0)} for c in chunks]

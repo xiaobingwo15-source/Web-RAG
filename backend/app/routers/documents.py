@@ -22,14 +22,18 @@ ALLOWED_MIME_TYPES = {
 }
 
 
+def _verify_admin(user) -> None:
+    if user.role != "admin" or not user.tenant_id or user.status != "approved":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+
 @router.post("/upload", response_model=DocumentUploadResponse)
 async def upload(
     file: UploadFile = File(...),
     use_ocr: bool = False,
     user=Depends(get_current_user),
 ):
-    if user.role != "admin" or not user.tenant_id:
-        raise HTTPException(status_code=403, detail="Admin access required")
+    _verify_admin(user)
     token = user.access_token
 
     filename_lower = (file.filename or "").lower()
@@ -122,15 +126,16 @@ async def get_metadata(user=Depends(get_current_user)):
 
 
 @router.get("/check-qdrant")
-async def check_qdrant(user=Depends(get_current_user)):
+async def check_qdrant(document_id: str | None = None, user=Depends(get_current_user)):
     from app.services.qdrant_db import count_user_chunks, get_sample_chunks
     target_user_id = user.id
 
-    chunk_count = await count_user_chunks(target_user_id, tenant_id=user.tenant_id)
-    samples = await get_sample_chunks(target_user_id, limit=3, tenant_id=user.tenant_id)
-    print(f"[DEBUG] check-qdrant: user_id={target_user_id}, chunks={chunk_count}")
+    chunk_count = await count_user_chunks(target_user_id, tenant_id=user.tenant_id, document_id=document_id)
+    samples = await get_sample_chunks(target_user_id, limit=3, tenant_id=user.tenant_id, document_id=document_id)
+    print(f"[DEBUG] check-qdrant: user_id={target_user_id}, document_id={document_id}, chunks={chunk_count}")
     return {
         "user_id": target_user_id,
+        "document_id": document_id,
         "chunk_count": chunk_count,
         "samples": samples,
     }
@@ -139,8 +144,7 @@ async def check_qdrant(user=Depends(get_current_user)):
 @router.get("/{document_id}/chunks")
 async def get_chunks(document_id: str, user=Depends(get_current_user)):
     """Return all text chunks for a document (admin only). Used for document preview."""
-    if user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    _verify_admin(user)
 
     doc = get_document(user.access_token, document_id, tenant_id=user.tenant_id)
     if not doc:
@@ -161,8 +165,7 @@ async def get_chunks(document_id: str, user=Depends(get_current_user)):
 @router.delete("/{document_id}")
 async def delete_document_endpoint(document_id: str, user=Depends(get_current_user)):
     """Delete a document and all its chunks (admin only)."""
-    if user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+    _verify_admin(user)
 
     doc = get_document(user.access_token, document_id, tenant_id=user.tenant_id)
     if not doc:

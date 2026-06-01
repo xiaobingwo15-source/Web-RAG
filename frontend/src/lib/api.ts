@@ -484,6 +484,89 @@ export async function updateUserStatus(
 }
 
 
+// --- Owner Admin Approval API ---
+
+export type OwnerAdminStatus = 'pending' | 'approved' | 'suspended' | 'all'
+
+export interface OwnerTenantSummary {
+  id?: string
+  name?: string
+  slug?: string
+  status?: string
+}
+
+export interface OwnerAdminProfile {
+  id: string
+  email: string
+  role: string
+  status: 'pending' | 'approved' | 'suspended' | string
+  tenant_id: string
+  created_at: string
+  tenant?: OwnerTenantSummary
+}
+
+export interface OwnerAdminsResponse {
+  admins: OwnerAdminProfile[]
+  page: number
+  limit: number
+  total: number
+}
+
+const ownerHeaders = (ownerKey: string) => ({
+  'Content-Type': 'application/json',
+  'X-Owner-Key': ownerKey,
+})
+
+async function parseOwnerError(response: Response, fallback: string): Promise<Error> {
+  try {
+    const data = await response.json()
+    return new Error(data.detail || fallback)
+  } catch {
+    return new Error(fallback)
+  }
+}
+
+export async function getOwnerAdmins(
+  ownerKey: string,
+  params: { status?: OwnerAdminStatus; page?: number; limit?: number } = {},
+): Promise<OwnerAdminsResponse> {
+  const search = new URLSearchParams({
+    status: params.status || 'pending',
+    page: String(params.page || 1),
+    limit: String(params.limit || 50),
+  })
+  const response = await fetch(`/api/owner/admins?${search.toString()}`, {
+    headers: ownerHeaders(ownerKey),
+  })
+  if (!response.ok) throw await parseOwnerError(response, `Fetch owner admins failed: ${response.status}`)
+  return response.json()
+}
+
+export async function approveOwnerAdmin(
+  ownerKey: string,
+  userId: string,
+): Promise<{ status: string; admin: OwnerAdminProfile }> {
+  const response = await fetch(`/api/owner/admins/${encodeURIComponent(userId)}/approve`, {
+    method: 'POST',
+    headers: ownerHeaders(ownerKey),
+  })
+  if (!response.ok) throw await parseOwnerError(response, `Approve owner admin failed: ${response.status}`)
+  return response.json()
+}
+
+export async function rejectOwnerAdmin(
+  ownerKey: string,
+  userId: string,
+): Promise<{ status: string; admin: OwnerAdminProfile }> {
+  const response = await fetch(`/api/owner/admins/${encodeURIComponent(userId)}/reject`, {
+    method: 'POST',
+    headers: ownerHeaders(ownerKey),
+  })
+  if (!response.ok) throw await parseOwnerError(response, `Reject owner admin failed: ${response.status}`)
+  return response.json()
+}
+
+
 // --- Tenant Validation ---
 
 export interface TenantInfo {

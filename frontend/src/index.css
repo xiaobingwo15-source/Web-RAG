@@ -183,16 +183,34 @@ body {
   border-collapse: collapse;
   font-size: 0.875rem;
   width: 100%;
+  border: 1px solid var(--color-outline-variant);
+  border-radius: 8px;
+  overflow: hidden;
+  display: table;
+}
+.chat-markdown thead {
+  background: var(--color-surface-container-high);
 }
 .chat-markdown th {
-  padding: 0.5em 0.75em;
+  padding: 0.625em 0.875em;
   text-align: left;
   font-weight: 700;
+  color: var(--color-primary);
+  font-size: 0.8125rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   border-bottom: 2px solid var(--color-outline-variant);
   white-space: nowrap;
 }
 .chat-markdown td {
-  padding: 0.5em 0.75em;
+  padding: 0.625em 0.875em;
   border-bottom: 1px solid var(--color-outline-variant);
+  color: var(--color-foreground);
+}
+.chat-markdown tbody tr:last-child td {
+  border-bottom: none;
+}
+.chat-markdown tbody tr:hover {
+  background: var(--color-surface-container);
 }
 
