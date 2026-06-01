@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { SpeedInsights } from '@vercel/speed-insights/react'
 import { LoginPage } from './pages/LoginPage'
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage'
 import { ResetPasswordPage } from './pages/ResetPasswordPage'
@@ -53,6 +54,7 @@ export default function App() {
         />
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
+      <SpeedInsights />
     </BrowserRouter>
   )
 }
