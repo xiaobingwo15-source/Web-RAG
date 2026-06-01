@@ -26,7 +26,7 @@ router = APIRouter()
 
 def _verify_admin(user) -> None:
     """Raise 403 if the user is not an admin."""
-    if user.role != "admin" or not user.tenant_id:
+    if user.role != "admin" or not user.tenant_id or user.status != "approved":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",

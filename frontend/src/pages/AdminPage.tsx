@@ -7,15 +7,12 @@ import { DocumentUpload } from '@/components/DocumentUpload'
 import {
   getAdminConversations,
   getAdminThreadMessages,
-  getAdminSettings,
-  saveAdminSettings,
   getFlaggedMessages,
   submitAdminResponse,
   getAdminUsers,
   updateUserStatus,
   type AdminClient,
   type AdminMessage,
-  type SystemSettings,
   type FlaggedMessage,
   type AdminUser,
 } from '@/lib/api'
@@ -34,10 +31,6 @@ import {
   Mail,
   Hash,
   Clock,
-  Settings,
-  Eye,
-  EyeOff,
-  Save,
   AlertTriangle,
 } from 'lucide-react'
 
@@ -56,7 +49,7 @@ export function AdminPage() {
     clearUploadFailure
   } = useDocuments()
 
-  const [activeTab, setActiveTab] = useState<'conversations' | 'settings' | 'users'>('conversations')
+  const [activeTab, setActiveTab] = useState<'conversations' | 'users'>('conversations')
   const [clients, setClients] = useState<AdminClient[]>([])
   const [loading, setLoading] = useState(true)
   const [expandedClient, setExpandedClient] = useState<string | null>(null)
@@ -72,21 +65,6 @@ export function AdminPage() {
   const [submitting, setSubmitting] = useState(false)
   const { flaggedCount, dismissFlag, refreshCount } = useFlaggedNotifications()
 
-  // Settings State
-  const [apiSettings, setApiSettings] = useState<SystemSettings>({
-    GOOGLE_API_KEY: '',
-    OPENROUTER_API_KEY: '',
-    TAVLY_API_KEY: '',
-    LANGFUSE_PUBLIC_KEY: '',
-    LANGFUSE_SECRET_KEY: '',
-    LANGFUSE_BASE_URL: 'https://jp.cloud.langfuse.com',
-  })
-  const [showKeys, setShowKeys] = useState<{ [key: string]: boolean }>({})
-  const [settingsLoading, setSettingsLoading] = useState(false)
-  const [settingsSaving, setSettingsSaving] = useState(false)
-  const [settingsSuccess, setSettingsSuccess] = useState(false)
-  const [settingsError, setSettingsError] = useState<string | null>(null)
-
   // User Management State
   const [tenantUsers, setTenantUsers] = useState<AdminUser[]>([])
   const [usersLoading, setUsersLoading] = useState(false)
@@ -101,28 +79,6 @@ export function AdminPage() {
       console.error('Failed to fetch conversations:', err)
     } finally {
       setLoading(false)
-    }
-  }, [session?.access_token])
-
-  const fetchSettings = useCallback(async () => {
-    if (!session?.access_token) return
-    setSettingsLoading(true)
-    setSettingsError(null)
-    try {
-      const data = await getAdminSettings(session.access_token)
-      setApiSettings({
-        GOOGLE_API_KEY: data.GOOGLE_API_KEY || '',
-        OPENROUTER_API_KEY: data.OPENROUTER_API_KEY || '',
-        TAVLY_API_KEY: data.TAVLY_API_KEY || '',
-        LANGFUSE_PUBLIC_KEY: data.LANGFUSE_PUBLIC_KEY || '',
-        LANGFUSE_SECRET_KEY: data.LANGFUSE_SECRET_KEY || '',
-        LANGFUSE_BASE_URL: data.LANGFUSE_BASE_URL || 'https://jp.cloud.langfuse.com',
-      })
-    } catch (err: any) {
-      console.error('Failed to fetch admin settings:', err)
-      setSettingsError(err.message || 'Failed to load system settings.')
-    } finally {
-      setSettingsLoading(false)
     }
   }, [session?.access_token])
 
@@ -143,12 +99,6 @@ export function AdminPage() {
   useEffect(() => {
     fetchFlagged()
   }, [fetchFlagged])
-
-  useEffect(() => {
-    if (activeTab === 'settings') {
-      fetchSettings()
-    }
-  }, [activeTab, fetchSettings])
 
   const fetchUsers = useCallback(async () => {
     if (!session?.access_token) return
@@ -221,29 +171,6 @@ export function AdminPage() {
     setExpandedClient((prev) => (prev === userId ? null : userId))
   }
 
-  const toggleShowKey = (key: string) => {
-    setShowKeys((prev) => ({ ...prev, [key]: !prev[key] }))
-  }
-
-  const handleSaveSettings = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!session?.access_token) return
-    setSettingsSaving(true)
-    setSettingsSuccess(false)
-    setSettingsError(null)
-    try {
-      await saveAdminSettings(apiSettings, session.access_token)
-      setSettingsSuccess(true)
-      await fetchSettings() // Reload settings to update masked fields
-      setTimeout(() => setSettingsSuccess(false), 4000)
-    } catch (err: any) {
-      console.error('Failed to save settings:', err)
-      setSettingsError(err.message || 'Failed to save system settings.')
-    } finally {
-      setSettingsSaving(false)
-    }
-  }
-
   const filteredClients = flaggedFilter
     ? clients
         .filter((c) => c.threads.some((t) => flaggedMessages.some((f) => f.thread_id === t.id)))
@@ -286,17 +213,6 @@ export function AdminPage() {
                 {flaggedCount > 9 ? '9+' : flaggedCount}
               </span>
             )}
-          </button>
-          <button
-            onClick={() => setActiveTab('settings')}
-            className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold transition-all ${
-              activeTab === 'settings'
-                ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
-            }`}
-          >
-            <Settings className="h-3.5 w-3.5" />
-            API Keys
           </button>
           <button
             onClick={() => setActiveTab('users')}
@@ -357,7 +273,7 @@ export function AdminPage() {
         </div>
       </aside>
 
-      {/* ── Right Panel: Toggle between Chats, Settings, and Users ── */}
+      {/* ── Right Panel: Toggle between Chats and Users ── */}
       {activeTab === 'conversations' ? (
         <main className="flex flex-1 flex-col overflow-hidden">
           {/* Top bar */}
@@ -643,7 +559,7 @@ export function AdminPage() {
             </div>
           </div>
         </main>
-      ) : activeTab === 'users' ? (
+      ) : (
         /* ── User Management ── */
         <main className="flex flex-1 flex-col overflow-hidden">
           <div className="flex items-center justify-between border-b border-border px-6 py-3 bg-card/50">
@@ -743,243 +659,6 @@ export function AdminPage() {
                     </div>
                   ))}
                 </div>
-              )}
-            </div>
-          </div>
-        </main>
-      ) : (
-        /* ── API Settings workspace ── */
-        <main className="flex flex-1 flex-col overflow-hidden">
-          <div className="flex items-center justify-between border-b border-border px-6 py-3 bg-card/50">
-            <div className="flex items-center gap-3">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-                <Settings className="h-4 w-4 text-primary" />
-              </div>
-              <div>
-                <h1 className="text-sm font-semibold text-foreground">System API Settings</h1>
-                <p className="text-[10px] text-muted-foreground">
-                  Configure artificial intelligence models and analytics tracing at runtime.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-6 bg-card/10">
-            <div className="mx-auto max-w-4xl space-y-6">
-              <div className="rounded-xl border border-border bg-card p-6 shadow-sm">
-                <h2 className="text-sm font-bold text-foreground">Environment Credentials</h2>
-                <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                  Credentials configured here override local <code className="text-primary">.env</code> values. Redacted keys (<code className="text-muted-foreground">••••••••</code>) represent existing active values. Leave them unchanged or type over to update them.
-                </p>
-              </div>
-
-              {settingsLoading ? (
-                <div className="flex h-64 items-center justify-center">
-                  <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
-                </div>
-              ) : (
-                <form onSubmit={handleSaveSettings} className="space-y-6">
-                  {settingsError && (
-                    <div className="rounded-lg border border-destructive/20 bg-destructive/10 p-4 text-xs text-destructive">
-                      {settingsError}
-                    </div>
-                  )}
-                  {settingsSuccess && (
-                    <div className="rounded-lg border border-green-500/20 bg-green-500/10 p-4 text-xs text-green-400">
-                      System credentials saved successfully! Hot-reload caches cleared.
-                    </div>
-                  )}
-
-                  <div className="grid gap-6 md:grid-cols-2">
-                    {/* Google AI Studio embeddings */}
-                    <div className="rounded-xl border border-border bg-card p-5 shadow-sm space-y-4">
-                      <div className="flex items-center gap-2">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-red-500/10">
-                          <Bot className="h-4 w-4 text-red-500" />
-                        </div>
-                        <div>
-                          <h3 className="text-xs font-semibold text-foreground">Google AI Studio</h3>
-                          <p className="text-[10px] text-muted-foreground">For vector embeddings generator</p>
-                        </div>
-                      </div>
-
-                      <div className="space-y-1.5">
-                        <label className="text-[10px] font-semibold text-muted-foreground">GOOGLE_API_KEY</label>
-                        <div className="relative">
-                          <input
-                            type={showKeys['GOOGLE_API_KEY'] ? 'text' : 'password'}
-                            placeholder="Enter Google Studio key"
-                            value={apiSettings.GOOGLE_API_KEY}
-                            onChange={(e) => setApiSettings({ ...apiSettings, GOOGLE_API_KEY: e.target.value })}
-                            className="w-full rounded-md border border-border bg-input px-3 py-2 pr-10 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => toggleShowKey('GOOGLE_API_KEY')}
-                            className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
-                          >
-                            {showKeys['GOOGLE_API_KEY'] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                          </button>
-                        </div>
-                        <p className="text-[10px] text-muted-foreground leading-normal">
-                          Configures the <code className="text-red-400">gemini-embedding-001</code> model for document vectorization.
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* OpenRouter (Deepseek/Gemini LLM) */}
-                    <div className="rounded-xl border border-border bg-card p-5 shadow-sm space-y-4">
-                      <div className="flex items-center gap-2">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-500/10">
-                          <Shield className="h-4 w-4 text-blue-500" />
-                        </div>
-                        <div>
-                          <h3 className="text-xs font-semibold text-foreground">OpenRouter</h3>
-                          <p className="text-[10px] text-muted-foreground">For Chat & Reasoning Models</p>
-                        </div>
-                      </div>
-
-                      <div className="space-y-1.5">
-                        <label className="text-[10px] font-semibold text-muted-foreground">OPENROUTER_API_KEY</label>
-                        <div className="relative">
-                          <input
-                            type={showKeys['OPENROUTER_API_KEY'] ? 'text' : 'password'}
-                            placeholder="Enter OpenRouter API key"
-                            value={apiSettings.OPENROUTER_API_KEY}
-                            onChange={(e) => setApiSettings({ ...apiSettings, OPENROUTER_API_KEY: e.target.value })}
-                            className="w-full rounded-md border border-border bg-input px-3 py-2 pr-10 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => toggleShowKey('OPENROUTER_API_KEY')}
-                            className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
-                          >
-                            {showKeys['OPENROUTER_API_KEY'] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                          </button>
-                        </div>
-                        <p className="text-[10px] text-muted-foreground leading-normal">
-                          Used to run conversation responses, agents, OCR, and reasoning tracing.
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Tavly Search */}
-                    <div className="rounded-xl border border-border bg-card p-5 shadow-sm space-y-4">
-                      <div className="flex items-center gap-2">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-green-500/10">
-                          <Search className="h-4 w-4 text-green-500" />
-                        </div>
-                        <div>
-                          <h3 className="text-xs font-semibold text-foreground">Tavly Web Search</h3>
-                          <p className="text-[10px] text-muted-foreground">For internet grounding agents</p>
-                        </div>
-                      </div>
-
-                      <div className="space-y-1.5">
-                        <label className="text-[10px] font-semibold text-muted-foreground">TAVLY_API_KEY</label>
-                        <div className="relative">
-                          <input
-                            type={showKeys['TAVLY_API_KEY'] ? 'text' : 'password'}
-                            placeholder="Enter Tavly search key"
-                            value={apiSettings.TAVLY_API_KEY}
-                            onChange={(e) => setApiSettings({ ...apiSettings, TAVLY_API_KEY: e.target.value })}
-                            className="w-full rounded-md border border-border bg-input px-3 py-2 pr-10 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => toggleShowKey('TAVLY_API_KEY')}
-                            className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
-                          >
-                            {showKeys['TAVLY_API_KEY'] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                          </button>
-                        </div>
-                        <p className="text-[10px] text-muted-foreground leading-normal">
-                          Provides live internet fallback search when local files are insufficient.
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Langfuse Tracing */}
-                    <div className="rounded-xl border border-border bg-card p-5 shadow-sm space-y-4 md:col-span-2">
-                      <div className="flex items-center gap-2">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-purple-500/10">
-                          <RefreshCw className="h-4 w-4 text-purple-500" />
-                        </div>
-                        <div>
-                          <h3 className="text-xs font-semibold text-foreground">Langfuse Observability</h3>
-                          <p className="text-[10px] text-muted-foreground">For deep LLM telemetry and token tracking</p>
-                        </div>
-                      </div>
-
-                      <div className="grid gap-4 sm:grid-cols-3">
-                        <div className="space-y-1.5">
-                          <label className="text-[10px] font-semibold text-muted-foreground">LANGFUSE_PUBLIC_KEY</label>
-                          <input
-                            type="text"
-                            placeholder="pk-lf-..."
-                            value={apiSettings.LANGFUSE_PUBLIC_KEY}
-                            onChange={(e) => setApiSettings({ ...apiSettings, LANGFUSE_PUBLIC_KEY: e.target.value })}
-                            className="w-full rounded-md border border-border bg-input px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-                          />
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <label className="text-[10px] font-semibold text-muted-foreground">LANGFUSE_SECRET_KEY</label>
-                          <div className="relative">
-                            <input
-                              type={showKeys['LANGFUSE_SECRET_KEY'] ? 'text' : 'password'}
-                              placeholder="sk-lf-..."
-                              value={apiSettings.LANGFUSE_SECRET_KEY}
-                              onChange={(e) => setApiSettings({ ...apiSettings, LANGFUSE_SECRET_KEY: e.target.value })}
-                              className="w-full rounded-md border border-border bg-input px-3 py-2 pr-10 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => toggleShowKey('LANGFUSE_SECRET_KEY')}
-                              className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
-                            >
-                              {showKeys['LANGFUSE_SECRET_KEY'] ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <label className="text-[10px] font-semibold text-muted-foreground">LANGFUSE_HOST</label>
-                          <input
-                            type="text"
-                            placeholder="https://jp.cloud.langfuse.com"
-                            value={apiSettings.LANGFUSE_BASE_URL}
-                            onChange={(e) => setApiSettings({ ...apiSettings, LANGFUSE_BASE_URL: e.target.value })}
-                            className="w-full rounded-md border border-border bg-input px-3 py-2 text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary font-mono"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex justify-end gap-3 border-t border-border pt-4">
-                    <button
-                      type="button"
-                      onClick={fetchSettings}
-                      disabled={settingsSaving}
-                      className="rounded-lg border border-border px-4 py-2 text-xs font-semibold text-muted-foreground hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50"
-                    >
-                      Reset Changes
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={settingsSaving}
-                      className="flex items-center gap-1.5 rounded-lg bg-primary px-5 py-2 text-xs font-bold text-primary-foreground hover:bg-primary/95 transition-all shadow-md active:scale-[0.98] disabled:opacity-50"
-                    >
-                      {settingsSaving ? (
-                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <Save className="h-3.5 w-3.5" />
-                      )}
-                      Save Settings
-                    </button>
-                  </div>
-                </form>
               )}
             </div>
           </div>

@@ -1,10 +1,11 @@
 import asyncio
 import logging
-import os
 import re
 
 import cohere
 from langfuse import observe
+
+from app.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,10 @@ def _keyword_overlap_score(query: str, document: str) -> float:
 
 
 def _get_cohere_client() -> cohere.ClientV2:
-    return cohere.ClientV2(api_key=os.environ["COHERE_API_KEY"])
+    api_key = Settings().get_cohere_api_key
+    if not api_key:
+        raise RuntimeError("COHERE_API_KEY is not configured")
+    return cohere.ClientV2(api_key=api_key)
 
 
 @observe(name="rerank_with_cohere", as_type="generation")

@@ -19,6 +19,7 @@ class Settings(BaseSettings):
         alias="LANGFUSE_BASE_URL",
     )
     tavly_api_key: str = ""
+    cohere_api_key: str = ""
     qdrant_url: str = ""
     qdrant_api_key: str = ""
     backend_url: str = "http://localhost:8000"
@@ -65,6 +66,11 @@ class Settings(BaseSettings):
     def get_tavly_api_key(self) -> str:
         val = self._get_db_setting("TAVLY_API_KEY")
         return val if val else self.tavly_api_key
+
+    @property
+    def get_cohere_api_key(self) -> str:
+        val = self._get_db_setting("COHERE_API_KEY")
+        return val if val else self.cohere_api_key
 
     @property
     def get_langfuse_public_key(self) -> str:

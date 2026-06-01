@@ -2,6 +2,7 @@ import type { ChatMessage as ChatMessageType } from '@/hooks/useChat'
 import { ThoughtTrace } from '@/components/ThoughtTrace'
 import { Shield } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 export function ChatMessage({ message }: { message: ChatMessageType }) {
   const isUser = message.role === 'user'
@@ -36,7 +37,7 @@ export function ChatMessage({ message }: { message: ChatMessageType }) {
               <p className="whitespace-pre-wrap text-sm">{message.content}</p>
             ) : (
               <div className="chat-markdown text-sm">
-                <ReactMarkdown>{message.content}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
               </div>
             )
           )}

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { AnonymousMessage } from '@/hooks/useAnonymousChat'
 import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 export function ChatWidgetMessages({
   messages,
@@ -44,7 +45,7 @@ export function ChatWidgetMessages({
                 msg.content
               ) : (
                 <div className="chat-markdown">
-                  <ReactMarkdown>{msg.content}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
                 </div>
               )
             ) : (

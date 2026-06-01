@@ -125,12 +125,71 @@ def accept_tenant_admin_invite(invite_id: str, tenant_id: str, user_id: str, ema
     db = get_db()
     profile = (
         db.table("profiles")
-        .update({"tenant_id": tenant_id, "role": "admin", "email": email, "status": "approved"})
+        .update({"tenant_id": tenant_id, "role": "admin", "email": email, "status": "pending"})
         .eq("id", user_id)
         .execute()
     )
     db.table("tenant_admin_invites").update({"accepted_at": "now()"}).eq("id", invite_id).execute()
     return profile.data[0] if profile.data else {}
+
+
+def list_owner_admins(status_filter: str = "pending", page: int = 1, limit: int = 50) -> dict:
+    """List tenant admin profiles for owner approval workflows."""
+    db = get_db()
+    page = max(page, 1)
+    limit = min(max(limit, 1), 200)
+    start = (page - 1) * limit
+    end = start + limit - 1
+
+    query = (
+        db.table("profiles")
+        .select("id, email, role, status, tenant_id, created_at, tenant:tenants(id, name, slug, status)", count="exact")
+        .eq("role", "admin")
+    )
+    if status_filter != "all":
+        query = query.eq("status", status_filter)
+
+    result = query.order("created_at", desc=True).range(start, end).execute()
+    admins = []
+    for row in result.data or []:
+        tenant = row.get("tenant") or row.get("tenants") or {}
+        admins.append({
+            "id": row.get("id"),
+            "email": row.get("email"),
+            "role": row.get("role"),
+            "status": row.get("status"),
+            "tenant_id": row.get("tenant_id"),
+            "created_at": row.get("created_at"),
+            "tenant": tenant,
+        })
+
+    return {"admins": admins, "page": page, "limit": limit, "total": result.count or 0}
+
+
+def approve_owner_admin(user_id: str) -> dict | None:
+    """Approve a profile only if it is still an admin candidate."""
+    db = get_db()
+    result = (
+        db.table("profiles")
+        .update({"status": "approved"})
+        .eq("id", user_id)
+        .eq("role", "admin")
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def reject_owner_admin(user_id: str) -> dict | None:
+    """Reject or revoke admin access without deleting the user account."""
+    db = get_db()
+    result = (
+        db.table("profiles")
+        .update({"role": "client", "status": "suspended"})
+        .eq("id", user_id)
+        .eq("role", "admin")
+        .execute()
+    )
+    return result.data[0] if result.data else None
 
 
 def get_tenant_users(tenant_id: str) -> list[dict]:
