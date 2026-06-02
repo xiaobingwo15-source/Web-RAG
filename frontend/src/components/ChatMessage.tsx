@@ -13,7 +13,7 @@ interface ChatMessageProps {
   onFeedback?: (messageId: string, rating: 1 | -1) => void
 }
 
-export function ChatMessage({ message, messageId, threadId, feedback, onFeedback }: ChatMessageProps) {
+export function ChatMessage({ message, messageId, threadId: _threadId, feedback, onFeedback }: ChatMessageProps) {
   const isUser = message.role === 'user'
   const [localFeedback, setLocalFeedback] = useState<1 | -1 | null>(feedback ?? null)
 
