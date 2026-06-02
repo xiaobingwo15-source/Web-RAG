@@ -77,12 +77,12 @@
 ## Phase 3: Level Up When Ready (later)
 
 
-| Task                      | When To Do It                          | Why                        |
-| --------------------------- | ---------------------------------------- | ---------------------------- |
-| Add rate limiting         | Before deploying to real users         | Cost protection            |
-| Add semantic caching      | When hitting API limits                | Cost reduction             |
-| Build an eval pipeline    | When you want to measure improvements  | Data-driven iteration      |
-| Try parent-child chunking | When you understand your data patterns | Better retrieval precision |
+| Task                      | When To Do It                          | Why                        | Status |
+| --------------------------- | ---------------------------------------- | ---------------------------- | ------ |
+| Add rate limiting         | Before deploying to real users         | Cost protection            | ✅ Done (2026-06-02) |
+| Add semantic caching      | When hitting API limits                | Cost reduction             | ✅ Done (2026-06-02) |
+| Build an eval pipeline    | When you want to measure improvements  | Data-driven iteration      | ✅ Done (2026-06-03) |
+| Try parent-child chunking | When you understand your data patterns | Better retrieval precision | ✅ Done (2026-06-03) |
 
 ---
 
@@ -121,18 +121,18 @@
 | P0       | Semantic caching         | Medium | Very High   | In-memory cache, cosine 0.95 threshold, 5min TTL    | ✅ Done (2026-06-02) |
 | P0       | LLM-based agent routing  | Low    | High        | LLM classification + keyword fallback, 3s timeout   | ✅ Done (2026-06-02) |
 | P0       | Groundedness guardrails  | Medium | High        | Token overlap check, disclaimer on low score        | ✅ Done (2026-06-02) |
-| P1       | RAGAS evaluation         | Medium | High        | Golden test set + LLM-as-judge                      | ⬜     |
+| P1       | RAGAS evaluation         | Medium | High        | Golden test set + LLM-as-judge                      | ✅ Done (2026-06-03) |
 | P1       | MMR diversity            | Low    | Medium      | Text-overlap MMR after RRF, lambda=0.5              | ✅ Done (2026-06-02) |
 | P1       | Circuit breaker          | Low    | Medium      | Custom impl, 5-failure threshold, 30s recovery      | ✅ Done (2026-06-02) |
 | P1       | User feedback            | Low    | Medium      | 👍/👎 in chat UI                                    | ✅ Done (2026-06-02) |
-| P2       | Parent-child chunking    | Medium | High        | Embed 500-char, return 1500-char                    | ⬜     |
+| P2       | Parent-child chunking    | Medium | High        | Embed 500-char, return 1500-char                    | ✅ Done (2026-06-03) |
 | P2       | Reduce chunk to 800/50   | Low    | Medium-High | Parameter change + re-index                         | ✅ Done (2026-06-02) |
 | P2       | Multi-query retrieval    | Low    | Medium      | 2-3 LLM paraphrases                                 | ✅ Done (2026-06-02) |
-| P2       | Structure-aware chunking | Medium | High        | Respect MD/PDF headings                             | ⬜     |
-| P3       | Async ingestion          | Medium | Medium      | Background workers                                  | ⬜     |
-| P3       | HyDE retrieval           | Medium | Medium      | Hypothetical answer → embed                        | ⬜     |
+| P2       | Structure-aware chunking | Medium | High        | Respect MD/PDF headings                             | ✅ Done (2026-06-03) |
+| P3       | Async ingestion          | Medium | Medium      | Background workers                                  | ✅ Done (2026-06-03) |
+| P3       | HyDE retrieval           | Medium | Medium      | Hypothetical answer → embed                        | ✅ Done (2026-06-03) |
 | P4       | Semantic chunking        | Medium | High        | Embedding boundary detection                        | ⬜     |
-| P4       | Corrective RAG           | Medium | Medium      | Fallback to web_search if low relevance             | ⬜     |
+| P4       | Corrective RAG           | Medium | Medium      | Fallback to web_search if low relevance             | ✅ Done (2026-06-03) |
 
 ---
 

@@ -2,8 +2,8 @@ import asyncio
 import hashlib
 import logging
 from app.services.text_extractor import extract_text, extract_text_with_ocr
-from app.services.chunker import chunk_text
-from app.services.embeddings import get_embedding_client, get_embeddings
+from app.services.chunker import chunk_text, create_parent_child_chunks
+from app.services.embeddings import get_embedding_client, get_embeddings, EMBEDDING_DIMENSION
 from app.services.metadata_extractor import extract_metadata
 from app.services.document_enrichment import emphasize_document_text
 from app.services.gemini import get_llm_client
@@ -48,31 +48,74 @@ async def process_document(
         text = emphasize_document_text(text, metadata)
 
         logger.info(f"Document {document_id}: chunking text ({len(text)} chars)")
-        chunks = chunk_text(text)
-        logger.info(f"Document {document_id}: created {len(chunks)} chunks")
+        hierarchy = create_parent_child_chunks(text)
+        parents = hierarchy["parents"]
+        children = hierarchy["children"]
+        logger.info(f"Document {document_id}: created {len(parents)} parent chunks, {len(children)} child chunks")
 
-        logger.info(f"Document {document_id}: generating embeddings")
+        # Embed only child chunks (fine-grained, searchable)
+        logger.info(f"Document {document_id}: generating embeddings for {len(children)} child chunks")
         client = get_embedding_client()
-        embeddings = await get_embeddings(client, chunks)
+        child_texts = [c["text"] for c in children]
+        embeddings = await get_embeddings(client, child_texts)
 
-        chunk_data = [
-            {"content": chunk, "embedding": embedding, "chunk_index": i}
-            for i, (chunk, embedding) in enumerate(zip(chunks, embeddings))
-        ]
+        # Build child chunk data with parent_id and chunk_type
+        child_chunk_data = []
+        for i, (child, embedding) in enumerate(zip(children, embeddings)):
+            child_chunk_data.append({
+                "content": child["text"],
+                "embedding": embedding,
+                "chunk_index": i,
+                "parent_id": child["parent_id"],
+                "chunk_type": "child",
+            })
 
-        logger.info(f"Document {document_id}: storing {len(chunk_data)} chunks in Supabase FTS + Qdrant")
+        # Build parent chunk data with zero-vector embeddings
+        zero_vector = [0.0] * EMBEDDING_DIMENSION
+        parent_chunk_data = []
+        for i, parent in enumerate(parents):
+            parent_chunk_data.append({
+                "content": parent["text"],
+                "embedding": zero_vector,
+                "chunk_index": len(children) + i,
+                "chunk_type": "parent",
+            })
 
-        # Insert into Supabase first to get canonical chunk IDs
-        fts_rows = await asyncio.to_thread(insert_chunks_for_fts, access_token, user_id, document_id, chunk_data, tenant_id)
+        logger.info(f"Document {document_id}: storing {len(child_chunk_data)} child + {len(parent_chunk_data)} parent chunks")
 
-        # Use Supabase IDs as Qdrant point IDs so RRF merge can match across stores
-        supabase_ids = [str(row["id"]) for row in fts_rows]
-        await insert_chunks(user_id, document_id, chunk_data, point_ids=supabase_ids, tenant_id=tenant_id)
+        # Insert child chunks into Supabase FTS first to get canonical IDs
+        child_fts_rows = await asyncio.to_thread(
+            insert_chunks_for_fts, access_token, user_id, document_id, child_chunk_data, tenant_id
+        )
+        child_fts_ids = [str(row["id"]) for row in child_fts_rows]
+
+        # Insert parent chunks into Supabase FTS to get their row IDs
+        parent_fts_rows = await asyncio.to_thread(
+            insert_chunks_for_fts, access_token, user_id, document_id, parent_chunk_data, tenant_id
+        )
+        parent_id_map = {}  # chunker UUID -> Supabase row ID
+        for parent, row in zip(parents, parent_fts_rows):
+            parent_id_map[parent["id"]] = str(row["id"])
+
+        # Remap child parent_id references from chunker UUIDs to Supabase row IDs
+        for ccd in child_chunk_data:
+            old_pid = ccd.get("parent_id")
+            if old_pid and old_pid in parent_id_map:
+                ccd["parent_id"] = parent_id_map[old_pid]
+
+        # Insert children into Qdrant (real embeddings, searchable)
+        await insert_chunks(user_id, document_id, child_chunk_data, point_ids=child_fts_ids, tenant_id=tenant_id)
+
+        # Insert parents into Qdrant (zero vectors, retrievable by ID only)
+        parent_supabase_ids = [str(row["id"]) for row in parent_fts_rows]
+        await insert_chunks(user_id, document_id, parent_chunk_data, point_ids=parent_supabase_ids, tenant_id=tenant_id)
+
         await update_chunks_metadata(document_id, metadata)
 
-        update_document_chunk_count(access_token, document_id, len(chunk_data))
+        total_chunks = len(child_chunk_data) + len(parent_chunk_data)
+        update_document_chunk_count(access_token, document_id, total_chunks)
         update_document_status(access_token, document_id, "processed")
-        return {"id": document_id, "status": "processed", "chunk_count": len(chunk_data)}
+        return {"id": document_id, "status": "processed", "chunk_count": total_chunks}
 
     except Exception as e:
         logger.error(f"Document {document_id} processing failed: {e}")

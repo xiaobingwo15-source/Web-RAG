@@ -1,9 +1,10 @@
 import mimetypes
 import uuid
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, HTTPException
 from app.middleware.auth import get_current_user
 from app.models.documents import DocumentUploadResponse, DocumentStatus, DocumentListResponse, DocumentMetadataResponse
-from app.services.file_search_store import process_document, compute_content_hash
+from app.services.file_search_store import compute_content_hash
+from app.services.ingestion_worker import process_document_async
 from app.services.database import (
     create_document, get_user_documents, get_document, get_user_store, create_store,
     get_document_by_hash, get_user_document_metadata, archive_document,
@@ -32,6 +33,7 @@ def _verify_admin(user) -> None:
 
 @router.post("/upload", response_model=DocumentUploadResponse)
 async def upload(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     use_ocr: bool = False,
     user=Depends(get_current_user),
@@ -90,9 +92,14 @@ async def upload(
             file.filename or "unnamed", mime_type, "", tenant_id=user.tenant_id,
         )
 
-    process_result = await process_document(token, user.id, doc["id"], file_bytes, mime_type, use_ocr=use_ocr, tenant_id=user.tenant_id)
+    # Kick off processing in background and return immediately
+    background_tasks.add_task(
+        process_document_async,
+        token, user.id, doc["id"], file_bytes, mime_type,
+        use_ocr=use_ocr, tenant_id=user.tenant_id,
+    )
 
-    return DocumentUploadResponse(id=doc["id"], filename=doc["filename"], status=process_result["status"])
+    return DocumentUploadResponse(id=doc["id"], filename=doc["filename"], status="pending")
 
 
 @router.get("/status/{document_id}", response_model=DocumentStatus)

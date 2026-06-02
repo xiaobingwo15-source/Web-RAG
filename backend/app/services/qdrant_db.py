@@ -57,6 +57,10 @@ async def _ensure_collection_inner():
             COLLECTION_NAME, field_name="metadata.language",
             field_schema=models.PayloadSchemaType.KEYWORD,
         )
+        await client.create_payload_index(
+            COLLECTION_NAME, field_name="chunk_type",
+            field_schema=models.PayloadSchemaType.KEYWORD,
+        )
         logger.info("Created Qdrant collection '%s' with payload indexes", COLLECTION_NAME)
     else:
         try:
@@ -88,21 +92,23 @@ async def insert_chunks(
     client = await get_qdrant_client()
     if point_ids is None:
         point_ids = [str(uuid.uuid4()) for _ in chunks]
-    points = [
-        models.PointStruct(
-            id=point_ids[i],
-            vector=chunk["embedding"],
-            payload={
-                "user_id": user_id,
-                **({"tenant_id": tenant_id} if tenant_id else {}),
-                "document_id": document_id,
-                "content": chunk["content"],
-                "chunk_index": chunk["chunk_index"],
-                "created_at": time.time(),
-            },
+    points = []
+    for i, chunk in enumerate(chunks):
+        payload: dict = {
+            "user_id": user_id,
+            **({"tenant_id": tenant_id} if tenant_id else {}),
+            "document_id": document_id,
+            "content": chunk["content"],
+            "chunk_index": chunk["chunk_index"],
+            "created_at": time.time(),
+        }
+        if chunk.get("parent_id"):
+            payload["parent_id"] = chunk["parent_id"]
+        if chunk.get("chunk_type"):
+            payload["chunk_type"] = chunk["chunk_type"]
+        points.append(
+            models.PointStruct(id=point_ids[i], vector=chunk["embedding"], payload=payload)
         )
-        for i, chunk in enumerate(chunks)
-    ]
     await client.upsert(collection_name=COLLECTION_NAME, points=points)
     logger.info("Inserted %d chunks for document %s", len(points), document_id)
     return point_ids
@@ -163,6 +169,7 @@ async def search_similar_chunks(
             "document_id": r.payload.get("document_id"),
             "content": r.payload.get("content"),
             "similarity": r.score,
+            **({"parent_id": r.payload["parent_id"]} if r.payload.get("parent_id") else {}),
         }
         for r in results.points
     ]
@@ -174,6 +181,30 @@ async def search_similar_chunks(
         print(f"[QDRANT] Vector search: 0 results (threshold={similarity_threshold}, {filter_key}={filter_value})")
         logger.warning(f"Qdrant vector search: 0 results (threshold={similarity_threshold}, {filter_key}={filter_value})")
     return hits
+
+
+async def get_parent_chunks_by_ids(parent_ids: list[str]) -> dict[str, dict]:
+    """Batch-fetch parent chunks by their Qdrant point IDs.
+
+    Returns:
+        Dict mapping parent_id -> {"content": str, "document_id": str}
+    """
+    if not parent_ids:
+        return {}
+    client = await get_qdrant_client()
+    results = await client.retrieve(
+        collection_name=COLLECTION_NAME,
+        ids=parent_ids,
+        with_payload=True,
+        with_vectors=False,
+    )
+    return {
+        str(point.id): {
+            "content": point.payload.get("content", ""),
+            "document_id": point.payload.get("document_id", ""),
+        }
+        for point in results
+    }
 
 
 async def search_similar_chunks_filtered(

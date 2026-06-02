@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     # Chunking
     chunk_size: int = 800
     chunk_overlap: int = 50
+    structure_aware_chunking: bool = True
+    parent_chunk_size: int = 1500
+    child_chunk_size: int = 500
 
     @property
     def cors_origins(self) -> list[str]:
