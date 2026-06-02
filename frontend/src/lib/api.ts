@@ -8,6 +8,15 @@ export interface ActionMeta {
   data: Record<string, unknown>
 }
 
+export interface RetrievalSource {
+  document_id: string
+  filename?: string | null
+  chunk_id: string
+  score: number
+  snippet: string
+  retrieval_mode: string
+}
+
 export async function streamChat(
   message: string,
   threadId: string | null,
@@ -20,6 +29,7 @@ export async function streamChat(
   retrievalMode: string = 'hybrid',
   images?: string[],
   onThought?: (thought: string, action?: ActionMeta) => void,
+  onSources?: (sources: RetrievalSource[]) => void,
 ) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 120_000)
@@ -89,6 +99,8 @@ export async function streamChat(
               } else {
                 onThought(data.content)
               }
+            } else if (data.type === 'sources' && onSources) {
+              onSources(data.sources || [])
             } else if (data.done || data.type === 'done') {
               clearTimeout(timeout)
               onDone()
@@ -359,9 +371,17 @@ export async function getUserProfile(token: string): Promise<UserProfileResponse
 }
 
 export interface SystemSettings {
+  MODEL_PROVIDER?: 'openrouter' | 'mistral' | string
   GOOGLE_API_KEY?: string
   OPENROUTER_API_KEY?: string
+  OPENROUTER_MODEL?: string
+  OPENROUTER_FALLBACK_MODEL?: string
+  MISTRAL_API_KEY?: string
+  MISTRAL_MODEL?: string
   TAVLY_API_KEY?: string
+  COHERE_API_KEY?: string
+  QDRANT_URL?: string
+  QDRANT_API_KEY?: string
   LANGFUSE_PUBLIC_KEY?: string
   LANGFUSE_SECRET_KEY?: string
   LANGFUSE_BASE_URL?: string
@@ -385,6 +405,156 @@ export async function saveAdminSettings(settings: SystemSettings, token: string)
     body: JSON.stringify(settings),
   })
   if (!response.ok) throw new Error(`Save admin settings failed: ${response.status}`)
+}
+
+// --- Admin RAG Evaluation API ---
+
+export interface RagEvalCase {
+  id: string
+  suite_id?: string | null
+  tenant_id: string
+  question: string
+  expected_facts: string[]
+  expected_answer?: string | null
+  expected_document_id?: string | null
+  tags: string[]
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface RagEvalCaseCreate {
+  question: string
+  expected_facts: string[]
+  expected_answer?: string | null
+  expected_document_id?: string | null
+  tags?: string[]
+  enabled?: boolean
+}
+
+export type RagEvalCaseUpdate = Partial<RagEvalCaseCreate>
+
+export interface RagEvalRunSummary {
+  id: string
+  tenant_id: string
+  suite_id?: string | null
+  status: string
+  retrieval_mode: string
+  model_provider?: string | null
+  model_name?: string | null
+  total_cases: number
+  passed_cases: number
+  avg_context_relevance_score: number
+  avg_groundedness_score: number
+  avg_answer_relevance_score: number
+  failure_reason?: string | null
+  started_at?: string | null
+  completed_at?: string | null
+  created_at: string
+}
+
+export interface RagEvalResult {
+  id: string
+  tenant_id: string
+  run_id: string
+  case_id?: string | null
+  question: string
+  expected_facts: string[]
+  answer: string
+  sources: RetrievalSource[]
+  context_relevance_score: number
+  groundedness_score: number
+  answer_relevance_score: number
+  passed: boolean
+  failure_reason?: string | null
+  created_at: string
+}
+
+export interface RagEvalRunDetail {
+  run: RagEvalRunSummary
+  results: RagEvalResult[]
+}
+
+export async function getRagEvalCases(token: string): Promise<RagEvalCase[]> {
+  const response = await fetch('/api/admin/rag-evals/cases', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Fetch eval cases failed: ${response.status}`)
+  return response.json()
+}
+
+async function parseApiError(response: Response, fallback: string): Promise<Error> {
+  try {
+    const data = await response.json()
+    if (typeof data.detail === 'string') return new Error(data.detail)
+    if (Array.isArray(data.detail) && data.detail.length > 0) {
+      const first = data.detail[0]
+      const field = Array.isArray(first.loc) ? first.loc[first.loc.length - 1] : undefined
+      const message = first.msg || fallback
+      return new Error(field ? `${field}: ${message}` : message)
+    }
+  } catch {
+    // fall through to fallback
+  }
+  return new Error(fallback)
+}
+
+export async function createRagEvalCase(payload: RagEvalCaseCreate, token: string): Promise<RagEvalCase> {
+  const response = await fetch('/api/admin/rag-evals/cases', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) throw await parseApiError(response, `Create eval case failed: ${response.status}`)
+  return response.json()
+}
+
+export async function updateRagEvalCase(caseId: string, payload: RagEvalCaseUpdate, token: string): Promise<RagEvalCase> {
+  const response = await fetch(`/api/admin/rag-evals/cases/${caseId}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) throw await parseApiError(response, `Update eval case failed: ${response.status}`)
+  return response.json()
+}
+
+export async function getRagEvalRuns(token: string): Promise<RagEvalRunSummary[]> {
+  const response = await fetch('/api/admin/rag-evals/runs', {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Fetch eval runs failed: ${response.status}`)
+  return response.json()
+}
+
+export async function getRagEvalRun(runId: string, token: string): Promise<RagEvalRunDetail> {
+  const response = await fetch(`/api/admin/rag-evals/runs/${runId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Fetch eval run failed: ${response.status}`)
+  return response.json()
+}
+
+export async function runRagEval(
+  payload: { retrieval_mode?: 'vector' | 'fts' | 'hybrid' },
+  token: string,
+): Promise<RagEvalRunDetail> {
+  const response = await fetch('/api/admin/rag-evals/runs', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) throw new Error(`Run eval failed: ${response.status}`)
+  return response.json()
 }
 
 

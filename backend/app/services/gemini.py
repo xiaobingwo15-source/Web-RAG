@@ -15,8 +15,9 @@ MAX_RETRIES = 2
 BACKOFF_BASE = 1.0
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+MISTRAL_BASE_URL = "https://api.mistral.ai/v1"
 
-_llm_client: AsyncOpenAI | None = None
+_llm_clients: dict[tuple[str, str, str], AsyncOpenAI] = {}
 
 RAG_SYSTEM_PROMPT = (
     "You are a knowledgeable assistant with access to a curated knowledge base. "
@@ -56,20 +57,47 @@ class ImportanceMarkerStripper:
         return "*"
 
 
+def get_model_provider() -> str:
+    return Settings().get_model_provider
+
+
+def get_primary_model() -> str:
+    settings = Settings()
+    if settings.get_model_provider == "mistral":
+        return settings.get_mistral_model
+    return settings.get_openrouter_model
+
+
 def get_llm_client() -> AsyncOpenAI:
-    global _llm_client
-    if _llm_client is None:
-        settings = Settings()
-        _llm_client = AsyncOpenAI(
-            api_key=settings.get_openrouter_api_key,
-            base_url=OPENROUTER_BASE_URL,
-            default_headers={
-                "HTTP-Referer": settings.frontend_url,
-                "X-Title": "Web-RAG",
-            },
-            timeout=httpx.Timeout(timeout=60.0, connect=10.0),
-        )
-    return _llm_client
+    settings = Settings()
+    provider = settings.get_model_provider
+    if provider == "mistral":
+        api_key = settings.get_mistral_api_key
+        if not api_key:
+            raise RuntimeError("MISTRAL_API_KEY is not configured")
+        base_url = MISTRAL_BASE_URL
+        headers = None
+    else:
+        api_key = settings.get_openrouter_api_key
+        if not api_key:
+            raise RuntimeError("OPENROUTER_API_KEY is not configured")
+        base_url = OPENROUTER_BASE_URL
+        headers = {
+            "HTTP-Referer": settings.frontend_url,
+            "X-Title": "Web-RAG",
+        }
+
+    cache_key = (provider, base_url, api_key)
+    if cache_key not in _llm_clients:
+        kwargs = {
+            "api_key": api_key,
+            "base_url": base_url,
+            "timeout": httpx.Timeout(timeout=60.0, connect=10.0),
+        }
+        if headers:
+            kwargs["default_headers"] = headers
+        _llm_clients[cache_key] = AsyncOpenAI(**kwargs)
+    return _llm_clients[cache_key]
 
 
 def _build_messages(
@@ -129,9 +157,15 @@ def _extract_retry_delay(error: APIError) -> float:
 
 
 def _models_to_try() -> list[str]:
-    models = [PRIMARY_MODEL]
-    if FALLBACK_MODEL and FALLBACK_MODEL != PRIMARY_MODEL:
-        models.append(FALLBACK_MODEL)
+    settings = Settings()
+    if settings.get_model_provider == "mistral":
+        return [settings.get_mistral_model]
+
+    primary_model = settings.get_openrouter_model
+    fallback_model = settings.get_openrouter_fallback_model
+    models = [primary_model]
+    if fallback_model and fallback_model != primary_model:
+        models.append(fallback_model)
     return models
 
 
@@ -145,7 +179,7 @@ async def generate_chat_response(
 ) -> str:
     langfuse = get_client()
     langfuse.update_current_generation(
-        model=PRIMARY_MODEL,
+        model=get_primary_model(),
         input={"message": message},
     )
 
@@ -197,7 +231,7 @@ async def generate_chat_response_stream(
 ):
     langfuse = get_client()
     langfuse.update_current_generation(
-        model=PRIMARY_MODEL,
+        model=get_primary_model(),
         input={"message": message},
     )
 

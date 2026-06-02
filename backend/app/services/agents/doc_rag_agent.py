@@ -2,7 +2,7 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from app.services.retrieval import retrieve_context
-from app.services.gemini import get_llm_client, generate_chat_response_stream, RAG_SYSTEM_PROMPT, PRIMARY_MODEL
+from app.services.gemini import get_llm_client, generate_chat_response_stream, RAG_SYSTEM_PROMPT, get_primary_model
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +11,10 @@ REWRITE_SYSTEM_PROMPT = (
     "follow-up question, rewrite the question as a standalone search query that "
     "contains all necessary context. Return ONLY the rewritten query, nothing else."
 )
+
+
+def _public_sources(sources: list[dict]) -> list[dict]:
+    return [{k: v for k, v in source.items() if k != "content"} for source in sources]
 
 
 async def rewrite_query(message: str, history: list, client) -> str:
@@ -37,7 +41,7 @@ async def rewrite_query(message: str, history: list, client) -> str:
     try:
         response = await asyncio.wait_for(
             client.chat.completions.create(
-                model=PRIMARY_MODEL,
+                model=get_primary_model(),
                 messages=[
                     {"role": "system", "content": REWRITE_SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
@@ -90,6 +94,7 @@ async def execute(
     retrieval_result = await retrieve_context(token, user_id, augmented_query, mode=retrieval_mode, target_user_id=target_user_id, tenant_id=tenant_id)
     context_chunks = retrieval_result["chunks"]
     sources = retrieval_result["sources"]
+    public_sources = _public_sources(sources)
     print(f"[DOC_RAG] Retrieved {len(context_chunks)} context chunks for user_id={user_id}")
 
     if not context_chunks:
@@ -129,7 +134,13 @@ async def execute(
             "chunk_count": len(context_chunks),
             "mode": retrieval_mode,
             "content_previews": content_previews,
+            "sources": public_sources,
         },
+    }
+
+    yield {
+        "type": "sources",
+        "sources": public_sources,
     }
 
     yield {

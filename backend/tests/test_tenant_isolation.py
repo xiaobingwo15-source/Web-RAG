@@ -18,6 +18,10 @@ class _Query:
         self.filters.append((key, value))
         return self
 
+    def is_(self, key, value):
+        self.filters.append((key, value))
+        return self
+
     def order(self, *args, **kwargs):
         return self
 

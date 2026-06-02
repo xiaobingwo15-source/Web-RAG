@@ -1,8 +1,9 @@
 import json as json_lib
 import uuid
 from fastapi import APIRouter, Header, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sse_starlette.sse import EventSourceResponse
+from app.models.chat import MAX_IMAGE_COUNT, MAX_IMAGE_DATA_URL_LENGTH, MAX_MESSAGE_LENGTH
 from app.routers.chat import build_history
 from app.services.agent_supervisor import execute as agent_execute
 from app.services.database import (
@@ -13,6 +14,7 @@ from app.services.database import (
     save_widget_message,
 )
 from app.services.widget_tokens import create_widget_token, verify_widget_token
+from app.services.rate_limit import check_rate_limit
 
 router = APIRouter()
 
@@ -25,6 +27,30 @@ class WidgetChatRequest(BaseModel):
     message: str
     thread_id: str | None = None
     images: list[str] | None = None
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("message cannot be empty")
+        if len(value) > MAX_MESSAGE_LENGTH:
+            raise ValueError(f"message must be {MAX_MESSAGE_LENGTH} characters or fewer")
+        return value
+
+    @field_validator("images")
+    @classmethod
+    def validate_images(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return value
+        if len(value) > MAX_IMAGE_COUNT:
+            raise ValueError(f"images must contain at most {MAX_IMAGE_COUNT} items")
+        for image in value:
+            if len(image) > MAX_IMAGE_DATA_URL_LENGTH:
+                raise ValueError("each image data URL is too large")
+            if not image.startswith("data:image/"):
+                raise ValueError("images must be data:image URLs")
+        return value
 
 
 @router.post("/session")
@@ -63,6 +89,7 @@ async def chat_stream(
 
     tenant_id = payload["tenant_id"]
     session_id = payload["session_id"]
+    check_rate_limit(f"widget:{tenant_id}:{session_id}", limit=30, window_seconds=60)
     is_new_thread = not request.thread_id
     thread_id = request.thread_id or str(uuid.uuid4())
 

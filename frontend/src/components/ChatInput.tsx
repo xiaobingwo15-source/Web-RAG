@@ -1,13 +1,6 @@
 import { useState, type KeyboardEvent, type ClipboardEvent } from 'react'
 import { Send, FileSearch, X } from 'lucide-react'
 
-const RETRIEVAL_MODES = ['vector', 'fts', 'hybrid'] as const
-const RETRIEVAL_LABELS: Record<string, string> = {
-  vector: 'Vector',
-  fts: 'FTS',
-  hybrid: 'Hybrid',
-}
-
 export function ChatInput({
   onSend,
   disabled,
@@ -19,13 +12,12 @@ export function ChatInput({
 }) {
   const [value, setValue] = useState('')
   const [useDocuments, setUseDocuments] = useState(true)
-  const [retrievalMode, setRetrievalMode] = useState<string>('hybrid')
   const [images, setImages] = useState<string[]>([])
 
   const handleSend = () => {
     const trimmed = value.trim()
     if ((!trimmed && images.length === 0) || disabled) return
-    onSend(trimmed, hasDocuments && useDocuments, retrievalMode, images.length > 0 ? images : undefined)
+    onSend(trimmed, hasDocuments && useDocuments, 'hybrid', images.length > 0 ? images : undefined)
     setValue('')
     setImages([])
   }
@@ -70,24 +62,6 @@ export function ChatInput({
 
   return (
     <div className="border-t border-border p-4">
-      {hasDocuments && useDocuments && (
-        <div className="mx-auto mb-2 flex max-w-3xl items-center gap-1">
-          <span className="text-xs text-muted-foreground">Retrieval:</span>
-          {RETRIEVAL_MODES.map((mode) => (
-            <button
-              key={mode}
-              onClick={() => setRetrievalMode(mode)}
-              className={`rounded-md px-2 py-0.5 text-xs transition-colors ${
-                retrievalMode === mode
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-muted text-muted-foreground hover:bg-muted/80'
-              }`}
-            >
-              {RETRIEVAL_LABELS[mode]}
-            </button>
-          ))}
-        </div>
-      )}
       {images.length > 0 && (
         <div className="mx-auto mb-2 flex max-w-3xl flex-wrap gap-2">
           {images.map((src, idx) => (

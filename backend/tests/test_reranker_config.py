@@ -6,6 +6,9 @@ from app.services import reranker
 
 
 class RerankerConfigTests(unittest.TestCase):
+    def test_uses_current_cohere_rerank_model(self):
+        self.assertEqual(reranker.COHERE_MODEL, "rerank-v3.5")
+
     def test_cohere_client_uses_settings_key(self):
         with (
             patch.object(

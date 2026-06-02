@@ -1,4 +1,5 @@
 import logging
+from datetime import UTC, datetime
 from supabase import Client
 from app.services.supabase import get_supabase_client, get_supabase_client_with_token
 
@@ -253,7 +254,7 @@ def create_widget_thread(tenant_id: str, client_session_id: str, thread_id: str,
 
 def get_thread(access_token: str, thread_id: str, tenant_id: str | None = None) -> dict | None:
     db = get_user_db(access_token)
-    query = db.table("threads").select("*").eq("id", thread_id)
+    query = db.table("threads").select("*").eq("id", thread_id).is_("archived_at", "null")
     result = _apply_tenant(query, tenant_id).execute()
     return result.data[0] if result.data else None
 
@@ -265,6 +266,7 @@ def get_thread_service(tenant_id: str, thread_id: str) -> dict | None:
         .select("*")
         .eq("id", thread_id)
         .eq("tenant_id", tenant_id)
+        .is_("archived_at", "null")
         .execute()
     )
     return result.data[0] if result.data else None
@@ -324,15 +326,18 @@ def get_thread_messages_service(tenant_id: str, thread_id: str) -> list[dict]:
 
 def get_user_threads(access_token: str, user_id: str, tenant_id: str | None = None) -> list[dict]:
     db = get_user_db(access_token)
-    query = db.table("threads").select("*").eq("user_id", user_id)
+    query = db.table("threads").select("*").eq("user_id", user_id).is_("archived_at", "null")
     result = _apply_tenant(query, tenant_id).order("created_at", desc=True).execute()
     return result.data
 
 
 def delete_thread(access_token: str, thread_id: str, tenant_id: str | None = None) -> None:
     db = get_user_db(access_token)
-    _apply_tenant(db.table("messages").delete().eq("thread_id", thread_id), tenant_id).execute()
-    _apply_tenant(db.table("threads").delete().eq("id", thread_id), tenant_id).execute()
+    archived_at = datetime.now(UTC).isoformat()
+    _apply_tenant(
+        db.table("threads").update({"archived_at": archived_at}).eq("id", thread_id),
+        tenant_id,
+    ).execute()
 
 
 # --- File Search Store functions ---
@@ -380,9 +385,18 @@ def get_document(access_token: str, document_id: str, tenant_id: str | None = No
     return result.data[0] if result.data else None
 
 
+def get_documents_by_ids(access_token: str | None, document_ids: list[str], tenant_id: str | None = None) -> dict[str, dict]:
+    if not document_ids:
+        return {}
+    db = get_user_db(access_token) if access_token else get_db()
+    query = db.table("documents").select("id, filename, metadata, status").in_("id", list(set(document_ids)))
+    result = _apply_tenant(query, tenant_id).execute()
+    return {str(doc["id"]): doc for doc in (result.data or [])}
+
+
 def get_user_documents(access_token: str, user_id: str | None = None, tenant_id: str | None = None) -> list[dict]:
     db = get_user_db(access_token)
-    query = db.table("documents").select("*")
+    query = db.table("documents").select("*").neq("status", "archived")
     if user_id:
         query = query.eq("user_id", user_id)
     result = _apply_tenant(query, tenant_id).order("created_at", desc=True).execute()
@@ -421,7 +435,7 @@ def mark_document_retrying(access_token: str, document_id: str, filename: str, m
 
 def get_document_by_hash(access_token: str, user_id: str, content_hash: str, tenant_id: str | None = None) -> dict | None:
     db = get_user_db(access_token)
-    query = db.table("documents").select("*").eq("user_id", user_id).eq("content_hash", content_hash)
+    query = db.table("documents").select("*").eq("user_id", user_id).eq("content_hash", content_hash).neq("status", "archived")
     result = _apply_tenant(query, tenant_id).execute()
     return result.data[0] if result.data else None
 
@@ -542,6 +556,17 @@ def delete_document(access_token: str, document_id: str) -> dict | None:
     return doc_info
 
 
+def archive_document(access_token: str, document_id: str) -> dict | None:
+    db = get_user_db(access_token)
+    result = (
+        db.table("documents")
+        .update({"status": "archived"})
+        .eq("id", document_id)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
 # --- Agent trace functions ---
 
 def save_agent_trace(
@@ -588,6 +613,7 @@ def get_all_threads_grouped(tenant_id: str) -> list[dict]:
         db.table("threads")
         .select("*")
         .eq("tenant_id", tenant_id)
+        .is_("archived_at", "null")
         .order("created_at", desc=True)
         .execute()
     )
@@ -688,6 +714,194 @@ def get_tenant_admin_user_id(tenant_id: str) -> str | None:
     except Exception as e:
         logger.warning("Failed to fetch tenant admin user_id from profiles: %s", e)
     return None
+
+
+# --- RAG evaluation functions ---
+
+def get_or_create_default_eval_suite(tenant_id: str) -> dict:
+    db = get_db()
+    existing = (
+        db.table("rag_eval_suites")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .order("created_at")
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        return existing.data[0]
+
+    result = (
+        db.table("rag_eval_suites")
+        .insert({
+            "tenant_id": tenant_id,
+            "name": "Default RAG Eval Suite",
+            "description": "Internal document-grounded RAG quality checks",
+        })
+        .execute()
+    )
+    return result.data[0]
+
+
+def list_rag_eval_cases(tenant_id: str, enabled_only: bool = False) -> list[dict]:
+    db = get_db()
+    query = (
+        db.table("rag_eval_cases")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .order("created_at", desc=True)
+    )
+    if enabled_only:
+        query = query.eq("enabled", True)
+    return query.execute().data
+
+
+def create_rag_eval_case(tenant_id: str, payload: dict) -> dict:
+    db = get_db()
+    suite = get_or_create_default_eval_suite(tenant_id)
+    row = {
+        "tenant_id": tenant_id,
+        "suite_id": suite["id"],
+        "question": payload["question"],
+        "expected_facts": payload.get("expected_facts") or [],
+        "expected_answer": payload.get("expected_answer"),
+        "expected_document_id": payload.get("expected_document_id") or None,
+        "tags": payload.get("tags") or [],
+        "enabled": payload.get("enabled", True),
+    }
+    result = db.table("rag_eval_cases").insert(row).execute()
+    return result.data[0]
+
+
+def update_rag_eval_case(tenant_id: str, case_id: str, payload: dict) -> dict | None:
+    db = get_db()
+    allowed = {
+        "question",
+        "expected_facts",
+        "expected_answer",
+        "expected_document_id",
+        "tags",
+        "enabled",
+    }
+    updates = {key: value for key, value in payload.items() if key in allowed}
+    if not updates:
+        return None
+    updates["updated_at"] = datetime.now(UTC).isoformat()
+    result = (
+        db.table("rag_eval_cases")
+        .update(updates)
+        .eq("tenant_id", tenant_id)
+        .eq("id", case_id)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def create_rag_eval_run(
+    tenant_id: str,
+    suite_id: str | None,
+    retrieval_mode: str,
+    model_provider: str,
+    model_name: str,
+    total_cases: int,
+) -> dict:
+    db = get_db()
+    result = (
+        db.table("rag_eval_runs")
+        .insert({
+            "tenant_id": tenant_id,
+            "suite_id": suite_id,
+            "status": "running",
+            "retrieval_mode": retrieval_mode,
+            "model_provider": model_provider,
+            "model_name": model_name,
+            "total_cases": total_cases,
+            "started_at": datetime.now(UTC).isoformat(),
+        })
+        .execute()
+    )
+    return result.data[0]
+
+
+def update_rag_eval_run(tenant_id: str, run_id: str, updates: dict) -> dict:
+    db = get_db()
+    result = (
+        db.table("rag_eval_runs")
+        .update(updates)
+        .eq("tenant_id", tenant_id)
+        .eq("id", run_id)
+        .execute()
+    )
+    return result.data[0] if result.data else {}
+
+
+def insert_rag_eval_result(
+    tenant_id: str,
+    run_id: str,
+    case: dict,
+    answer: str,
+    sources: list[dict],
+    score,
+) -> dict:
+    db = get_db()
+    result = (
+        db.table("rag_eval_results")
+        .insert({
+            "tenant_id": tenant_id,
+            "run_id": run_id,
+            "case_id": case.get("id"),
+            "question": case["question"],
+            "expected_facts": case.get("expected_facts") or [],
+            "answer": answer,
+            "sources": sources,
+            "context_relevance_score": score.context_relevance_score,
+            "groundedness_score": score.groundedness_score,
+            "answer_relevance_score": score.answer_relevance_score,
+            "passed": score.passed,
+            "failure_reason": score.failure_reason,
+        })
+        .execute()
+    )
+    return result.data[0]
+
+
+def list_rag_eval_runs(tenant_id: str, limit: int = 20) -> list[dict]:
+    db = get_db()
+    return (
+        db.table("rag_eval_runs")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+        .data
+    )
+
+
+def get_rag_eval_run(tenant_id: str, run_id: str) -> dict | None:
+    db = get_db()
+    result = (
+        db.table("rag_eval_runs")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .eq("id", run_id)
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def list_rag_eval_results(tenant_id: str, run_id: str) -> list[dict]:
+    db = get_db()
+    return (
+        db.table("rag_eval_results")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .eq("run_id", run_id)
+        .order("created_at")
+        .execute()
+        .data
+    )
 
 
 # --- Admin Manual Answer functions ---

@@ -3,11 +3,47 @@ import logging
 from app.services.embeddings import get_embedding_client, get_embedding
 from app.services.reranker import rerank_with_cohere
 from app.services.qdrant_db import search_similar_chunks
-from app.services.database import search_chunks_fts
+from app.services.database import get_documents_by_ids, search_chunks_fts
 
 logger = logging.getLogger(__name__)
 
 VECTOR_SIMILARITY_THRESHOLD = 0.1
+
+
+def _snippet(content: str, limit: int = 240) -> str:
+    text = " ".join((content or "").split())
+    return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
+
+
+def _finalize_sources(
+    token: str | None,
+    raw_sources: list[dict],
+    mode: str,
+    tenant_id: str | None = None,
+) -> list[dict]:
+    document_ids = [str(s.get("document_id", "")) for s in raw_sources if s.get("document_id")]
+    try:
+        documents = get_documents_by_ids(token, document_ids, tenant_id=tenant_id)
+    except Exception as e:
+        logger.warning("Unable to enrich retrieval sources with document metadata: %s", e)
+        documents = {}
+    sources = []
+    for source in raw_sources:
+        document_id = str(source.get("document_id", ""))
+        doc = documents.get(document_id, {})
+        if doc.get("status") == "archived":
+            continue
+        content = source.get("content", "")
+        sources.append({
+            "chunk_id": str(source.get("id", "")),
+            "document_id": document_id,
+            "filename": doc.get("filename"),
+            "score": float(source.get("score", 0) or 0),
+            "snippet": _snippet(content),
+            "retrieval_mode": mode,
+            "content": content,
+        })
+    return sources
 
 
 async def retrieve_context(
@@ -24,7 +60,7 @@ async def retrieve_context(
     Returns:
         {
             "chunks": list[str],       # content strings for LLM consumption
-            "sources": list[dict],     # [{id, document_id, content, score}, ...]
+            "sources": list[dict],     # [{chunk_id, document_id, filename, score, snippet, retrieval_mode, content}, ...]
         }
     """
     if target_user_id is None:
@@ -52,7 +88,8 @@ async def retrieve_context(
         chunks = await asyncio.to_thread(search_chunks_fts, token, target_user_id, message, match_count, tenant_id)
         if not chunks:
             return _empty()
-        sources = [{"id": c.get("id", ""), "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("rank", 0)} for c in chunks]
+        raw_sources = [{"id": c.get("id", ""), "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("rank", 0)} for c in chunks]
+        sources = _finalize_sources(token, raw_sources, mode, tenant_id)
         logger.info(f"FTS retrieval: {len(sources)} chunks")
         return {"chunks": [s["content"] for s in sources], "sources": sources}
 
@@ -88,14 +125,14 @@ async def retrieve_context(
 
         for rank, chunk in enumerate(vector_results):
             cid = chunk["id"]
-            combined[cid] = {"content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": 1.0 / (rrf_k + rank + 1)}
+            combined[cid] = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": 1.0 / (rrf_k + rank + 1)}
 
         for rank, chunk in enumerate(fts_results):
             cid = chunk.get("id", f"fts_{rank}")
             if cid in combined:
                 combined[cid]["score"] += 1.0 / (rrf_k + rank + 1)
             else:
-                combined[cid] = {"content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": 1.0 / (rrf_k + rank + 1)}
+                combined[cid] = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": 1.0 / (rrf_k + rank + 1)}
 
         sorted_results = sorted(combined.values(), key=lambda x: x["score"], reverse=True)
         candidates = [r["content"] for r in sorted_results[:match_count * 2]]
@@ -115,6 +152,7 @@ async def retrieve_context(
                         "content": candidates[idx],
                         "score": s.get("score", meta["score"]),
                     })
+            sources = _finalize_sources(token, sources, mode, tenant_id)
             logger.info(f"Hybrid reranker: {len(scored)} scored -> {len(sources)} final results")
             return {"chunks": [s["content"] for s in sources], "sources": sources}
 
@@ -129,7 +167,8 @@ async def retrieve_context(
         )
         if not chunks:
             return _empty()
-        sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0)} for c in chunks]
+        raw_sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0)} for c in chunks]
+        sources = _finalize_sources(token, raw_sources, mode, tenant_id)
         return {"chunks": [s["content"] for s in sources], "sources": sources}
 
     # mode == "vector"
@@ -143,6 +182,7 @@ async def retrieve_context(
     )
     if not chunks:
         return _empty()
-    sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0)} for c in chunks]
+    raw_sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0)} for c in chunks]
+    sources = _finalize_sources(token, raw_sources, mode, tenant_id)
     logger.info(f"Vector retrieval: {len(sources)} chunks")
     return {"chunks": [s["content"] for s in sources], "sources": sources}
