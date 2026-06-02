@@ -3,6 +3,7 @@ import logging
 from collections.abc import AsyncGenerator
 from app.services.retrieval import retrieve_context
 from app.services.gemini import get_llm_client, generate_chat_response_stream, RAG_SYSTEM_PROMPT, get_primary_model
+from app.services.web_search import search_web
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,83 @@ def _check_groundedness(answer: str, context_chunks: list[str]) -> float:
     groundedness = len(overlap) / len(answer_tokens)
 
     return groundedness
+
+
+async def _needs_external_context(query: str, context_chunks: list[str], client) -> bool:
+    """Check if the query asks for information NOT covered by the retrieved document chunks."""
+    context_preview = "\n---\n".join(c[:300] for c in context_chunks[:3])
+    prompt = (
+        "You are a strict classifier. Given a user query and document excerpts, "
+        "determine if the query asks for information about something NOT in the documents "
+        "(e.g., comparing with another product, asking about a different brand, requesting "
+        "external/up-to-date data).\n\n"
+        f"Document excerpts:\n{context_preview}\n\n"
+        f"User query: {query}\n\n"
+        "Does the query need external information beyond what's in these documents? "
+        "Reply with ONLY 'yes' or 'no'."
+    )
+    try:
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=get_primary_model(),
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=5,
+                temperature=0,
+            ),
+            timeout=5.0,
+        )
+        answer = (response.choices[0].message.content or "").strip().lower()
+        result = answer.startswith("y")
+        logger.info(f"External context check: {result} (raw='{answer}')")
+        print(f"[DOC_RAG] External context needed: {result}")
+        return result
+    except Exception as e:
+        logger.warning(f"External context check failed, defaulting to False: {e}")
+        return False
+
+
+async def _extract_search_query(query: str, context_chunks: list[str], client) -> str:
+    """Extract a targeted web search query for the missing external information."""
+    context_preview = "\n---\n".join(c[:200] for c in context_chunks[:2])
+    prompt = (
+        "Given a user query and some document context, extract the specific subject "
+        "that needs to be searched online. Focus on the missing/comparison item.\n\n"
+        f"Document context: {context_preview}\n\n"
+        f"User query: {query}\n\n"
+        "Generate a concise search query (under 15 words) for the missing information. "
+        "Return ONLY the search query."
+    )
+    try:
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=get_primary_model(),
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=30,
+                temperature=0.2,
+            ),
+            timeout=5.0,
+        )
+        search_query = (response.choices[0].message.content or "").strip().strip('"')
+        if search_query:
+            logger.info(f"Extracted search query: '{search_query}'")
+            print(f"[DOC_RAG] Web search query: '{search_query}'")
+            return search_query
+    except Exception as e:
+        logger.warning(f"Search query extraction failed: {e}")
+    # Fallback: use the original query
+    return query
+
+
+HYBRID_SYSTEM_PROMPT = (
+    "You are a knowledgeable assistant. Answer using the reference information below. "
+    "Some information comes from a curated knowledge base, some from web search results.\n\n"
+    "When using web search information, naturally mention the source (e.g., 'According to [Source]...'). "
+    "Be conversational, warm, and direct.\n\n"
+    "If neither source fully covers the question, acknowledge what you do know and be honest about the gaps. "
+    "Do not make up information.\n\n"
+    "Use natural Markdown formatting as appropriate (headings, bullet points, bold for emphasis). "
+    "Keep answers well-structured but not overly rigid."
+)
 
 
 async def execute(
@@ -248,17 +326,56 @@ async def execute(
         "sources": public_sources,
     }
 
+    # Check if the query needs external information beyond the documents
+    use_hybrid = False
+    if context_chunks:
+        needs_external = await _needs_external_context(message, context_chunks, client)
+        if needs_external:
+            yield {
+                "type": "thought",
+                "content": "Query needs external information. Searching the web...",
+                "action_type": "searching",
+                "action_source": "doc_rag",
+                "action_data": {"reason": "external_context_needed"},
+            }
+            search_query = await _extract_search_query(message, context_chunks, client)
+            web_results = await search_web(search_query, max_results=3)
+            if web_results:
+                # Add web results as additional context chunks
+                web_context = []
+                web_sources = []
+                for r in web_results:
+                    snippet = r["content"][:500]
+                    web_context.append(f"[Web] {r['title']}: {snippet}")
+                    web_sources.append({"title": r["title"], "url": r["url"]})
+                context_chunks = context_chunks + web_context
+                public_sources = public_sources + web_sources
+                use_hybrid = True
+                yield {
+                    "type": "thought",
+                    "content": f"Found {len(web_results)} web results to supplement document data.",
+                    "action_type": "synthesizing",
+                    "action_source": "doc_rag",
+                    "action_data": {"web_results": len(web_results), "search_query": search_query},
+                }
+                yield {
+                    "type": "sources",
+                    "sources": web_sources,
+                }
+
+    system_prompt = HYBRID_SYSTEM_PROMPT if use_hybrid else RAG_SYSTEM_PROMPT
+
     yield {
         "type": "thought",
-        "content": "Generating answer from matched documents...",
+        "content": "Generating answer from matched documents..." + (" and web search" if use_hybrid else ""),
         "action_type": "synthesizing",
         "action_source": "doc_rag",
-        "action_data": {"stage": "llm_generation"},
+        "action_data": {"stage": "llm_generation", "hybrid": use_hybrid},
     }
 
     # Collect streamed response for groundedness check
     full_answer = ""
-    async for chunk in generate_chat_response_stream(client, message, history, context_chunks, images=images, system_prompt=RAG_SYSTEM_PROMPT):
+    async for chunk in generate_chat_response_stream(client, message, history, context_chunks, images=images, system_prompt=system_prompt):
         full_answer += chunk
         yield {"type": "token", "content": chunk}
 
