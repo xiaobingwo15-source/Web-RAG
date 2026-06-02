@@ -1010,3 +1010,104 @@ def clear_thread_attention_flags(tenant_id: str, thread_id: str) -> None:
     """Clear all needs_attention flags in a thread."""
     db = get_db()
     db.table("messages").update({"needs_attention": False}).eq("thread_id", thread_id).eq("tenant_id", tenant_id).eq("needs_attention", True).execute()
+
+
+# --- Retrieval logging ---
+
+def log_retrieval(
+    query: str,
+    retrieval_mode: str,
+    chunk_count: int,
+    source_count: int = 0,
+    top_score: float | None = None,
+    duration_ms: int | None = None,
+    user_id: str | None = None,
+    tenant_id: str | None = None,
+    thread_id: str | None = None,
+) -> dict | None:
+    """Log a retrieval request for analytics. Fire-and-forget — returns None on error."""
+    try:
+        db = get_db()
+        row = {
+            "query": query[:1000],
+            "retrieval_mode": retrieval_mode,
+            "chunk_count": chunk_count,
+            "source_count": source_count,
+            **({"top_score": top_score} if top_score is not None else {}),
+            **({"duration_ms": duration_ms} if duration_ms is not None else {}),
+            **({"user_id": user_id} if user_id else {}),
+            **({"tenant_id": tenant_id} if tenant_id else {}),
+            **({"thread_id": thread_id} if thread_id else {}),
+        }
+        result = db.table("retrieval_logs").insert(row).execute()
+        return result.data[0] if result.data else None
+    except Exception as e:
+        logger.warning("Failed to log retrieval: %s", e)
+        return None
+
+
+def get_retrieval_logs(
+    tenant_id: str,
+    zero_chunks_only: bool = False,
+    limit: int = 50,
+) -> list[dict]:
+    """Fetch retrieval logs for admin review."""
+    db = get_db()
+    query = (
+        db.table("retrieval_logs")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+    )
+    if zero_chunks_only:
+        query = query.eq("chunk_count", 0)
+    return query.execute().data
+
+
+# --- Message feedback ---
+
+def save_message_feedback(
+    user_id: str,
+    thread_id: str,
+    message_id: str,
+    rating: int,
+    comment: str | None = None,
+    tenant_id: str | None = None,
+) -> dict | None:
+    """Save thumbs up (1) or thumbs down (-1) feedback for a message."""
+    try:
+        db = get_db()
+        row = {
+            "user_id": user_id,
+            "thread_id": thread_id,
+            "message_id": message_id,
+            "rating": rating,
+            **({"comment": comment} if comment else {}),
+            **({"tenant_id": tenant_id} if tenant_id else {}),
+        }
+        result = (
+            db.table("message_feedback")
+            .upsert(row, on_conflict="user_id,thread_id,message_id")
+            .execute()
+        )
+        return result.data[0] if result.data else None
+    except Exception as e:
+        logger.warning("Failed to save message feedback: %s", e)
+        return None
+
+
+def get_message_feedback(
+    user_id: str,
+    thread_id: str,
+) -> list[dict]:
+    """Get all feedback a user gave in a thread."""
+    db = get_db()
+    result = (
+        db.table("message_feedback")
+        .select("message_id, rating")
+        .eq("user_id", user_id)
+        .eq("thread_id", thread_id)
+        .execute()
+    )
+    return result.data or []

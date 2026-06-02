@@ -15,6 +15,7 @@ from app.services.database import (
 )
 from app.services.widget_tokens import create_widget_token, verify_widget_token
 from app.services.rate_limit import check_rate_limit
+from app.config import Settings
 
 router = APIRouter()
 
@@ -89,7 +90,8 @@ async def chat_stream(
 
     tenant_id = payload["tenant_id"]
     session_id = payload["session_id"]
-    check_rate_limit(f"widget:{tenant_id}:{session_id}", limit=30, window_seconds=60)
+    settings = Settings()
+    check_rate_limit(f"widget:{tenant_id}:{session_id}", limit=settings.rate_limit_widget_requests, window_seconds=settings.rate_limit_widget_window)
     is_new_thread = not request.thread_id
     thread_id = request.thread_id or str(uuid.uuid4())
 

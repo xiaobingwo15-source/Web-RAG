@@ -1,4 +1,10 @@
-def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[str]:
+def chunk_text(text: str, chunk_size: int | None = None, overlap: int | None = None) -> list[str]:
+    if chunk_size is None:
+        from app.config import Settings
+        chunk_size = Settings().chunk_size
+    if overlap is None:
+        from app.config import Settings
+        overlap = Settings().chunk_overlap
     if not text or not text.strip():
         return []
 

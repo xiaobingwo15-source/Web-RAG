@@ -122,6 +122,112 @@ export async function streamChat(
   }
 }
 
+export interface WidgetSessionResponse {
+  token: string
+  session_id: string
+  expires_in: number
+}
+
+export async function createWidgetSession(tenantSlug: string): Promise<WidgetSessionResponse> {
+  const response = await fetch('/api/widget/session', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ tenant_slug: tenantSlug }),
+  })
+  if (!response.ok) throw new Error(`Create widget session failed: ${response.status}`)
+  return response.json()
+}
+
+export async function streamWidgetChat(
+  message: string,
+  threadId: string | null,
+  token: string,
+  onChunk: (text: string) => void,
+  onDone: () => void,
+  onError: (err: StreamError) => void,
+  onThreadId?: (threadId: string) => void,
+  images?: string[],
+) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 120_000)
+
+  let response: Response
+  try {
+    response = await fetch('/api/widget/chat/stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        message,
+        thread_id: threadId,
+        ...(images && images.length > 0 ? { images } : {}),
+      }),
+      signal: controller.signal,
+    })
+  } catch (err) {
+    clearTimeout(timeout)
+    const isAbort = (err as Error).name === 'AbortError'
+    onError(new Error(isAbort ? 'Request timed out' : (err as Error).message))
+    return
+  }
+
+  if (!response.ok) {
+    clearTimeout(timeout)
+    onError(new Error(`HTTP ${response.status}`))
+    return
+  }
+
+  const reader = response.body?.getReader()
+  const decoder = new TextDecoder()
+
+  if (!reader) {
+    clearTimeout(timeout)
+    onDone()
+    return
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const chunk = decoder.decode(value, { stream: true })
+      const lines = chunk.split('\n').map(l => l.trimEnd())
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6))
+            if (data.thread_id && onThreadId) onThreadId(data.thread_id)
+            if (data.type === 'error') {
+              const err: StreamError = new Error(data.content)
+              err.error_code = data.error_code
+              clearTimeout(timeout)
+              onError(err)
+              return
+            } else if (data.done || data.type === 'done') {
+              clearTimeout(timeout)
+              onDone()
+              return
+            } else if (data.type === 'token' && data.content) {
+              onChunk(data.content)
+            }
+          } catch {
+            // skip malformed JSON lines
+          }
+        }
+      }
+    }
+    clearTimeout(timeout)
+    onDone()
+  } catch (err) {
+    clearTimeout(timeout)
+    onError(err as Error)
+  }
+}
+
 export interface ThreadSummary {
   id: string
   title: string
@@ -755,4 +861,41 @@ export async function resolveTenant(): Promise<TenantInfo> {
   const response = await fetch('/api/auth/tenant/resolve')
   if (!response.ok) throw new Error(`Could not resolve tenant: ${response.status}`)
   return response.json()
+}
+
+
+// --- Message Feedback ---
+
+export async function submitFeedback(
+  threadId: string,
+  messageId: string,
+  rating: 1 | -1,
+  token: string,
+  comment?: string,
+): Promise<void> {
+  const response = await fetch('/api/chat/feedback', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ thread_id: threadId, message_id: messageId, rating, comment }),
+  })
+  if (!response.ok) throw new Error(`Submit feedback failed: ${response.status}`)
+}
+
+export async function getThreadFeedback(
+  threadId: string,
+  token: string,
+): Promise<Record<string, 1 | -1>> {
+  const response = await fetch(`/api/chat/threads/${threadId}/feedback`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Fetch feedback failed: ${response.status}`)
+  const data = await response.json()
+  const map: Record<string, 1 | -1> = {}
+  for (const f of data.feedback || []) {
+    map[f.message_id] = f.rating
+  }
+  return map
 }

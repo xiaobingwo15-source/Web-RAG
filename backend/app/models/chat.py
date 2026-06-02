@@ -80,3 +80,10 @@ class MessageResponse(BaseModel):
 
 class MessageListResponse(BaseModel):
     messages: list[MessageResponse]
+
+
+class FeedbackRequest(BaseModel):
+    thread_id: str
+    message_id: str
+    rating: Literal[1, -1]
+    comment: Optional[str] = None

@@ -35,37 +35,53 @@ export function useDocuments() {
     }
   }, [session?.access_token])
 
-  const uploadDocument = async (file: File, useOcr: boolean = false) => {
+  const uploadDocument = async (fileOrFiles: File | File[], useOcr: boolean = false) => {
     if (!session?.access_token) return
+    const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles]
+    if (files.length === 0) return
+
     setIsUploading(true)
     setDuplicateWarning(null)
     setUploadFailure(null)
-    try {
-      const res = await apiUpload(file, session.access_token, useOcr)
-      
-      // Query completed status to confirm it didn't fail processing in the backend
-      const statusRes = await getDocumentStatus(res.id, session.access_token)
-      setDocuments((prev) => [
-        { ...statusRes, error_message: statusRes.error_message },
-        ...prev.filter((doc) => doc.id !== statusRes.id),
-      ])
 
-      if (statusRes.status === 'failed') {
-        throw new Error(statusRes.error_message || 'Processing failed')
+    const failures: { filename: string; error: string }[] = []
+
+    for (const file of files) {
+      try {
+        const res = await apiUpload(file, session.access_token, useOcr)
+
+        // Query completed status to confirm it didn't fail processing in the backend
+        const statusRes = await getDocumentStatus(res.id, session.access_token)
+        setDocuments((prev) => [
+          { ...statusRes, error_message: statusRes.error_message },
+          ...prev.filter((doc) => doc.id !== statusRes.id),
+        ])
+
+        if (statusRes.status === 'failed') {
+          failures.push({ filename: file.name, error: statusRes.error_message || 'Processing failed' })
+        }
+      } catch (err: any) {
+        if (err instanceof DuplicateError) {
+          setDuplicateWarning(err.message)
+        } else {
+          console.error('Upload failed:', err)
+          failures.push({
+            filename: file.name,
+            error: err.message || 'Processing or network upload failed',
+          })
+        }
       }
-    } catch (err: any) {
-      if (err instanceof DuplicateError) {
-        setDuplicateWarning(err.message)
-      } else {
-        console.error('Upload failed:', err)
-        setUploadFailure({
-          filename: file.name,
-          error: err.message || 'Processing or network upload failed',
-        })
-      }
-    } finally {
-      setIsUploading(false)
     }
+
+    if (failures.length > 0) {
+      setUploadFailure(
+        failures.length === 1
+          ? failures[0]
+          : { filename: `${failures.length} files`, error: failures.map((f) => `${f.filename}: ${f.error}`).join('; ') }
+      )
+    }
+
+    setIsUploading(false)
   }
 
   const deleteDocument = async (documentId: string): Promise<{ message: string; filename: string }> => {

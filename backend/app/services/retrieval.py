@@ -1,18 +1,95 @@
 import asyncio
 import logging
+import time
 from app.services.embeddings import get_embedding_client, get_embedding
 from app.services.reranker import rerank_with_cohere
 from app.services.qdrant_db import search_similar_chunks
-from app.services.database import get_documents_by_ids, search_chunks_fts
+from app.services.database import get_documents_by_ids, search_chunks_fts, log_retrieval
+from app.services.semantic_cache import get_semantic_cache
 
 logger = logging.getLogger(__name__)
 
 VECTOR_SIMILARITY_THRESHOLD = 0.1
+MMR_LAMBDA = 0.5  # Balance between relevance (1.0) and diversity (0.0)
 
 
 def _snippet(content: str, limit: int = 240) -> str:
     text = " ".join((content or "").split())
     return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
+
+
+def _tokenize(text: str) -> set[str]:
+    """Simple whitespace + lowercase tokenization for overlap comparison."""
+    return set(text.lower().split())
+
+
+def _text_overlap(a: str, b: str) -> float:
+    """Jaccard similarity between two texts (token-level overlap)."""
+    tokens_a = _tokenize(a)
+    tokens_b = _tokenize(b)
+    if not tokens_a or not tokens_b:
+        return 0.0
+    intersection = tokens_a & tokens_b
+    union = tokens_a | tokens_b
+    return len(intersection) / len(union)
+
+
+def _mmr_diversify(
+    candidates: list[dict],
+    lambda_param: float = MMR_LAMBDA,
+    top_n: int | None = None,
+) -> list[dict]:
+    """Maximal Marginal Relevance diversification using text overlap.
+
+    Balances relevance (RRF score) with diversity (low overlap with already-selected).
+    Uses text Jaccard similarity instead of embedding cosine similarity
+    to avoid expensive re-embedding of all candidates.
+
+    Args:
+        candidates: list of dicts with 'score' and 'content' keys
+        lambda_param: 1.0 = pure relevance, 0.0 = pure diversity
+        top_n: number of results to return (defaults to len(candidates))
+
+    Returns:
+        diversified list of candidates
+    """
+    if not candidates or lambda_param >= 1.0:
+        return candidates[:top_n] if top_n else candidates
+
+    n = top_n or len(candidates)
+    selected: list[dict] = []
+    remaining = list(candidates)
+
+    # Normalize scores to [0, 1] for fair comparison
+    max_score = max(c["score"] for c in candidates) if candidates else 1.0
+    min_score = min(c["score"] for c in candidates) if candidates else 0.0
+    score_range = max_score - min_score or 1.0
+
+    while remaining and len(selected) < n:
+        best_idx = -1
+        best_mmr = float("-inf")
+
+        for i, candidate in enumerate(remaining):
+            relevance = (candidate["score"] - min_score) / score_range
+
+            # Max similarity to any already-selected document
+            if selected:
+                max_sim = max(
+                    _text_overlap(candidate["content"], s["content"])
+                    for s in selected
+                )
+            else:
+                max_sim = 0.0
+
+            mmr_score = lambda_param * relevance - (1 - lambda_param) * max_sim
+            if mmr_score > best_mmr:
+                best_mmr = mmr_score
+                best_idx = i
+
+        if best_idx >= 0:
+            selected.append(remaining.pop(best_idx))
+
+    return selected
 
 
 def _finalize_sources(
@@ -54,6 +131,7 @@ async def retrieve_context(
     match_count: int = 5,
     target_user_id: str | None = None,
     tenant_id: str | None = None,
+    thread_id: str | None = None,
 ) -> dict:
     """Retrieve context chunks with source metadata.
 
@@ -63,6 +141,15 @@ async def retrieve_context(
             "sources": list[dict],     # [{chunk_id, document_id, filename, score, snippet, retrieval_mode, content}, ...]
         }
     """
+    t0 = time.monotonic()
+
+    # Semantic cache: check for a cached result from a similar query
+    cache = get_semantic_cache()
+    query_embedding_for_cache: list[float] | None = None
+
+    # For vector/hybrid modes, we'll populate the cache after retrieval
+    # For FTS mode, skip caching (no embedding available)
+
     if target_user_id is None:
         target_user_id = user_id
         # Authenticated clients search their tenant admin's shared knowledge base.
@@ -81,8 +168,29 @@ async def retrieve_context(
         except Exception as e:
             logger.warning(f"Error checking user role in retrieve_context: {e}")
 
+    def _log_and_return(result: dict) -> dict:
+        """Log retrieval metrics then return the result unchanged."""
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        sources = result.get("sources", [])
+        top_score = sources[0]["score"] if sources else None
+        try:
+            log_retrieval(
+                query=message,
+                retrieval_mode=mode,
+                chunk_count=len(result.get("chunks", [])),
+                source_count=len(sources),
+                top_score=top_score,
+                duration_ms=elapsed_ms,
+                user_id=user_id,
+                tenant_id=tenant_id,
+                thread_id=thread_id,
+            )
+        except Exception:
+            pass  # fire-and-forget
+        return result
+
     def _empty():
-        return {"chunks": [], "sources": []}
+        return _log_and_return({"chunks": [], "sources": []})
 
     if mode == "fts":
         chunks = await asyncio.to_thread(search_chunks_fts, token, target_user_id, message, match_count, tenant_id)
@@ -91,7 +199,7 @@ async def retrieve_context(
         raw_sources = [{"id": c.get("id", ""), "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("rank", 0)} for c in chunks]
         sources = _finalize_sources(token, raw_sources, mode, tenant_id)
         logger.info(f"FTS retrieval: {len(sources)} chunks")
-        return {"chunks": [s["content"] for s in sources], "sources": sources}
+        return _log_and_return({"chunks": [s["content"] for s in sources], "sources": sources})
 
     print(f"[RETRIEVAL] query='{message[:80]}...', mode={mode}, target_user_id={target_user_id}")
     logger.info(f"Retrieval: query='{message[:80]}...', mode={mode}, user_id={target_user_id}, tenant_id={tenant_id}")
@@ -101,6 +209,13 @@ async def retrieve_context(
         embedding_task = get_embedding(get_embedding_client(), message)
         fts_task = asyncio.to_thread(search_chunks_fts, token, target_user_id, message, match_count * 2, tenant_id)
         query_embedding, fts_results = await asyncio.gather(embedding_task, fts_task)
+        query_embedding_for_cache = query_embedding
+
+        # Check semantic cache after we have the embedding
+        cached = cache.lookup(query_embedding)
+        if cached is not None:
+            logger.info("Semantic cache hit — returning cached retrieval result")
+            return _log_and_return(cached)
 
         # Vector search starts only after embedding completes
         vector_results = await search_similar_chunks(
@@ -135,9 +250,12 @@ async def retrieve_context(
                 combined[cid] = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": 1.0 / (rrf_k + rank + 1)}
 
         sorted_results = sorted(combined.values(), key=lambda x: x["score"], reverse=True)
-        candidates = [r["content"] for r in sorted_results[:match_count * 2]]
-        candidate_metas = sorted_results[:match_count * 2]
-        logger.info(f"Hybrid RRF merge: {len(combined)} unique candidates, top {len(candidates)} selected for reranking")
+
+        # MMR diversification: reduce redundancy in candidates before reranking
+        diverse_results = _mmr_diversify(sorted_results, lambda_param=MMR_LAMBDA, top_n=match_count * 2)
+        candidates = [r["content"] for r in diverse_results]
+        candidate_metas = diverse_results
+        logger.info(f"Hybrid RRF merge: {len(combined)} unique -> {len(candidates)} after MMR diversification")
 
         if candidates:
             scored = await rerank_with_cohere(message, candidates, top_n=match_count)
@@ -154,7 +272,10 @@ async def retrieve_context(
                     })
             sources = _finalize_sources(token, sources, mode, tenant_id)
             logger.info(f"Hybrid reranker: {len(scored)} scored -> {len(sources)} final results")
-            return {"chunks": [s["content"] for s in sources], "sources": sources}
+            result = {"chunks": [s["content"] for s in sources], "sources": sources}
+            if query_embedding_for_cache:
+                cache.store(query_embedding_for_cache, result)
+            return _log_and_return(result)
 
         # Fallback to vector-only
         logger.warning("Hybrid: RRF merge produced 0 candidates, falling back to vector-only")
@@ -169,10 +290,18 @@ async def retrieve_context(
             return _empty()
         raw_sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0)} for c in chunks]
         sources = _finalize_sources(token, raw_sources, mode, tenant_id)
-        return {"chunks": [s["content"] for s in sources], "sources": sources}
+        return _log_and_return({"chunks": [s["content"] for s in sources], "sources": sources})
 
     # mode == "vector"
     query_embedding = await get_embedding(get_embedding_client(), message)
+    query_embedding_for_cache = query_embedding
+
+    # Check semantic cache
+    cached = cache.lookup(query_embedding)
+    if cached is not None:
+        logger.info("Semantic cache hit (vector mode) — returning cached result")
+        return _log_and_return(cached)
+
     chunks = await search_similar_chunks(
         target_user_id or "",
         query_embedding,
@@ -185,4 +314,7 @@ async def retrieve_context(
     raw_sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0)} for c in chunks]
     sources = _finalize_sources(token, raw_sources, mode, tenant_id)
     logger.info(f"Vector retrieval: {len(sources)} chunks")
-    return {"chunks": [s["content"] for s in sources], "sources": sources}
+    result = {"chunks": [s["content"] for s in sources], "sources": sources}
+    if query_embedding_for_cache:
+        cache.store(query_embedding_for_cache, result)
+    return _log_and_return(result)

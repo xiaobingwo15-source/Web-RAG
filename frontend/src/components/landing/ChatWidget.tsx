@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
 import { MessageCircle, X } from 'lucide-react'
 import { useAnonymousChat } from '@/hooks/useAnonymousChat'
 import { ChatWidgetMessages } from './ChatWidgetMessages'
@@ -28,14 +27,8 @@ export function ChatWidget() {
           {authError ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 p-4">
               <p className="text-center text-sm text-muted-foreground">
-                Sign in to chat with us.
+                Chat is unavailable right now. Please try again later.
               </p>
-              <Link
-                to="/login"
-                className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
-              >
-                Sign In
-              </Link>
             </div>
           ) : (
             <>

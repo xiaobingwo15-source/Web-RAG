@@ -4,6 +4,7 @@ import httpx
 from openai import AsyncOpenAI, APIError, RateLimitError
 from langfuse import observe, get_client
 from app.config import Settings
+from app.services.circuit_breaker import circuit_breaker, CircuitBreakerOpenError
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,7 @@ def _models_to_try() -> list[str]:
     return models
 
 
+@circuit_breaker("llm", failure_threshold=5, recovery_timeout=30.0)
 @observe(name="llm_chat", as_type="generation")
 async def generate_chat_response(
     client: AsyncOpenAI,
@@ -221,7 +223,7 @@ async def generate_chat_response(
 
 
 @observe(name="llm_chat_stream", as_type="generation")
-async def generate_chat_response_stream(
+async def generate_chat_response_stream(  # noqa: C901
     client: AsyncOpenAI,
     message: str,
     history: list[dict] | None = None,
@@ -238,6 +240,13 @@ async def generate_chat_response_stream(
     effective_system_prompt = system_prompt if system_prompt else (RAG_SYSTEM_PROMPT if context_chunks else None)
     messages = _build_messages(message, history, context_chunks, effective_system_prompt, images=images)
     logger.info(f"Generating streaming chat response with {len(context_chunks or [])} context chunks")
+
+    # Check circuit breaker state before attempting the call
+    from app.services.circuit_breaker import get_circuit_breaker
+    llm_breaker = get_circuit_breaker("llm", failure_threshold=5, recovery_timeout=30.0)
+    if llm_breaker.state == "open":
+        logger.warning("LLM circuit breaker is open, rejecting stream call")
+        raise CircuitBreakerOpenError("llm", llm_breaker.recovery_timeout)
 
     last_error = None
     tokens_yielded = False
@@ -307,4 +316,6 @@ async def generate_chat_response_stream(
                 if attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(delay)
 
+    # Record failure in circuit breaker before raising
+    llm_breaker._record_failure()
     raise last_error

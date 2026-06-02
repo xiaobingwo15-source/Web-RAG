@@ -30,6 +30,16 @@ class Settings(BaseSettings):
     owner_api_key: str = ""
     widget_token_secret: str = ""
 
+    # Rate limiting
+    rate_limit_chat_requests: int = 30
+    rate_limit_chat_window: int = 60
+    rate_limit_widget_requests: int = 20
+    rate_limit_widget_window: int = 60
+
+    # Chunking
+    chunk_size: int = 800
+    chunk_overlap: int = 50
+
     @property
     def cors_origins(self) -> list[str]:
         """Parse comma-separated FRONTEND_URL into a list of allowed origins."""

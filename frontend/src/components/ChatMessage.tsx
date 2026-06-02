@@ -1,11 +1,29 @@
+import { useState } from 'react'
 import type { ChatMessage as ChatMessageType } from '@/hooks/useChat'
 import { ThoughtTrace } from '@/components/ThoughtTrace'
-import { BookOpen, Shield } from 'lucide-react'
+import { BookOpen, Shield, ThumbsUp, ThumbsDown } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-export function ChatMessage({ message }: { message: ChatMessageType }) {
+interface ChatMessageProps {
+  message: ChatMessageType
+  messageId?: string
+  threadId?: string | null
+  feedback?: 1 | -1 | null
+  onFeedback?: (messageId: string, rating: 1 | -1) => void
+}
+
+export function ChatMessage({ message, messageId, threadId, feedback, onFeedback }: ChatMessageProps) {
   const isUser = message.role === 'user'
+  const [localFeedback, setLocalFeedback] = useState<1 | -1 | null>(feedback ?? null)
+
+  const handleFeedback = (rating: 1 | -1) => {
+    const newRating = localFeedback === rating ? null : rating
+    setLocalFeedback(newRating)
+    if (newRating && messageId && onFeedback) {
+      onFeedback(messageId, newRating)
+    }
+  }
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -76,6 +94,32 @@ export function ChatMessage({ message }: { message: ChatMessageType }) {
                 </div>
               ))}
             </div>
+          </div>
+        )}
+        {!isUser && message.content && messageId && (
+          <div className="mt-1 flex items-center gap-1">
+            <button
+              onClick={() => handleFeedback(1)}
+              className={`rounded p-1 transition-colors ${
+                localFeedback === 1
+                  ? 'text-green-500 bg-green-500/10'
+                  : 'text-muted-foreground hover:text-green-500 hover:bg-green-500/5'
+              }`}
+              title="Good response"
+            >
+              <ThumbsUp className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={() => handleFeedback(-1)}
+              className={`rounded p-1 transition-colors ${
+                localFeedback === -1
+                  ? 'text-red-500 bg-red-500/10'
+                  : 'text-muted-foreground hover:text-red-500 hover:bg-red-500/5'
+              }`}
+              title="Poor response"
+            >
+              <ThumbsDown className="h-3.5 w-3.5" />
+            </button>
           </div>
         )}
       </div>
