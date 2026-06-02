@@ -7,7 +7,12 @@ from pydantic import BaseModel
 from app.middleware.auth import get_current_user
 from app.services.database import (
     accept_tenant_admin_invite,
+    create_rag_eval_case,
     get_all_threads_grouped,
+    get_rag_eval_run,
+    list_rag_eval_cases,
+    list_rag_eval_results,
+    list_rag_eval_runs,
     get_tenant_admin_invite,
     get_thread_messages_admin,
     save_admin_message,
@@ -15,8 +20,18 @@ from app.services.database import (
     get_flagged_count,
     clear_thread_attention_flags,
     get_tenant_users,
+    update_rag_eval_case,
     update_user_status,
 )
+from app.models.rag_eval import (
+    RagEvalCaseCreate,
+    RagEvalCaseResponse,
+    RagEvalCaseUpdate,
+    RagEvalRunCreate,
+    RagEvalRunDetail,
+    RagEvalRunSummary,
+)
+from app.services.rag_eval import run_rag_eval
 from app.services.widget_tokens import hash_token
 
 logger = logging.getLogger(__name__)
@@ -54,9 +69,17 @@ async def get_conversation_messages(thread_id: str, user=Depends(get_current_use
 
 
 class SystemSettingsSchema(BaseModel):
+    MODEL_PROVIDER: str | None = None
     GOOGLE_API_KEY: str | None = None
     OPENROUTER_API_KEY: str | None = None
+    OPENROUTER_MODEL: str | None = None
+    OPENROUTER_FALLBACK_MODEL: str | None = None
+    MISTRAL_API_KEY: str | None = None
+    MISTRAL_MODEL: str | None = None
     TAVLY_API_KEY: str | None = None
+    COHERE_API_KEY: str | None = None
+    QDRANT_URL: str | None = None
+    QDRANT_API_KEY: str | None = None
     LANGFUSE_PUBLIC_KEY: str | None = None
     LANGFUSE_SECRET_KEY: str | None = None
     LANGFUSE_BASE_URL: str | None = None
@@ -103,9 +126,17 @@ async def get_settings(user=Depends(get_current_user)):
         return f"{val[:6]}••••••••{val[-4:]}"
 
     return {
+        "MODEL_PROVIDER": settings_dict.get("MODEL_PROVIDER", "openrouter"),
         "GOOGLE_API_KEY": redact(settings_dict.get("GOOGLE_API_KEY")),
         "OPENROUTER_API_KEY": redact(settings_dict.get("OPENROUTER_API_KEY")),
+        "OPENROUTER_MODEL": settings_dict.get("OPENROUTER_MODEL", ""),
+        "OPENROUTER_FALLBACK_MODEL": settings_dict.get("OPENROUTER_FALLBACK_MODEL", ""),
+        "MISTRAL_API_KEY": redact(settings_dict.get("MISTRAL_API_KEY")),
+        "MISTRAL_MODEL": settings_dict.get("MISTRAL_MODEL", "mistral-large-latest"),
         "TAVLY_API_KEY": redact(settings_dict.get("TAVLY_API_KEY")),
+        "COHERE_API_KEY": redact(settings_dict.get("COHERE_API_KEY")),
+        "QDRANT_URL": settings_dict.get("QDRANT_URL", ""),
+        "QDRANT_API_KEY": redact(settings_dict.get("QDRANT_API_KEY")),
         "LANGFUSE_PUBLIC_KEY": settings_dict.get("LANGFUSE_PUBLIC_KEY", ""),
         "LANGFUSE_SECRET_KEY": redact(settings_dict.get("LANGFUSE_SECRET_KEY")),
         "LANGFUSE_BASE_URL": settings_dict.get("LANGFUSE_BASE_URL", "https://jp.cloud.langfuse.com"),
@@ -131,6 +162,12 @@ async def save_settings(settings: SystemSettingsSchema, user=Depends(get_current
             continue
             
         value = value.strip()
+
+        if key == "MODEL_PROVIDER" and value not in {"openrouter", "mistral"}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="MODEL_PROVIDER must be 'openrouter' or 'mistral'",
+            )
         
         # Save or update key-value pair in system_settings
         try:
@@ -150,9 +187,67 @@ async def save_settings(settings: SystemSettingsSchema, user=Depends(get_current
             
     # Clear the settings cache to apply overrides immediately
     from app.config import _get_cached_setting
+    from app.services.gemini import _llm_clients
     _get_cached_setting.cache_clear()
+    _llm_clients.clear()
 
     return {"status": "success"}
+
+
+# --- RAG Evaluation endpoints ---
+
+@router.get("/rag-evals/cases", response_model=list[RagEvalCaseResponse])
+async def get_rag_eval_cases(user=Depends(get_current_user)):
+    _verify_admin(user)
+    return list_rag_eval_cases(user.tenant_id)
+
+
+@router.post("/rag-evals/cases", response_model=RagEvalCaseResponse)
+async def create_rag_eval_case_endpoint(request: RagEvalCaseCreate, user=Depends(get_current_user)):
+    _verify_admin(user)
+    return create_rag_eval_case(user.tenant_id, request.model_dump(mode="json"))
+
+
+@router.patch("/rag-evals/cases/{case_id}", response_model=RagEvalCaseResponse)
+async def update_rag_eval_case_endpoint(case_id: str, request: RagEvalCaseUpdate, user=Depends(get_current_user)):
+    _verify_admin(user)
+    updated = update_rag_eval_case(
+        user.tenant_id,
+        case_id,
+        request.model_dump(mode="json", exclude_unset=True),
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Eval case not found")
+    return updated
+
+
+@router.get("/rag-evals/runs", response_model=list[RagEvalRunSummary])
+async def get_rag_eval_runs(user=Depends(get_current_user)):
+    _verify_admin(user)
+    return list_rag_eval_runs(user.tenant_id)
+
+
+@router.get("/rag-evals/runs/{run_id}", response_model=RagEvalRunDetail)
+async def get_rag_eval_run_detail(run_id: str, user=Depends(get_current_user)):
+    _verify_admin(user)
+    run = get_rag_eval_run(user.tenant_id, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Eval run not found")
+    return {
+        "run": run,
+        "results": list_rag_eval_results(user.tenant_id, run_id),
+    }
+
+
+@router.post("/rag-evals/runs", response_model=RagEvalRunDetail)
+async def start_rag_eval_run(request: RagEvalRunCreate, user=Depends(get_current_user)):
+    _verify_admin(user)
+    return await run_rag_eval(
+        tenant_id=user.tenant_id,
+        admin_user_id=user.id,
+        access_token=user.access_token,
+        retrieval_mode=request.retrieval_mode,
+    )
 
 
 # --- Admin Manual Answer endpoints ---

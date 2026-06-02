@@ -2,7 +2,7 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from app.services.retrieval import retrieve_context
-from app.services.gemini import get_llm_client, generate_chat_response_stream, RAG_SYSTEM_PROMPT, PRIMARY_MODEL
+from app.services.gemini import get_llm_client, generate_chat_response_stream, RAG_SYSTEM_PROMPT, get_primary_model
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +11,18 @@ REWRITE_SYSTEM_PROMPT = (
     "follow-up question, rewrite the question as a standalone search query that "
     "contains all necessary context. Return ONLY the rewritten query, nothing else."
 )
+
+EXPANSION_SYSTEM_PROMPT = (
+    "Generate exactly 2 alternative search queries that capture different angles "
+    "of the original question. Each variant should use different keywords or phrasing "
+    "to improve recall. Return one query per line, nothing else. No numbering, no bullets."
+)
+
+GROUNDEDNESS_THRESHOLD = 0.25  # Minimum token overlap ratio to consider answer grounded
+
+
+def _public_sources(sources: list[dict]) -> list[dict]:
+    return [{k: v for k, v in source.items() if k != "content"} for source in sources]
 
 
 async def rewrite_query(message: str, history: list, client) -> str:
@@ -37,7 +49,7 @@ async def rewrite_query(message: str, history: list, client) -> str:
     try:
         response = await asyncio.wait_for(
             client.chat.completions.create(
-                model=PRIMARY_MODEL,
+                model=get_primary_model(),
                 messages=[
                     {"role": "system", "content": REWRITE_SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
@@ -58,6 +70,61 @@ async def rewrite_query(message: str, history: list, client) -> str:
     return message
 
 
+async def expand_queries(message: str, client) -> list[str]:
+    """Generate 2 alternative query formulations for better recall."""
+    try:
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=get_primary_model(),
+                messages=[
+                    {"role": "system", "content": EXPANSION_SYSTEM_PROMPT},
+                    {"role": "user", "content": message},
+                ],
+                max_tokens=80,
+                temperature=0.3,
+            ),
+            timeout=5.0,
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        variants = [line.strip() for line in raw.split("\n") if line.strip()]
+        # Filter out variants that are too similar to the original
+        unique = [v for v in variants if v.lower() != message.lower() and len(v) > 10]
+        if unique:
+            logger.info(f"Query expansion: '{message[:50]}' -> {len(unique)} variants")
+            print(f"[DOC_RAG] Query expansion: {len(unique)} variants generated")
+            return unique[:2]  # Max 2 variants
+    except Exception as e:
+        logger.warning(f"Query expansion failed: {e}")
+    return []
+
+
+def _check_groundedness(answer: str, context_chunks: list[str]) -> float:
+    """Check if the answer is grounded in the retrieved context.
+
+    Uses token-level overlap (Jaccard-like) between answer and context.
+    Returns a score from 0.0 (no grounding) to 1.0 (fully grounded).
+    """
+    if not context_chunks or not answer:
+        return 0.0
+
+    # Combine all context into one string
+    context_text = " ".join(context_chunks).lower()
+    answer_lower = answer.lower()
+
+    # Tokenize (simple whitespace split, remove very short tokens)
+    context_tokens = {t for t in context_text.split() if len(t) > 3}
+    answer_tokens = {t for t in answer_lower.split() if len(t) > 3}
+
+    if not answer_tokens:
+        return 0.0
+
+    # What fraction of answer tokens appear in the context?
+    overlap = answer_tokens & context_tokens
+    groundedness = len(overlap) / len(answer_tokens)
+
+    return groundedness
+
+
 async def execute(
     token: str | None,
     user_id: str | None,
@@ -67,6 +134,7 @@ async def execute(
     target_user_id: str | None = None,
     images: list[str] | None = None,
     tenant_id: str | None = None,
+    thread_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     yield {
         "type": "thought",
@@ -87,10 +155,52 @@ async def execute(
             "action_data": {"original_query": message, "expanded_query": augmented_query},
         }
 
-    retrieval_result = await retrieve_context(token, user_id, augmented_query, mode=retrieval_mode, target_user_id=target_user_id, tenant_id=tenant_id)
-    context_chunks = retrieval_result["chunks"]
-    sources = retrieval_result["sources"]
-    print(f"[DOC_RAG] Retrieved {len(context_chunks)} context chunks for user_id={user_id}")
+    # Multi-query retrieval: generate variants and search in parallel
+    query_variants = await expand_queries(augmented_query, client)
+    all_queries = [augmented_query] + query_variants
+
+    if len(all_queries) > 1:
+        yield {
+            "type": "thought",
+            "content": f"Running {len(all_queries)} query variants for better recall...",
+            "action_type": "searching",
+            "action_source": "doc_rag",
+            "action_data": {"queries": all_queries},
+        }
+
+    # Run retrieval for all queries concurrently
+    retrieval_tasks = [
+        retrieve_context(token, user_id, q, mode=retrieval_mode, target_user_id=target_user_id, tenant_id=tenant_id, thread_id=thread_id)
+        for q in all_queries
+    ]
+    retrieval_results = await asyncio.gather(*retrieval_tasks, return_exceptions=True)
+
+    # Merge results, deduplicating by chunk content
+    seen_contents: set[str] = set()
+    context_chunks: list[str] = []
+    sources: list[dict] = []
+
+    for result in retrieval_results:
+        if isinstance(result, Exception):
+            logger.warning(f"Multi-query retrieval failed for one variant: {result}")
+            continue
+        for chunk in result.get("chunks", []):
+            # Deduplicate by first 200 chars (fuzzy dedup)
+            key = chunk[:200].strip().lower()
+            if key not in seen_contents:
+                seen_contents.add(key)
+                context_chunks.append(chunk)
+        for src in result.get("sources", []):
+            key = src.get("content", "")[:200].strip().lower()
+            if key not in seen_contents:
+                # Source already added via chunks; only add unique sources
+                pass
+        # Use first result's sources as the primary source list
+        if not sources and result.get("sources"):
+            sources = result["sources"]
+
+    public_sources = _public_sources(sources)
+    print(f"[DOC_RAG] Retrieved {len(context_chunks)} context chunks (multi-query: {len(all_queries)} variants) for user_id={user_id}")
 
     if not context_chunks:
         yield {
@@ -129,7 +239,13 @@ async def execute(
             "chunk_count": len(context_chunks),
             "mode": retrieval_mode,
             "content_previews": content_previews,
+            "sources": public_sources,
         },
+    }
+
+    yield {
+        "type": "sources",
+        "sources": public_sources,
     }
 
     yield {
@@ -140,5 +256,27 @@ async def execute(
         "action_data": {"stage": "llm_generation"},
     }
 
+    # Collect streamed response for groundedness check
+    full_answer = ""
     async for chunk in generate_chat_response_stream(client, message, history, context_chunks, images=images, system_prompt=RAG_SYSTEM_PROMPT):
+        full_answer += chunk
         yield {"type": "token", "content": chunk}
+
+    # Post-generation groundedness check
+    groundedness = _check_groundedness(full_answer, context_chunks)
+    logger.info(f"Groundedness score: {groundedness:.3f} (threshold={GROUNDEDNESS_THRESHOLD})")
+
+    if groundedness < GROUNDEDNESS_THRESHOLD and context_chunks:
+        yield {
+            "type": "thought",
+            "content": f"Low groundedness detected ({groundedness:.0%}). Answer may contain information not found in your documents.",
+            "action_type": "guardrail",
+            "action_source": "doc_rag",
+            "action_data": {"groundedness": round(groundedness, 3), "threshold": GROUNDEDNESS_THRESHOLD},
+        }
+        # Append a disclaimer
+        disclaimer = (
+            "\n\n---\n⚠️ *Note: Parts of this answer may not be directly sourced from your documents. "
+            "Please verify the information independently.*"
+        )
+        yield {"type": "token", "content": disclaimer}

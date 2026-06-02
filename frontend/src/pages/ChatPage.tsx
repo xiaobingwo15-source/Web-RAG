@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useChat } from '@/hooks/useChat'
 import { useDocuments } from '@/hooks/useDocuments'
 import { useThreads } from '@/hooks/useThreads'
 import { useAuth } from '@/hooks/useAuth'
 import { isAdmin } from '@/lib/roles'
+import { submitFeedback, getThreadFeedback } from '@/lib/api'
 import { ChatSidebar } from '@/components/ChatSidebar'
 import { ChatMessage } from '@/components/ChatMessage'
 import { ChatInput } from '@/components/ChatInput'
@@ -24,10 +25,11 @@ export function ChatPage() {
     clearUploadFailure
   } = useDocuments()
   const { threads, selectedThreadId, setSelectedThreadId, refreshThreads, removeThread } = useThreads()
-  const { user, role, status, signOut } = useAuth()
+  const { user, session, role, status, signOut } = useAuth()
   const navigate = useNavigate()
   const admin = isAdmin(role || user?.email)
   const [showPanel, setShowPanel] = useState(true)
+  const [feedbackMap, setFeedbackMap] = useState<Record<string, 1 | -1>>({})
 
   const handleLogout = async () => {
     await signOut()
@@ -87,12 +89,32 @@ export function ChatPage() {
   const handleNewChat = () => {
     clearMessages()
     setSelectedThreadId(null)
+    setFeedbackMap({})
   }
 
-  const handleSelectThread = (threadId: string) => {
+  const handleSelectThread = async (threadId: string) => {
     setSelectedThreadId(threadId)
-    loadThread(threadId)
+    await loadThread(threadId)
+    // Load existing feedback for this thread
+    if (session?.access_token) {
+      try {
+        const feedback = await getThreadFeedback(threadId, session!.access_token)
+        setFeedbackMap(feedback)
+      } catch {
+        setFeedbackMap({})
+      }
+    }
   }
+
+  const handleFeedback = useCallback(async (messageId: string, rating: 1 | -1) => {
+    if (!session?.access_token || !selectedThreadId) return
+    setFeedbackMap((prev) => ({ ...prev, [messageId]: rating }))
+    try {
+      await submitFeedback(selectedThreadId, messageId, rating, session!.access_token)
+    } catch (err) {
+      console.error('Failed to submit feedback:', err)
+    }
+  }, [session?.access_token, selectedThreadId])
 
   const handleDeleteThread = async (threadId: string) => {
     await removeThread(threadId)
@@ -185,9 +207,20 @@ export function ChatPage() {
               </div>
             ) : (
               <div className="mx-auto max-w-3xl space-y-4">
-                {messages.map((msg, i) => (
-                  <ChatMessage key={i} message={msg} />
-                ))}
+                {messages.map((msg, i) => {
+                  // Generate a stable message ID for feedback tracking
+                  const msgId = msg.role === 'assistant' ? `msg-${i}` : undefined
+                  return (
+                    <ChatMessage
+                      key={i}
+                      message={msg}
+                      messageId={msgId}
+                      threadId={selectedThreadId}
+                      feedback={msgId ? feedbackMap[msgId] ?? null : null}
+                      onFeedback={msgId ? handleFeedback : undefined}
+                    />
+                  )
+                })}
 
                 {isStreaming && !currentAction && (
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">

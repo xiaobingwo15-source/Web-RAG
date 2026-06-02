@@ -7,7 +7,7 @@ import type { DocumentStatus } from '@/lib/api'
 interface ChatSidebarProps {
   documents: DocumentStatus[]
   isUploading: boolean
-  onUpload: (file: File, useOcr?: boolean) => void
+  onUpload: (files: File[], useOcr?: boolean) => void
   duplicateWarning?: string | null
   onDismissWarning?: () => void
   uploadFailure?: { filename: string; error: string } | null

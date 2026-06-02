@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from 'react'
 import { useAuth } from './useAuth'
-import { streamChat, getThreadMessages, type StreamError } from '@/lib/api'
+import { streamChat, getThreadMessages, type RetrievalSource, type StreamError } from '@/lib/api'
 import type { AgentAction, ActionType, ActionSource } from '@/lib/agent-types'
 
 export interface ChatMessage {
@@ -9,6 +9,7 @@ export interface ChatMessage {
   images?: string[]
   thoughts?: string[]
   actions?: AgentAction[]
+  sources?: RetrievalSource[]
   adminResponse?: string
 }
 
@@ -171,6 +172,16 @@ export function useChat() {
             return updated
           })
         }
+      },
+      (sources) => {
+        setMessages((prev) => {
+          const updated = [...prev]
+          const last = updated[updated.length - 1]
+          if (last && last.role === 'assistant') {
+            updated[updated.length - 1] = { ...last, sources }
+          }
+          return updated
+        })
       },
     )
   }

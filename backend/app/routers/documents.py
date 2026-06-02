@@ -6,11 +6,14 @@ from app.models.documents import DocumentUploadResponse, DocumentStatus, Documen
 from app.services.file_search_store import process_document, compute_content_hash
 from app.services.database import (
     create_document, get_user_documents, get_document, get_user_store, create_store,
-    get_document_by_hash, get_user_document_metadata, delete_document,
+    get_document_by_hash, get_user_document_metadata, archive_document,
     get_document_chunks, mark_document_retrying,
 )
+from app.services.rate_limit import check_rate_limit
 
 router = APIRouter()
+
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 ALLOWED_MIME_TYPES = {
     "application/pdf",
@@ -34,6 +37,7 @@ async def upload(
     user=Depends(get_current_user),
 ):
     _verify_admin(user)
+    check_rate_limit(f"upload:{user.id}", limit=10, window_seconds=60)
     token = user.access_token
 
     filename_lower = (file.filename or "").lower()
@@ -59,6 +63,8 @@ async def upload(
                 mime_type = "text/plain"
 
     file_bytes = await file.read()
+    if len(file_bytes) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File is too large. Maximum upload size is 25 MB.")
 
     content_hash = compute_content_hash(file_bytes)
     existing = get_document_by_hash(token, user.id, content_hash, tenant_id=user.tenant_id)
@@ -164,19 +170,14 @@ async def get_chunks(document_id: str, user=Depends(get_current_user)):
 
 @router.delete("/{document_id}")
 async def delete_document_endpoint(document_id: str, user=Depends(get_current_user)):
-    """Delete a document and all its chunks (admin only)."""
+    """Archive a document without deleting stored chunks or uploaded records."""
     _verify_admin(user)
 
     doc = get_document(user.access_token, document_id, tenant_id=user.tenant_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Delete vectors from Qdrant
-    from app.services.qdrant_db import delete_document_chunks as qdrant_delete
-    await qdrant_delete(document_id)
+    archived = archive_document(user.access_token, document_id)
+    filename = archived["filename"] if archived else doc["filename"]
 
-    # Delete from Supabase (chunks + document row)
-    deleted = delete_document(user.access_token, document_id)
-    filename = deleted["filename"] if deleted else doc["filename"]
-
-    return {"message": f"Document '{filename}' deleted", "filename": filename}
+    return {"message": f"Document '{filename}' archived", "filename": filename}

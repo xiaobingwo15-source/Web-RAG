@@ -5,9 +5,12 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
+    model_provider: str = "openrouter"
     openrouter_api_key: str = ""
     openrouter_model: str = "deepseek/deepseek-v4-flash"
     openrouter_fallback_model: str = "deepseek/deepseek-v4-flash:free"
+    mistral_api_key: str = ""
+    mistral_model: str = "mistral-large-latest"
     google_api_key: str = ""  # kept for embeddings only
     supabase_url: str = ""
     supabase_anon_key: str = ""
@@ -26,6 +29,16 @@ class Settings(BaseSettings):
     frontend_url: str = "http://localhost:5173"
     owner_api_key: str = ""
     widget_token_secret: str = ""
+
+    # Rate limiting
+    rate_limit_chat_requests: int = 30
+    rate_limit_chat_window: int = 60
+    rate_limit_widget_requests: int = 20
+    rate_limit_widget_window: int = 60
+
+    # Chunking
+    chunk_size: int = 800
+    chunk_overlap: int = 50
 
     @property
     def cors_origins(self) -> list[str]:
@@ -53,9 +66,35 @@ class Settings(BaseSettings):
             return None
 
     @property
+    def get_model_provider(self) -> str:
+        val = self._get_db_setting("MODEL_PROVIDER")
+        provider = (val if val else self.model_provider).strip().lower()
+        return provider if provider in {"openrouter", "mistral"} else "openrouter"
+
+    @property
     def get_openrouter_api_key(self) -> str:
         val = self._get_db_setting("OPENROUTER_API_KEY")
         return val if val else self.openrouter_api_key
+
+    @property
+    def get_mistral_api_key(self) -> str:
+        val = self._get_db_setting("MISTRAL_API_KEY")
+        return val if val else self.mistral_api_key
+
+    @property
+    def get_mistral_model(self) -> str:
+        val = self._get_db_setting("MISTRAL_MODEL")
+        return val if val else self.mistral_model
+
+    @property
+    def get_openrouter_model(self) -> str:
+        val = self._get_db_setting("OPENROUTER_MODEL")
+        return val if val else self.openrouter_model
+
+    @property
+    def get_openrouter_fallback_model(self) -> str:
+        val = self._get_db_setting("OPENROUTER_FALLBACK_MODEL")
+        return val if val else self.openrouter_fallback_model
 
     @property
     def get_google_api_key(self) -> str:

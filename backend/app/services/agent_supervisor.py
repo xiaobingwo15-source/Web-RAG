@@ -1,10 +1,22 @@
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from openai import APIError, RateLimitError
-from app.services.gemini import get_llm_client, _extract_retry_delay
+from app.services.gemini import get_llm_client, get_primary_model, _extract_retry_delay
 from app.services.agents import doc_rag_agent, sql_sub_agent, web_search_agent
 
 logger = logging.getLogger(__name__)
+
+VALID_ROUTES = {"doc_rag", "sql", "web_search", "general"}
+
+CLASSIFICATION_SYSTEM_PROMPT = (
+    "Classify the user query into exactly one category: "
+    "doc_rag (document/knowledge base questions), "
+    "sql (database/data queries), "
+    "web_search (current events, real-time info), "
+    "general (everything else). "
+    "Reply with ONLY the category name."
+)
 
 
 def _resolve_target_user_id(token: str, user_id: str, tenant_id: str | None = None) -> tuple[bool, str | None]:
@@ -18,7 +30,7 @@ def _resolve_target_user_id(token: str, user_id: str, tenant_id: str | None = No
     try:
         from app.services.database import get_db, get_tenant_admin_user_id
 
-        db = get_db()  # service-role client — bypasses RLS
+        db = get_db()  # service-role client - bypasses RLS
         profile = db.table("profiles").select("role").eq("id", user_id).single().execute()
         if profile.data and profile.data.get("role") == "client":
             admin_id = get_tenant_admin_user_id(tenant_id) if tenant_id else None
@@ -49,6 +61,52 @@ async def route_query(
     return "general"
 
 
+async def route_query_llm(
+    message: str,
+    enable_sql: bool = True,
+    enable_web_search: bool = True,
+) -> str:
+    """LLM-based intent classification with keyword fallback."""
+    try:
+        client = get_llm_client()
+        model = get_primary_model()
+
+        async def _classify() -> str:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": CLASSIFICATION_SYSTEM_PROMPT},
+                    {"role": "user", "content": message},
+                ],
+                max_tokens=10,
+                temperature=0,
+            )
+            return (response.choices[0].message.content or "").strip().lower()
+
+        raw = await asyncio.wait_for(_classify(), timeout=3.0)
+
+        route = raw.replace(" ", "_").replace("-", "_")
+        if route not in VALID_ROUTES:
+            for valid in VALID_ROUTES:
+                if route.startswith(valid):
+                    route = valid
+                    break
+            else:
+                logger.warning(f"LLM returned invalid route '{raw}', falling back to keyword routing")
+                return await route_query(message, False, enable_sql, enable_web_search)
+
+        print(f"[AGENT] LLM routing decision: {raw} -> {route}")
+        logger.info(f"LLM routing decision: {raw} -> {route}")
+        return route
+
+    except asyncio.TimeoutError:
+        logger.warning("LLM routing timed out (3s), falling back to keyword routing")
+        return await route_query(message, False, enable_sql, enable_web_search)
+    except Exception as e:
+        logger.warning(f"LLM routing failed: {e}, falling back to keyword routing")
+        return await route_query(message, False, enable_sql, enable_web_search)
+
+
 async def execute(
     token: str,
     user_id: str,
@@ -64,7 +122,7 @@ async def execute(
 ) -> AsyncGenerator[dict, None]:
     client = get_llm_client()
 
-    # Resolve target_user_id for client users — always, even when use_documents=True
+    # Resolve target_user_id for client users - always, even when use_documents=True
     # (frontend may cache use_documents=True from a previous request, but we still
     # need to redirect to the admin's knowledge base for client users)
     target_user_id = user_id
@@ -75,18 +133,19 @@ async def execute(
 
     yield {
         "type": "thought",
-        "content": f"Analyzing query: \"{message[:80]}{'...' if len(message) > 80 else ''}\"",
+        "content": f'Analyzing query: "{message[:80]}{"..." if len(message) > 80 else ""}',
         "action_type": "analyzing",
         "action_source": "supervisor",
         "action_data": {"query": message},
     }
 
-    # Client users with shared docs always go through doc_rag — skip keyword routing
+    # Client users with shared docs always go through doc_rag - skip routing
     if use_documents:
         route = "doc_rag"
     else:
-        route = await route_query(message, use_documents, enable_sql, enable_web_search)
+        route = await route_query_llm(message, enable_sql, enable_web_search)
     print(f"[AGENT] Routed to: {route} (use_documents={use_documents}, enable_sql={enable_sql}, enable_web_search={enable_web_search})")
+    logger.info(f"Routed to: {route} (use_documents={use_documents}, enable_sql={enable_sql}, enable_web_search={enable_web_search})")
 
     route_labels = {
         "doc_rag": "Document knowledge base",
@@ -111,7 +170,7 @@ async def execute(
             async for event in web_search_agent.execute(message, history, images=images):
                 yield event
         elif route == "doc_rag" and use_documents:
-            async for event in doc_rag_agent.execute(token, user_id, message, history, retrieval_mode, target_user_id=target_user_id, images=images, tenant_id=tenant_id):
+            async for event in doc_rag_agent.execute(token, user_id, message, history, retrieval_mode, target_user_id=target_user_id, images=images, tenant_id=tenant_id, thread_id=thread_id):
                 yield event
         else:
             from app.services.gemini import generate_chat_response_stream

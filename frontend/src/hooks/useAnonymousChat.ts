@@ -1,6 +1,5 @@
 import { useState, useCallback, useRef } from 'react'
-import { supabase } from '@/lib/supabase'
-import { streamChat, type StreamError } from '@/lib/api'
+import { createWidgetSession, resolveTenant, streamWidgetChat, type StreamError } from '@/lib/api'
 
 export interface AnonymousMessage {
   role: 'user' | 'assistant'
@@ -18,12 +17,8 @@ export function useAnonymousChat() {
     if (sessionRef.current) return sessionRef.current
 
     try {
-      const { data, error } = await supabase.auth.signInAnonymously()
-      if (error) {
-        setAuthError(true)
-        return null
-      }
-      const token = data.session?.access_token ?? null
+      const tenant = await resolveTenant()
+      const { token } = await createWidgetSession(tenant.slug)
       sessionRef.current = token
       return token
     } catch {
@@ -41,7 +36,7 @@ export function useAnonymousChat() {
       setIsStreaming(true)
       setMessages((prev) => [...prev, { role: 'assistant', content: '' }])
 
-      await streamChat(
+      await streamWidgetChat(
         content,
         threadId.current,
         token,
@@ -75,8 +70,6 @@ export function useAnonymousChat() {
         (id) => {
           threadId.current = id
         },
-        true,
-        'hybrid',
       )
     },
     [ensureSession],

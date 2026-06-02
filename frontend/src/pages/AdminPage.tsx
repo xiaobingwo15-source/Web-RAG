@@ -8,13 +8,25 @@ import {
   getAdminConversations,
   getAdminThreadMessages,
   getFlaggedMessages,
+  getAdminSettings,
   submitAdminResponse,
+  saveAdminSettings,
   getAdminUsers,
   updateUserStatus,
+  getRagEvalCases,
+  createRagEvalCase,
+  getRagEvalRuns,
+  getRagEvalRun,
+  runRagEval,
+  updateRagEvalCase,
   type AdminClient,
   type AdminMessage,
   type FlaggedMessage,
   type AdminUser,
+  type SystemSettings,
+  type RagEvalCase,
+  type RagEvalRunSummary,
+  type RagEvalRunDetail,
 } from '@/lib/api'
 import {
   Shield,
@@ -32,6 +44,11 @@ import {
   Hash,
   Clock,
   AlertTriangle,
+  Settings,
+  ClipboardCheck,
+  Plus,
+  CheckCircle,
+  XCircle,
 } from 'lucide-react'
 
 export function AdminPage() {
@@ -49,7 +66,7 @@ export function AdminPage() {
     clearUploadFailure
   } = useDocuments()
 
-  const [activeTab, setActiveTab] = useState<'conversations' | 'users'>('conversations')
+  const [activeTab, setActiveTab] = useState<'conversations' | 'users' | 'evals' | 'settings'>('conversations')
   const [clients, setClients] = useState<AdminClient[]>([])
   const [loading, setLoading] = useState(true)
   const [expandedClient, setExpandedClient] = useState<string | null>(null)
@@ -68,6 +85,25 @@ export function AdminPage() {
   // User Management State
   const [tenantUsers, setTenantUsers] = useState<AdminUser[]>([])
   const [usersLoading, setUsersLoading] = useState(false)
+  const [settings, setSettings] = useState<SystemSettings>({})
+  const [settingsLoading, setSettingsLoading] = useState(false)
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [settingsMessage, setSettingsMessage] = useState<string | null>(null)
+  const [evalCases, setEvalCases] = useState<RagEvalCase[]>([])
+  const [evalRuns, setEvalRuns] = useState<RagEvalRunSummary[]>([])
+  const [selectedEvalRun, setSelectedEvalRun] = useState<RagEvalRunDetail | null>(null)
+  const [evalLoading, setEvalLoading] = useState(false)
+  const [evalRunning, setEvalRunning] = useState(false)
+  const [evalMessage, setEvalMessage] = useState<string | null>(null)
+  const [editingEvalCaseId, setEditingEvalCaseId] = useState<string | null>(null)
+  const [evalForm, setEvalForm] = useState({
+    question: '',
+    expectedFacts: '',
+    expectedAnswer: '',
+    expectedDocumentId: '',
+    tags: '',
+    enabled: true,
+  })
 
   const fetchConversations = useCallback(async () => {
     if (!session?.access_token) return
@@ -118,6 +154,196 @@ export function AdminPage() {
       fetchUsers()
     }
   }, [activeTab, fetchUsers])
+
+  const fetchSettings = useCallback(async () => {
+    if (!session?.access_token) return
+    setSettingsLoading(true)
+    setSettingsMessage(null)
+    try {
+      const data = await getAdminSettings(session.access_token)
+      setSettings(data)
+    } catch (err) {
+      console.error('Failed to fetch settings:', err)
+      setSettingsMessage('Failed to load settings')
+    } finally {
+      setSettingsLoading(false)
+    }
+  }, [session?.access_token])
+
+  useEffect(() => {
+    if (activeTab === 'settings') {
+      fetchSettings()
+    }
+  }, [activeTab, fetchSettings])
+
+  const fetchEvals = useCallback(async (preferredRunId?: string) => {
+    if (!session?.access_token) return
+    setEvalLoading(true)
+    setEvalMessage(null)
+    try {
+      const [cases, runs] = await Promise.all([
+        getRagEvalCases(session.access_token),
+        getRagEvalRuns(session.access_token),
+      ])
+      setEvalCases(cases)
+      setEvalRuns(runs)
+      const runId = preferredRunId && runs.some((run) => run.id === preferredRunId)
+        ? preferredRunId
+        : runs[0]?.id
+      if (runId) {
+        const detail = await getRagEvalRun(runId, session.access_token)
+        setSelectedEvalRun(detail)
+      } else {
+        setSelectedEvalRun(null)
+      }
+    } catch (err) {
+      console.error('Failed to fetch evals:', err)
+      setEvalMessage('Failed to load evals')
+    } finally {
+      setEvalLoading(false)
+    }
+  }, [session?.access_token])
+
+  useEffect(() => {
+    if (activeTab === 'evals') {
+      fetchEvals()
+    }
+  }, [activeTab, fetchEvals])
+
+  const handleSettingChange = (key: keyof SystemSettings, value: string) => {
+    setSettings((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const handleSaveSettings = async () => {
+    if (!session?.access_token) return
+    setSettingsSaving(true)
+    setSettingsMessage(null)
+    try {
+      await saveAdminSettings(settings, session.access_token)
+      setSettingsMessage('Settings saved')
+      await fetchSettings()
+    } catch (err) {
+      console.error('Failed to save settings:', err)
+      setSettingsMessage('Failed to save settings')
+    } finally {
+      setSettingsSaving(false)
+    }
+  }
+
+  const handleSaveEvalCase = async () => {
+    if (!session?.access_token || !evalForm.question.trim()) return
+    const expectedFacts = splitFactsInput(evalForm.expectedFacts)
+    if (expectedFacts.length === 0) {
+      setEvalMessage('Add at least one expected fact')
+      return
+    }
+    const expectedDocumentId = evalForm.expectedDocumentId.trim()
+    if (expectedDocumentId && !isUuid(expectedDocumentId)) {
+      setEvalMessage('Expected document ID must be a valid UUID or empty')
+      return
+    }
+    setEvalLoading(true)
+    setEvalMessage(null)
+    try {
+      const payload = {
+        question: evalForm.question.trim(),
+        expected_facts: expectedFacts,
+        expected_answer: evalForm.expectedAnswer.trim() || null,
+        expected_document_id: expectedDocumentId || null,
+        tags: splitListInput(evalForm.tags),
+        enabled: evalForm.enabled,
+      }
+      if (editingEvalCaseId) {
+        await updateRagEvalCase(editingEvalCaseId, payload, session.access_token)
+        setEvalMessage('Eval case updated')
+      } else {
+        await createRagEvalCase(payload, session.access_token)
+        setEvalMessage('Eval case added')
+      }
+      resetEvalForm()
+      await fetchEvals(selectedEvalRun?.run.id)
+    } catch (err) {
+      console.error('Failed to save eval case:', err)
+      setEvalMessage(err instanceof Error ? err.message : 'Failed to save eval case')
+    } finally {
+      setEvalLoading(false)
+    }
+  }
+
+  const handleEditEvalCase = (item: RagEvalCase) => {
+    setEditingEvalCaseId(item.id)
+    setEvalForm({
+      question: item.question,
+      expectedFacts: item.expected_facts.join('\n'),
+      expectedAnswer: item.expected_answer || '',
+      expectedDocumentId: item.expected_document_id || '',
+      tags: item.tags.join('\n'),
+      enabled: item.enabled,
+    })
+    setEvalMessage(null)
+  }
+
+  const handleToggleEvalCase = async (item: RagEvalCase) => {
+    if (!session?.access_token) return
+    setEvalLoading(true)
+    setEvalMessage(null)
+    try {
+      await updateRagEvalCase(item.id, { enabled: !item.enabled }, session.access_token)
+      if (editingEvalCaseId === item.id) {
+        setEvalForm((prev) => ({ ...prev, enabled: !item.enabled }))
+      }
+      setEvalMessage(!item.enabled ? 'Eval case enabled' : 'Eval case disabled')
+      await fetchEvals(selectedEvalRun?.run.id)
+    } catch (err) {
+      console.error('Failed to update eval case status:', err)
+      setEvalMessage(err instanceof Error ? err.message : 'Failed to update eval case status')
+    } finally {
+      setEvalLoading(false)
+    }
+  }
+
+  const resetEvalForm = () => {
+    setEditingEvalCaseId(null)
+    setEvalForm({
+      question: '',
+      expectedFacts: '',
+      expectedAnswer: '',
+      expectedDocumentId: '',
+      tags: '',
+      enabled: true,
+    })
+  }
+
+  const handleRunEval = async () => {
+    if (!session?.access_token || evalRunning) return
+    setEvalRunning(true)
+    setEvalMessage(null)
+    try {
+      const detail = await runRagEval({ retrieval_mode: 'hybrid' }, session.access_token)
+      setSelectedEvalRun(detail)
+      await fetchEvals()
+      setEvalMessage('Eval run completed')
+    } catch (err) {
+      console.error('Failed to run eval:', err)
+      setEvalMessage('Eval run failed')
+    } finally {
+      setEvalRunning(false)
+    }
+  }
+
+  const handleSelectEvalRun = async (runId: string) => {
+    if (!session?.access_token) return
+    setEvalLoading(true)
+    try {
+      const detail = await getRagEvalRun(runId, session.access_token)
+      setSelectedEvalRun(detail)
+    } catch (err) {
+      console.error('Failed to load eval run:', err)
+      setEvalMessage('Failed to load eval run')
+    } finally {
+      setEvalLoading(false)
+    }
+  }
 
   const handleUpdateUserStatus = async (userId: string, action: 'approve' | 'suspend') => {
     if (!session?.access_token) return
@@ -224,6 +450,28 @@ export function AdminPage() {
           >
             <Users className="h-3.5 w-3.5" />
             Users
+          </button>
+          <button
+            onClick={() => setActiveTab('settings')}
+            className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold transition-all ${
+              activeTab === 'settings'
+                ? 'bg-primary text-primary-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+            }`}
+          >
+            <Settings className="h-3.5 w-3.5" />
+            Settings
+          </button>
+          <button
+            onClick={() => setActiveTab('evals')}
+            className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold transition-all ${
+              activeTab === 'evals'
+                ? 'bg-primary text-primary-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+            }`}
+          >
+            <ClipboardCheck className="h-3.5 w-3.5" />
+            Evals
           </button>
         </div>
 
@@ -559,7 +807,7 @@ export function AdminPage() {
             </div>
           </div>
         </main>
-      ) : (
+      ) : activeTab === 'users' ? (
         /* ── User Management ── */
         <main className="flex flex-1 flex-col overflow-hidden">
           <div className="flex items-center justify-between border-b border-border px-6 py-3 bg-card/50">
@@ -663,7 +911,383 @@ export function AdminPage() {
             </div>
           </div>
         </main>
+      ) : activeTab === 'evals' ? (
+        <main className="flex flex-1 flex-col overflow-hidden">
+          <div className="flex items-center justify-between border-b border-border px-6 py-3 bg-card/50">
+            <div className="flex items-center gap-3">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+                <ClipboardCheck className="h-4 w-4 text-primary" />
+              </div>
+              <div>
+                <h1 className="text-sm font-semibold text-foreground">RAG Evaluation</h1>
+                <p className="text-[10px] text-muted-foreground">
+                  {evalCases.length} case{evalCases.length !== 1 ? 's' : ''} · {evalRuns.length} run{evalRuns.length !== 1 ? 's' : ''}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => fetchEvals()}
+                disabled={evalLoading || evalRunning}
+                className="flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${evalLoading ? 'animate-spin' : ''}`} />
+                Refresh
+              </button>
+              <button
+                onClick={handleRunEval}
+                disabled={evalRunning || evalCases.length === 0}
+                className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
+              >
+                <ClipboardCheck className="h-3.5 w-3.5" />
+                {evalRunning ? 'Running...' : 'Run RAG Eval'}
+              </button>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-6 bg-card/10">
+            <div className="mx-auto max-w-6xl space-y-5">
+              {evalMessage && (
+                <div className="rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">{evalMessage}</div>
+              )}
+
+              <section className="rounded-lg border border-border bg-card p-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-foreground">
+                    {editingEvalCaseId ? 'Edit Eval Case' : 'Eval Cases'}
+                  </h2>
+                  <span className="text-[10px] text-muted-foreground">{evalCases.filter((c) => c.enabled).length} enabled</span>
+                </div>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <label className="text-xs text-muted-foreground md:col-span-2">
+                    Question
+                    <textarea
+                      rows={2}
+                      value={evalForm.question}
+                      onChange={(e) => setEvalForm((prev) => ({ ...prev, question: e.target.value }))}
+                      className="mt-1 w-full resize-none rounded-md border border-border bg-input px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
+                      placeholder="What fact should the assistant answer from the knowledge base?"
+                    />
+                  </label>
+                  <label className="text-xs text-muted-foreground md:col-span-2">
+                    Expected facts
+                    <textarea
+                      rows={2}
+                      value={evalForm.expectedFacts}
+                      onChange={(e) => setEvalForm((prev) => ({ ...prev, expectedFacts: e.target.value }))}
+                      className="mt-1 w-full resize-none rounded-md border border-border bg-input px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
+                      placeholder="One expected fact per line"
+                    />
+                  </label>
+                  <SettingInput label="Expected answer" value={evalForm.expectedAnswer} onChange={(v) => setEvalForm((prev) => ({ ...prev, expectedAnswer: v }))} />
+                  <SettingInput label="Expected document ID" value={evalForm.expectedDocumentId} onChange={(v) => setEvalForm((prev) => ({ ...prev, expectedDocumentId: v }))} />
+                  <SettingInput label="Tags" value={evalForm.tags} onChange={(v) => setEvalForm((prev) => ({ ...prev, tags: v }))} placeholder="billing, policy" />
+                  <label className="flex items-center gap-2 pt-6 text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={evalForm.enabled}
+                      onChange={(e) => setEvalForm((prev) => ({ ...prev, enabled: e.target.checked }))}
+                    />
+                    Enabled
+                  </label>
+                </div>
+                <div className="mt-3 flex justify-end gap-2">
+                  {editingEvalCaseId && (
+                    <button
+                      onClick={resetEvalForm}
+                      disabled={evalLoading}
+                      className="rounded-md border border-border bg-background px-3 py-1.5 text-xs font-semibold text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  <button
+                    onClick={handleSaveEvalCase}
+                    disabled={evalLoading || !evalForm.question.trim()}
+                    className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    {editingEvalCaseId ? 'Save Changes' : 'Add Case'}
+                  </button>
+                </div>
+
+                <div className="mt-4 overflow-hidden rounded-lg border border-border">
+                  <div className="grid grid-cols-[1fr_240px_80px_150px] gap-3 border-b border-border bg-muted/30 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    <span>Question</span>
+                    <span>Expected Facts</span>
+                    <span>Status</span>
+                    <span>Actions</span>
+                  </div>
+                  {evalCases.length === 0 ? (
+                    <div className="px-4 py-8 text-center text-xs text-muted-foreground">No eval cases yet</div>
+                  ) : (
+                    evalCases.map((item) => (
+                      <div
+                        key={item.id}
+                        className={`grid grid-cols-[1fr_240px_80px_150px] items-center gap-3 border-b border-border/50 px-4 py-3 text-xs ${
+                          editingEvalCaseId === item.id ? 'bg-primary/5' : ''
+                        }`}
+                      >
+                        <span className="text-foreground">{item.question}</span>
+                        <span className="truncate text-muted-foreground">{item.expected_facts.join(' · ')}</span>
+                        <span className={item.enabled ? 'text-green-500' : 'text-muted-foreground'}>{item.enabled ? 'Enabled' : 'Off'}</span>
+                        <span className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => handleEditEvalCase(item)}
+                            className="rounded-md border border-border bg-background px-2 py-1 text-[10px] font-semibold text-muted-foreground hover:bg-muted hover:text-foreground"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => handleToggleEvalCase(item)}
+                            disabled={evalLoading}
+                            className={`rounded-md px-2 py-1 text-[10px] font-semibold disabled:opacity-50 ${
+                              item.enabled
+                                ? 'bg-muted text-muted-foreground hover:bg-muted/70'
+                                : 'bg-green-500/10 text-green-500 hover:bg-green-500/20'
+                            }`}
+                          >
+                            {item.enabled ? 'Disable' : 'Enable'}
+                          </button>
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+
+              <section className="grid gap-5 lg:grid-cols-[420px_1fr]">
+                <div className="rounded-lg border border-border bg-card p-4">
+                  <h2 className="text-sm font-semibold text-foreground">Run History</h2>
+                  <div className="mt-3 space-y-2">
+                    {evalRuns.length === 0 ? (
+                      <div className="py-8 text-center text-xs text-muted-foreground">No eval runs yet</div>
+                    ) : (
+                      evalRuns.map((run) => {
+                        const passRate = run.total_cases ? Math.round((run.passed_cases / run.total_cases) * 100) : 0
+                        return (
+                          <button
+                            key={run.id}
+                            onClick={() => handleSelectEvalRun(run.id)}
+                            className={`w-full rounded-md border px-3 py-2 text-left transition-colors ${
+                              selectedEvalRun?.run.id === run.id
+                                ? 'border-primary bg-primary/5'
+                                : 'border-border bg-background hover:bg-muted/40'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-xs font-semibold text-foreground">{passRate}% pass</span>
+                              <StatusPill status={run.status} />
+                            </div>
+                            <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
+                              <span>{run.passed_cases}/{run.total_cases} cases · {run.retrieval_mode}</span>
+                              <span>{new Date(run.created_at).toLocaleString()}</span>
+                            </div>
+                          </button>
+                        )
+                      })
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-border bg-card p-4">
+                  <h2 className="text-sm font-semibold text-foreground">Run Details</h2>
+                  {!selectedEvalRun ? (
+                    <div className="py-12 text-center text-xs text-muted-foreground">Select or run an eval to inspect results</div>
+                  ) : (
+                    <div className="mt-3 space-y-4">
+                      <div className="grid gap-2 sm:grid-cols-3">
+                        <ScoreTile label="Context" value={selectedEvalRun.run.avg_context_relevance_score} />
+                        <ScoreTile label="Groundedness" value={selectedEvalRun.run.avg_groundedness_score} />
+                        <ScoreTile label="Answer" value={selectedEvalRun.run.avg_answer_relevance_score} />
+                      </div>
+                      <div className="space-y-3">
+                        {selectedEvalRun.results.map((result) => (
+                          <div key={result.id} className="rounded-md border border-border bg-background p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-xs font-semibold text-foreground">{result.question}</p>
+                                {result.failure_reason && (
+                                  <p className="mt-1 text-[10px] text-destructive">{result.failure_reason}</p>
+                                )}
+                              </div>
+                              {result.passed ? (
+                                <CheckCircle className="h-4 w-4 flex-shrink-0 text-green-500" />
+                              ) : (
+                                <XCircle className="h-4 w-4 flex-shrink-0 text-destructive" />
+                              )}
+                            </div>
+                            <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-xs text-muted-foreground">{result.answer}</p>
+                            <div className="mt-3 space-y-2">
+                              {result.sources.length === 0 ? (
+                                <p className="text-[10px] text-muted-foreground">No sources returned</p>
+                              ) : (
+                                result.sources.map((source) => (
+                                  <div key={`${source.document_id}-${source.chunk_id}`} className="rounded border border-border/70 bg-muted/20 px-2 py-1.5">
+                                    <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                                      <span className="truncate">{source.filename || source.document_id}</span>
+                                      <span>{source.score.toFixed(3)} · {source.retrieval_mode}</span>
+                                    </div>
+                                    <p className="mt-1 line-clamp-2 text-[11px] text-foreground">{source.snippet}</p>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </section>
+            </div>
+          </div>
+        </main>
+      ) : (
+        <main className="flex flex-1 flex-col overflow-hidden">
+          <div className="flex items-center justify-between border-b border-border px-6 py-3 bg-card/50">
+            <div className="flex items-center gap-3">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+                <Settings className="h-4 w-4 text-primary" />
+              </div>
+              <div>
+                <h1 className="text-sm font-semibold text-foreground">AI & Retrieval Settings</h1>
+                <p className="text-[10px] text-muted-foreground">Configure generation, reranking, vector storage, search, and observability.</p>
+              </div>
+            </div>
+            <button
+              onClick={handleSaveSettings}
+              disabled={settingsSaving || settingsLoading}
+              className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
+            >
+              {settingsSaving ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-6 bg-card/10">
+            <div className="mx-auto max-w-4xl space-y-5">
+              {settingsMessage && (
+                <div className="rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">{settingsMessage}</div>
+              )}
+              {settingsLoading ? (
+                <div className="flex h-64 items-center justify-center">
+                  <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : (
+                <>
+                  <section className="rounded-lg border border-border bg-card p-4">
+                    <h2 className="text-sm font-semibold text-foreground">Model Provider</h2>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <label className="text-xs text-muted-foreground">
+                        Provider
+                        <select
+                          value={settings.MODEL_PROVIDER || 'openrouter'}
+                          onChange={(e) => handleSettingChange('MODEL_PROVIDER', e.target.value)}
+                          className="mt-1 w-full rounded-md border border-border bg-input px-3 py-2 text-sm text-foreground"
+                        >
+                          <option value="openrouter">OpenRouter</option>
+                          <option value="mistral">Mistral</option>
+                        </select>
+                      </label>
+                      <SettingInput label="Mistral model" value={settings.MISTRAL_MODEL || ''} onChange={(v) => handleSettingChange('MISTRAL_MODEL', v)} placeholder="mistral-large-latest" />
+                      <SettingInput label="Mistral API key" value={settings.MISTRAL_API_KEY || ''} onChange={(v) => handleSettingChange('MISTRAL_API_KEY', v)} placeholder="Paste to replace saved key" />
+                      <SettingInput label="OpenRouter API key" value={settings.OPENROUTER_API_KEY || ''} onChange={(v) => handleSettingChange('OPENROUTER_API_KEY', v)} placeholder="Paste to replace saved key" />
+                      <SettingInput label="OpenRouter model" value={settings.OPENROUTER_MODEL || ''} onChange={(v) => handleSettingChange('OPENROUTER_MODEL', v)} placeholder="deepseek/deepseek-v4-flash" />
+                      <SettingInput label="OpenRouter fallback" value={settings.OPENROUTER_FALLBACK_MODEL || ''} onChange={(v) => handleSettingChange('OPENROUTER_FALLBACK_MODEL', v)} placeholder="deepseek/deepseek-v4-flash:free" />
+                    </div>
+                  </section>
+
+                  <section className="rounded-lg border border-border bg-card p-4">
+                    <h2 className="text-sm font-semibold text-foreground">Retrieval Stack</h2>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <SettingInput label="Google API key" value={settings.GOOGLE_API_KEY || ''} onChange={(v) => handleSettingChange('GOOGLE_API_KEY', v)} placeholder="Embeddings key" />
+                      <SettingInput label="Cohere API key" value={settings.COHERE_API_KEY || ''} onChange={(v) => handleSettingChange('COHERE_API_KEY', v)} placeholder="Reranker key" />
+                      <SettingInput label="Qdrant URL" value={settings.QDRANT_URL || ''} onChange={(v) => handleSettingChange('QDRANT_URL', v)} placeholder="https://..." />
+                      <SettingInput label="Qdrant API key" value={settings.QDRANT_API_KEY || ''} onChange={(v) => handleSettingChange('QDRANT_API_KEY', v)} placeholder="Paste to replace saved key" />
+                    </div>
+                  </section>
+
+                  <section className="rounded-lg border border-border bg-card p-4">
+                    <h2 className="text-sm font-semibold text-foreground">Search & Observability</h2>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <SettingInput label="Tavily API key" value={settings.TAVLY_API_KEY || ''} onChange={(v) => handleSettingChange('TAVLY_API_KEY', v)} placeholder="Web search key" />
+                      <SettingInput label="Langfuse public key" value={settings.LANGFUSE_PUBLIC_KEY || ''} onChange={(v) => handleSettingChange('LANGFUSE_PUBLIC_KEY', v)} />
+                      <SettingInput label="Langfuse secret key" value={settings.LANGFUSE_SECRET_KEY || ''} onChange={(v) => handleSettingChange('LANGFUSE_SECRET_KEY', v)} placeholder="Paste to replace saved key" />
+                      <SettingInput label="Langfuse URL" value={settings.LANGFUSE_BASE_URL || ''} onChange={(v) => handleSettingChange('LANGFUSE_BASE_URL', v)} placeholder="https://jp.cloud.langfuse.com" />
+                    </div>
+                  </section>
+                </>
+              )}
+            </div>
+          </div>
+        </main>
       )}
+    </div>
+  )
+}
+
+function SettingInput({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  placeholder?: string
+}) {
+  return (
+    <label className="text-xs text-muted-foreground">
+      {label}
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="mt-1 w-full rounded-md border border-border bg-input px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground"
+      />
+    </label>
+  )
+}
+
+function splitListInput(value: string): string[] {
+  return value
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function splitFactsInput(value: string): string[] {
+  return value
+    .split(/\n/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+}
+
+function StatusPill({ status }: { status: string }) {
+  const className = status === 'completed'
+    ? 'bg-green-500/10 text-green-500'
+    : status === 'failed'
+      ? 'bg-destructive/10 text-destructive'
+      : 'bg-amber-500/10 text-amber-500'
+
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${className}`}>
+      {status}
+    </span>
+  )
+}
+
+function ScoreTile({ label, value }: { label: string; value: number }) {
+  const percentage = Math.round((value || 0) * 100)
+  return (
+    <div className="rounded-md border border-border bg-background p-3">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
+      <p className="mt-1 text-lg font-bold text-foreground">{percentage}%</p>
     </div>
   )
 }

@@ -19,7 +19,7 @@ export function DocumentUpload({
 }: {
   documents: DocumentStatus[]
   isUploading: boolean
-  onUpload: (file: File, useOcr?: boolean) => void
+  onUpload: (files: File[], useOcr?: boolean) => void
   onDelete?: (documentId: string) => Promise<{ message: string; filename: string }>
   duplicateWarning?: string | null
   onDismissWarning?: () => void
@@ -67,8 +67,8 @@ export function DocumentUpload({
 
   const handleDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault()
-    const file = e.dataTransfer.files[0]
-    if (file) onUpload(file, useOcr)
+    const files = Array.from(e.dataTransfer.files)
+    if (files.length > 0) onUpload(files, useOcr)
   }
 
   const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
@@ -76,8 +76,8 @@ export function DocumentUpload({
   }
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (file) onUpload(file, useOcr)
+    const files = Array.from(e.target.files || [])
+    if (files.length > 0) onUpload(files, useOcr)
     if (inputRef.current) inputRef.current.value = ''
   }
 
@@ -179,6 +179,7 @@ export function DocumentUpload({
         <input
           ref={inputRef}
           type="file"
+          multiple
           accept={ACCEPTED_TYPES.join(',')}
           onChange={handleFileChange}
           className="hidden"

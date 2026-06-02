@@ -5,11 +5,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from openai import APIError, RateLimitError
 from langfuse import propagate_attributes
 from app.middleware.auth import get_current_user
-from app.models.chat import ChatRequest, ChatResponse, ThreadListResponse, ThreadSummary, MessageListResponse, MessageResponse
+from app.models.chat import ChatRequest, ChatResponse, ThreadListResponse, ThreadSummary, MessageListResponse, MessageResponse, FeedbackRequest
 from app.services.gemini import get_llm_client, generate_chat_response, generate_chat_response_stream, _extract_retry_delay
 from app.services.retrieval import retrieve_context
 from app.services.agent_supervisor import execute as agent_execute
-from app.services.database import create_thread, save_message, get_thread_messages, get_user_threads, get_thread, delete_thread as db_delete_thread
+from app.services.database import create_thread, save_message, get_thread_messages, get_user_threads, get_thread, delete_thread as db_delete_thread, save_message_feedback, get_message_feedback, get_retrieval_logs
+from app.services.rate_limit import check_rate_limit
+from app.config import Settings
 from sse_starlette.sse import EventSourceResponse
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,8 @@ def build_history(messages: list[dict]) -> list[dict]:
 async def chat(request: ChatRequest, user=Depends(get_current_user)):
     if user.status != "approved":
         raise HTTPException(status_code=403, detail="Your account is pending approval. Please wait for an admin to approve your access.")
+    settings = Settings()
+    check_rate_limit(f"chat:{user.id}", limit=settings.rate_limit_chat_requests, window_seconds=settings.rate_limit_chat_window)
     client = get_llm_client()
     is_new_thread = not request.thread_id
     thread_id = request.thread_id or str(uuid.uuid4())
@@ -66,9 +70,11 @@ async def chat(request: ChatRequest, user=Depends(get_current_user)):
         history = build_history(history_messages)
 
         context_chunks = None
+        sources = []
         if request.use_documents:
-            retrieval_result = await retrieve_context(token, user.id, request.message, mode=request.retrieval_mode, tenant_id=user.tenant_id)
+            retrieval_result = await retrieve_context(token, user.id, request.message, mode=request.retrieval_mode, tenant_id=user.tenant_id, thread_id=thread_id)
             context_chunks = retrieval_result["chunks"]
+            sources = retrieval_result["sources"]
             logger.info(f"Retrieved {len(context_chunks)} context chunks for user={user.id}")
 
         try:
@@ -81,13 +87,15 @@ async def chat(request: ChatRequest, user=Depends(get_current_user)):
 
         save_message(token, user.id, thread_id, "assistant", response_text, tenant_id=user.tenant_id)
 
-    return ChatResponse(response=response_text, thread_id=thread_id)
+    return ChatResponse(response=response_text, thread_id=thread_id, sources=sources)
 
 
 @router.post("/stream")
 async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
     if user.status != "approved":
         raise HTTPException(status_code=403, detail="Your account is pending approval. Please wait for an admin to approve your access.")
+    settings = Settings()
+    check_rate_limit(f"chat_stream:{user.id}", limit=settings.rate_limit_chat_requests, window_seconds=settings.rate_limit_chat_window)
     is_new_thread = not request.thread_id
     thread_id = request.thread_id or str(uuid.uuid4())
     token = user.access_token
@@ -163,6 +171,14 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                             })
                         }
                         return
+                    elif event["type"] == "sources":
+                        yield {
+                            "data": json_lib.dumps({
+                                "type": "sources",
+                                "sources": event.get("sources", []),
+                                "thread_id": thread_id,
+                            })
+                        }
 
                 save_message(token, user.id, thread_id, "assistant", full_response, tenant_id=user.tenant_id)
 
@@ -227,3 +243,40 @@ async def delete_thread_endpoint(thread_id: str, user=Depends(get_current_user))
         raise HTTPException(status_code=404, detail="Thread not found")
     db_delete_thread(user.access_token, thread_id, tenant_id=user.tenant_id)
     return {"status": "deleted"}
+
+
+@router.post("/feedback")
+async def submit_feedback(request: FeedbackRequest, user=Depends(get_current_user)):
+    if user.status != "approved":
+        raise HTTPException(status_code=403, detail="Account pending approval.")
+    result = save_message_feedback(
+        user_id=user.id,
+        thread_id=request.thread_id,
+        message_id=request.message_id,
+        rating=request.rating,
+        comment=request.comment,
+        tenant_id=user.tenant_id,
+    )
+    return {"status": "ok", "id": result.get("id") if result else None}
+
+
+@router.get("/threads/{thread_id}/feedback")
+async def get_thread_feedback(thread_id: str, user=Depends(get_current_user)):
+    feedback = get_message_feedback(user.id, thread_id)
+    return {"feedback": feedback}
+
+
+@router.get("/retrieval-logs")
+async def list_retrieval_logs(
+    zero_chunks_only: bool = False,
+    limit: int = 50,
+    user=Depends(get_current_user),
+):
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin only.")
+    logs = get_retrieval_logs(
+        tenant_id=user.tenant_id,
+        zero_chunks_only=zero_chunks_only,
+        limit=limit,
+    )
+    return {"logs": logs}
