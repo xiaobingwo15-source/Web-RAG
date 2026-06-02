@@ -509,16 +509,20 @@ def search_chunks_fts(access_token: str | None, user_id: str | None, query_text:
 def insert_chunks_for_fts(access_token: str, user_id: str, document_id: str, chunks: list[dict], tenant_id: str | None = None) -> list[dict]:
     """Insert chunk content into Supabase for full-text search (no embeddings)."""
     db = get_user_db(access_token)
-    rows = [
-        {
+    rows = []
+    for chunk in chunks:
+        row: dict = {
             "user_id": user_id,
             "document_id": document_id,
             "content": chunk["content"],
             "chunk_index": chunk["chunk_index"],
             **_tenant_payload(tenant_id),
         }
-        for chunk in chunks
-    ]
+        if chunk.get("parent_id"):
+            row["parent_id"] = chunk["parent_id"]
+        if chunk.get("chunk_type"):
+            row["chunk_type"] = chunk["chunk_type"]
+        rows.append(row)
     result = db.table("document_chunks").insert(rows).execute()
     return result.data
 

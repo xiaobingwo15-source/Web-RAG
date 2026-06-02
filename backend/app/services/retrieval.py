@@ -3,7 +3,7 @@ import logging
 import time
 from app.services.embeddings import get_embedding_client, get_embedding
 from app.services.reranker import rerank_with_cohere
-from app.services.qdrant_db import search_similar_chunks
+from app.services.qdrant_db import search_similar_chunks, get_parent_chunks_by_ids
 from app.services.database import get_documents_by_ids, search_chunks_fts, log_retrieval
 from app.services.semantic_cache import get_semantic_cache
 
@@ -90,6 +90,47 @@ def _mmr_diversify(
             selected.append(remaining.pop(best_idx))
 
     return selected
+
+
+async def _resolve_parents(sources: list[dict]) -> list[dict]:
+    """Replace child chunk content with its parent chunk content.
+
+    When parent-child chunking is active, search results contain child chunks
+    (fine-grained, embedded).  This function batch-fetches the corresponding
+    parent chunks from Qdrant and swaps the child text for the richer parent
+    text.  Multiple children from the same parent are collapsed into one entry
+    (the highest-scoring child's score is kept).
+    """
+    # Collect unique parent IDs
+    parent_ids = list({s["parent_id"] for s in sources if s.get("parent_id")})
+    if not parent_ids:
+        return sources  # no parent-child relationship, return as-is
+
+    parent_map = await get_parent_chunks_by_ids(parent_ids)
+    if not parent_map:
+        logger.warning("Parent chunk lookup returned empty for IDs: %s", parent_ids)
+        return sources
+
+    # Group by parent_id, keep best-scoring child per parent
+    grouped: dict[str, dict] = {}
+    for s in sources:
+        pid = s.get("parent_id")
+        if pid and pid in parent_map:
+            if pid not in grouped or s.get("score", 0) > grouped[pid].get("score", 0):
+                grouped[pid] = {
+                    "id": pid,
+                    "document_id": s.get("document_id") or parent_map[pid].get("document_id", ""),
+                    "content": parent_map[pid]["content"],
+                    "score": s.get("score", 0),
+                }
+        else:
+            # No parent_id or parent not found -- keep original child
+            key = s.get("id", id(s))
+            grouped[f"__child_{key}"] = s
+
+    resolved = sorted(grouped.values(), key=lambda x: x.get("score", 0), reverse=True)
+    logger.info("Parent resolution: %d child sources -> %d parent sources", len(sources), len(resolved))
+    return resolved
 
 
 def _finalize_sources(
@@ -196,8 +237,9 @@ async def retrieve_context(
         chunks = await asyncio.to_thread(search_chunks_fts, token, target_user_id, message, match_count, tenant_id)
         if not chunks:
             return _empty()
-        raw_sources = [{"id": c.get("id", ""), "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("rank", 0)} for c in chunks]
+        raw_sources = [{"id": c.get("id", ""), "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("rank", 0), **({"parent_id": c["parent_id"]} if c.get("parent_id") else {})} for c in chunks]
         sources = _finalize_sources(token, raw_sources, mode, tenant_id)
+        sources = await _resolve_parents(sources)
         logger.info(f"FTS retrieval: {len(sources)} chunks")
         return _log_and_return({"chunks": [s["content"] for s in sources], "sources": sources})
 
@@ -240,14 +282,14 @@ async def retrieve_context(
 
         for rank, chunk in enumerate(vector_results):
             cid = chunk["id"]
-            combined[cid] = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": 1.0 / (rrf_k + rank + 1)}
+            combined[cid] = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": 1.0 / (rrf_k + rank + 1), **({"parent_id": chunk["parent_id"]} if chunk.get("parent_id") else {})}
 
         for rank, chunk in enumerate(fts_results):
             cid = chunk.get("id", f"fts_{rank}")
             if cid in combined:
                 combined[cid]["score"] += 1.0 / (rrf_k + rank + 1)
             else:
-                combined[cid] = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": 1.0 / (rrf_k + rank + 1)}
+                combined[cid] = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": 1.0 / (rrf_k + rank + 1), **({"parent_id": chunk["parent_id"]} if chunk.get("parent_id") else {})}
 
         sorted_results = sorted(combined.values(), key=lambda x: x["score"], reverse=True)
 
@@ -269,8 +311,10 @@ async def retrieve_context(
                         "document_id": meta.get("document_id", ""),
                         "content": candidates[idx],
                         "score": s.get("score", meta["score"]),
+                        **({"parent_id": meta["parent_id"]} if meta.get("parent_id") else {}),
                     })
             sources = _finalize_sources(token, sources, mode, tenant_id)
+            sources = await _resolve_parents(sources)
             logger.info(f"Hybrid reranker: {len(scored)} scored -> {len(sources)} final results")
             result = {"chunks": [s["content"] for s in sources], "sources": sources}
             if query_embedding_for_cache:
@@ -288,8 +332,9 @@ async def retrieve_context(
         )
         if not chunks:
             return _empty()
-        raw_sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0)} for c in chunks]
+        raw_sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0), **({"parent_id": c["parent_id"]} if c.get("parent_id") else {})} for c in chunks]
         sources = _finalize_sources(token, raw_sources, mode, tenant_id)
+        sources = await _resolve_parents(sources)
         return _log_and_return({"chunks": [s["content"] for s in sources], "sources": sources})
 
     # mode == "vector"
@@ -311,8 +356,9 @@ async def retrieve_context(
     )
     if not chunks:
         return _empty()
-    raw_sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0)} for c in chunks]
+    raw_sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0), **({"parent_id": c["parent_id"]} if c.get("parent_id") else {})} for c in chunks]
     sources = _finalize_sources(token, raw_sources, mode, tenant_id)
+    sources = await _resolve_parents(sources)
     logger.info(f"Vector retrieval: {len(sources)} chunks")
     result = {"chunks": [s["content"] for s in sources], "sources": sources}
     if query_embedding_for_cache:

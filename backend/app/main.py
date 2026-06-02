@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import Settings
 from app.services.langfuse import configure_langfuse, get_langfuse
 from app.services.qdrant_db import ensure_collection
-from app.routers import health, auth, chat, documents, tools, admin, owner, widget
+from app.routers import health, auth, chat, documents, tools, admin, owner, widget, eval
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,6 +59,7 @@ app.include_router(tools.router, prefix="/api/tools", tags=["tools"])
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
 app.include_router(owner.router, prefix="/api/owner", tags=["owner"])
 app.include_router(widget.router, prefix="/api/widget", tags=["widget"])
+app.include_router(eval.router, prefix="/api/eval", tags=["eval"])
 
 
 @app.get("/scalar", include_in_schema=False)

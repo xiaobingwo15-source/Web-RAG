@@ -50,14 +50,41 @@ export function useDocuments() {
       try {
         const res = await apiUpload(file, session.access_token, useOcr)
 
-        // Query completed status to confirm it didn't fail processing in the backend
-        const statusRes = await getDocumentStatus(res.id, session.access_token)
+        // Upload returns immediately with "pending" status.
+        // Add to list right away so user sees it processing.
         setDocuments((prev) => [
-          { ...statusRes, error_message: statusRes.error_message },
-          ...prev.filter((doc) => doc.id !== statusRes.id),
+          { id: res.id, filename: res.filename, status: res.status },
+          ...prev.filter((doc) => doc.id !== res.id),
         ])
 
-        if (statusRes.status === 'failed') {
+        // Poll for processing completion (up to 5 minutes)
+        const MAX_POLL_ATTEMPTS = 150
+        const POLL_INTERVAL_MS = 2000
+        let lastStatus = res.status
+
+        for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
+          await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
+
+          const statusRes = await getDocumentStatus(res.id, session.access_token)
+          lastStatus = statusRes.status
+
+          // Update the document in the list with latest status
+          setDocuments((prev) =>
+            prev.map((doc) =>
+              doc.id === res.id
+                ? { ...statusRes, error_message: statusRes.error_message }
+                : doc,
+            ),
+          )
+
+          // Terminal states — stop polling
+          if (statusRes.status === 'processed' || statusRes.status === 'failed') {
+            break
+          }
+        }
+
+        if (lastStatus === 'failed') {
+          const statusRes = await getDocumentStatus(res.id, session.access_token)
           failures.push({ filename: file.name, error: statusRes.error_message || 'Processing failed' })
         }
       } catch (err: any) {
