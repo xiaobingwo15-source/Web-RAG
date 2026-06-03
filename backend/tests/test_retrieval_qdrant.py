@@ -11,6 +11,7 @@ class RetrievalQdrantThresholdTests(unittest.IsolatedAsyncioTestCase):
             patch.object(retrieval, "get_embedding", new=AsyncMock(return_value=[0.1, 0.2])),
             patch.object(retrieval, "search_chunks_fts", return_value=[]),
             patch.object(retrieval, "search_similar_chunks", new=AsyncMock(return_value=[])) as search,
+            patch.object(retrieval, "log_retrieval", return_value={"id": "log-hybrid"}),
         ):
             await retrieval.retrieve_context(
                 token="token",
@@ -29,6 +30,7 @@ class RetrievalQdrantThresholdTests(unittest.IsolatedAsyncioTestCase):
             patch.object(retrieval, "get_embedding_client", return_value=Mock()),
             patch.object(retrieval, "get_embedding", new=AsyncMock(return_value=[0.1, 0.2])),
             patch.object(retrieval, "search_similar_chunks", new=AsyncMock(return_value=[])) as search,
+            patch.object(retrieval, "log_retrieval", return_value={"id": "log-vector"}),
         ):
             await retrieval.retrieve_context(
                 token="token",

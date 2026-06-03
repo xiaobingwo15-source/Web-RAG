@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     structure_aware_chunking: bool = True
     parent_chunk_size: int = 1500
     child_chunk_size: int = 500
+    semantic_chunking: bool = False
+    semantic_similarity_threshold: float = 0.75
 
     # Embeddings
     embedding_model: str = "gemini-embedding-exp-05-28"

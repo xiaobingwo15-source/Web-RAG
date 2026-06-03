@@ -135,6 +135,149 @@ def _parse_blocks(text: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Internal: semantic chunking helpers
+# ---------------------------------------------------------------------------
+
+def _split_into_sentences(text: str) -> list[str]:
+    """Split text into sentence-like segments.
+
+    Uses regex to split on sentence-ending punctuation followed by whitespace
+    or newline. Falls back to newline splitting for structured text.
+    """
+    import re
+    if not text or not text.strip():
+        return []
+
+    # Try sentence-level splitting first
+    # Split on: period/exclamation/question + space/newline, keeping the delimiter
+    parts = re.split(r'(?<=[.!?])\s+', text.strip())
+
+    # Filter empty and strip whitespace
+    sentences = [p.strip() for p in parts if p.strip()]
+
+    # If we got fewer than 2 sentences, try newline splitting
+    if len(sentences) < 2:
+        sentences = [p.strip() for p in text.strip().split("\n") if p.strip()]
+
+    return sentences
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two vectors without numpy."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+# ---------------------------------------------------------------------------
+# Internal: grouping adjacent sentences by embedding similarity
+# ---------------------------------------------------------------------------
+
+async def semantic_chunk_text(
+    text: str,
+    embed_fn: object,  # async (texts: list[str]) -> list[list[float]]
+    threshold: float = 0.75,
+    min_chunk_size: int = 200,
+    max_chunk_size: int = 2000,
+) -> list[str]:
+    """Chunk text by embedding similarity between consecutive sentence groups.
+
+    Algorithm:
+    1. Split text into sentences.
+    2. Embed each sentence via ``embed_fn``.
+    3. Compute cosine similarity between each consecutive pair.
+    4. Where similarity < threshold, insert a breakpoint.
+    5. Merge consecutive non-breakpoint sentences into chunks.
+    6. Enforce min/max chunk size constraints.
+
+    Args:
+        text: Full document text.
+        embed_fn: Async callable that embeds a list of strings and returns
+                  a list of embedding vectors. Decoupled from the concrete
+                  embedding service for testability.
+        threshold: Similarity below this value triggers a split (0.0--1.0).
+        min_chunk_size: Minimum character count per chunk. Short chunks are
+                        merged with their neighbor.
+        max_chunk_size: Maximum character count per chunk. Oversized chunks
+                        are force-split at sentence boundaries.
+
+    Returns:
+        List of chunk strings.
+    """
+    if not text or not text.strip():
+        return []
+
+    sentences = _split_into_sentences(text)
+    if not sentences:
+        return []
+
+    if len(sentences) == 1:
+        return [sentences[0]]
+
+    # Embed all sentences in one batch
+    embeddings = await embed_fn(sentences)
+
+    # Compute similarity between consecutive sentence embeddings
+    similarities = []
+    for i in range(len(embeddings) - 1):
+        sim = _cosine_similarity(embeddings[i], embeddings[i + 1])
+        similarities.append(sim)
+
+    # Identify breakpoints: where similarity drops below threshold
+    breakpoints: set[int] = set()
+    for i, sim in enumerate(similarities):
+        if sim < threshold:
+            breakpoints.add(i + 1)  # split AFTER sentence i
+
+    # Build chunks by grouping sentences between breakpoints
+    chunks: list[str] = []
+    current_sentences: list[str] = [sentences[0]]
+
+    for i in range(1, len(sentences)):
+        if i in breakpoints:
+            # Flush current group
+            chunks.append(" ".join(current_sentences))
+            current_sentences = [sentences[i]]
+        else:
+            current_sentences.append(sentences[i])
+
+    if current_sentences:
+        chunks.append(" ".join(current_sentences))
+
+    # Enforce min_chunk_size: merge small chunks with neighbors
+    merged: list[str] = []
+    for chunk in chunks:
+        if merged and len(chunk) < min_chunk_size:
+            merged[-1] = merged[-1] + " " + chunk
+        else:
+            merged.append(chunk)
+    chunks = merged
+
+    # Enforce max_chunk_size: force-split oversized chunks at sentence boundaries
+    final_chunks: list[str] = []
+    for chunk in chunks:
+        if len(chunk) <= max_chunk_size:
+            final_chunks.append(chunk)
+        else:
+            # Re-split this chunk at sentence boundaries
+            sents = _split_into_sentences(chunk)
+            current = ""
+            for s in sents:
+                if current and len(current) + len(s) + 1 > max_chunk_size:
+                    final_chunks.append(current.strip())
+                    current = s
+                else:
+                    current = (current + " " + s).strip() if current else s
+            if current:
+                final_chunks.append(current.strip())
+
+    return [c for c in final_chunks if c.strip()]
+
+
+# ---------------------------------------------------------------------------
 # Internal: sliding-window chunker (original algorithm, extracted)
 # ---------------------------------------------------------------------------
 
@@ -410,6 +553,87 @@ def create_parent_child_chunks(
         child_texts = chunk_text(parent_text, chunk_size=child_chunk_size, overlap=overlap)
 
         # Edge case: if parent is short enough to be a single child, keep it as-is
+        if not child_texts:
+            child_texts = [parent_text]
+
+        child_ids = []
+        for position, child_text in enumerate(child_texts):
+            child_id = str(uuid.uuid4())
+            child_ids.append(child_id)
+            children.append({
+                "id": child_id,
+                "text": child_text,
+                "parent_id": parent_id,
+                "position_in_parent": position,
+            })
+
+        parents.append({
+            "id": parent_id,
+            "text": parent_text,
+            "child_ids": child_ids,
+        })
+
+    return {"parents": parents, "children": children}
+
+
+async def create_parent_child_chunks_semantic(
+    text: str,
+    embed_fn: object,  # async (texts: list[str]) -> list[list[float]]
+    threshold: float | None = None,
+    parent_chunk_size: int | None = None,
+    child_chunk_size: int | None = None,
+) -> dict:
+    """Semantic-aware parent-child chunking.
+
+    Uses embedding similarity to find topic boundaries instead of fixed
+    character counts.  Parent chunks are created at topic boundaries;
+    child chunks are fixed-size subdivisions of parents for embedding.
+
+    Args:
+        text: Full document text.
+        embed_fn: Async callable that embeds a list of strings.
+        threshold: Similarity threshold for breakpoints (default from Settings).
+        parent_chunk_size: Max size for parent chunks (default from Settings).
+        child_chunk_size: Max size for child chunks (default from Settings).
+
+    Returns:
+        Same structure as ``create_parent_child_chunks``:
+        {"parents": [...], "children": [...]}
+    """
+    from app.config import Settings
+    settings = Settings()
+
+    if threshold is None:
+        threshold = settings.semantic_similarity_threshold
+    if parent_chunk_size is None:
+        parent_chunk_size = settings.parent_chunk_size
+    if child_chunk_size is None:
+        child_chunk_size = settings.child_chunk_size
+
+    if not text or not text.strip():
+        return {"parents": [], "children": []}
+
+    # Step 1: Split text into semantically coherent chunks (these become parents)
+    semantic_chunks = await semantic_chunk_text(
+        text,
+        embed_fn=embed_fn,
+        threshold=threshold,
+        min_chunk_size=200,
+        max_chunk_size=parent_chunk_size,
+    )
+
+    if not semantic_chunks:
+        return {"parents": [], "children": []}
+
+    parents = []
+    children = []
+
+    for parent_text in semantic_chunks:
+        parent_id = str(uuid.uuid4())
+
+        # Step 2: Split each semantic parent into fixed-size child chunks
+        child_texts = chunk_text(parent_text, chunk_size=child_chunk_size)
+
         if not child_texts:
             child_texts = [parent_text]
 

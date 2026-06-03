@@ -49,7 +49,20 @@ async def process_document(
         text = emphasize_document_text(text, metadata)
 
         logger.info(f"Document {document_id}: chunking text ({len(text)} chars)")
-        hierarchy = create_parent_child_chunks(text)
+        settings_chunk = Settings()
+        if settings_chunk.semantic_chunking:
+            logger.info(f"Document {document_id}: using semantic chunking (threshold={settings_chunk.semantic_similarity_threshold})")
+            from app.services.chunker import create_parent_child_chunks_semantic
+            embedding_client = get_embedding_client()
+
+            async def embed_fn(texts: list[str]) -> list[list[float]]:
+                return await get_embeddings(embedding_client, texts)
+
+            hierarchy = await create_parent_child_chunks_semantic(
+                text, embed_fn=embed_fn, threshold=settings_chunk.semantic_similarity_threshold,
+            )
+        else:
+            hierarchy = create_parent_child_chunks(text)
         parents = hierarchy["parents"]
         children = hierarchy["children"]
         logger.info(f"Document {document_id}: created {len(parents)} parent chunks, {len(children)} child chunks")

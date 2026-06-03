@@ -131,7 +131,7 @@
 | P2       | Structure-aware chunking | Medium | High        | Respect MD/PDF headings                             | ✅ Done (2026-06-03) |
 | P3       | Async ingestion          | Medium | Medium      | Background workers                                  | ✅ Done (2026-06-03) |
 | P3       | HyDE retrieval           | Medium | Medium      | Hypothetical answer → embed                        | ✅ Done (2026-06-03) |
-| P4       | Semantic chunking        | Medium | High        | Embedding boundary detection                        | ⬜     |
+| P4       | Semantic chunking        | Medium | High        | Embedding boundary detection                        | ✅ Done (2026-06-03) |
 | P4       | Corrective RAG           | Medium | Medium      | Fallback to web_search if low relevance             | ✅ Done (2026-06-03) |
 
 ---

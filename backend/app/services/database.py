@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import UTC, datetime
 from supabase import Client
 from app.services.supabase import get_supabase_client, get_supabase_client_with_token
@@ -1028,6 +1029,9 @@ def log_retrieval(
     user_id: str | None = None,
     tenant_id: str | None = None,
     thread_id: str | None = None,
+    sources: list[dict] | None = None,
+    chunks: list[str] | None = None,
+    retrieval_quality: str | None = None,
 ) -> dict | None:
     """Log a retrieval request for analytics. Fire-and-forget — returns None on error."""
     try:
@@ -1037,11 +1041,14 @@ def log_retrieval(
             "retrieval_mode": retrieval_mode,
             "chunk_count": chunk_count,
             "source_count": source_count,
+            "sources": sources or [],
+            "chunks": chunks or [],
             **({"top_score": top_score} if top_score is not None else {}),
             **({"duration_ms": duration_ms} if duration_ms is not None else {}),
             **({"user_id": user_id} if user_id else {}),
             **({"tenant_id": tenant_id} if tenant_id else {}),
             **({"thread_id": thread_id} if thread_id else {}),
+            **({"retrieval_quality": retrieval_quality} if retrieval_quality else {}),
         }
         result = db.table("retrieval_logs").insert(row).execute()
         return result.data[0] if result.data else None
@@ -1067,6 +1074,209 @@ def get_retrieval_logs(
     if zero_chunks_only:
         query = query.eq("chunk_count", 0)
     return query.execute().data
+
+
+def update_retrieval_logs_for_answer(
+    tenant_id: str,
+    retrieval_log_ids: list[str],
+    answer_message_id: str,
+    groundedness_score: float | None = None,
+    groundedness_flag: bool = False,
+    retrieval_quality: str | None = None,
+) -> None:
+    """Attach retrieval evidence rows to the saved assistant message."""
+    ids = [log_id for log_id in retrieval_log_ids if log_id]
+    if not ids:
+        return
+    updates: dict = {
+        "answer_message_id": answer_message_id,
+        "groundedness_flag": groundedness_flag,
+    }
+    if groundedness_score is not None:
+        updates["groundedness_score"] = groundedness_score
+    if retrieval_quality:
+        updates["retrieval_quality"] = retrieval_quality
+    try:
+        db = get_db()
+        (
+            db.table("retrieval_logs")
+            .update(updates)
+            .eq("tenant_id", tenant_id)
+            .in_("id", ids)
+            .execute()
+        )
+    except Exception as e:
+        logger.warning("Failed to attach retrieval logs to answer: %s", e)
+
+
+def _resolve_feedback_answer_message(db, tenant_id: str, feedback: dict) -> dict | None:
+    message_id = str(feedback.get("message_id") or "")
+    thread_id = feedback.get("thread_id")
+    if not thread_id or not message_id:
+        return None
+
+    if re.fullmatch(r"[0-9a-fA-F-]{36}", message_id):
+        result = (
+            db.table("messages")
+            .select("*")
+            .eq("tenant_id", tenant_id)
+            .eq("thread_id", thread_id)
+            .eq("id", message_id)
+            .eq("role", "assistant")
+            .limit(1)
+            .execute()
+        )
+        return result.data[0] if result.data else None
+
+    legacy = re.fullmatch(r"msg-(\d+)", message_id)
+    if not legacy:
+        return None
+
+    display_index = int(legacy.group(1))
+    messages = (
+        db.table("messages")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .eq("thread_id", thread_id)
+        .neq("role", "admin")
+        .order("created_at")
+        .execute()
+        .data
+        or []
+    )
+    if 0 <= display_index < len(messages) and messages[display_index].get("role") == "assistant":
+        return messages[display_index]
+    return None
+
+
+def _previous_user_question(db, tenant_id: str, thread_id: str, before_created_at: str) -> dict | None:
+    result = (
+        db.table("messages")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .eq("thread_id", thread_id)
+        .eq("role", "user")
+        .lt("created_at", before_created_at)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def _thread_retrieval_logs(db, tenant_id: str, thread_id: str, answer_message_id: str | None) -> list[dict]:
+    if answer_message_id:
+        direct = (
+            db.table("retrieval_logs")
+            .select("*")
+            .eq("tenant_id", tenant_id)
+            .eq("answer_message_id", answer_message_id)
+            .order("created_at", desc=True)
+            .limit(10)
+            .execute()
+            .data
+            or []
+        )
+        if direct:
+            return direct
+
+    return (
+        db.table("retrieval_logs")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .eq("thread_id", thread_id)
+        .order("created_at", desc=True)
+        .limit(10)
+        .execute()
+        .data
+        or []
+    )
+
+
+def list_rag_quality_thumbs_down(tenant_id: str, limit: int = 50) -> list[dict]:
+    """Return recent negative feedback with answer and retrieval evidence."""
+    db = get_db()
+    limit = min(max(limit, 1), 100)
+    feedback_rows = (
+        db.table("message_feedback")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .eq("rating", -1)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+        .data
+        or []
+    )
+
+    items = []
+    user_emails: dict[str, str] = {}
+    for feedback in feedback_rows:
+        answer = _resolve_feedback_answer_message(db, tenant_id, feedback)
+        if not answer:
+            continue
+
+        thread_id = answer["thread_id"]
+        thread_result = (
+            db.table("threads")
+            .select("id, title, user_id, client_session_id, created_at")
+            .eq("tenant_id", tenant_id)
+            .eq("id", thread_id)
+            .limit(1)
+            .execute()
+        )
+        thread = thread_result.data[0] if thread_result.data else {}
+        client_user_id = thread.get("user_id") or answer.get("user_id") or feedback.get("user_id")
+
+        client_email = None
+        if client_user_id:
+            if client_user_id not in user_emails:
+                try:
+                    user_resp = db.auth.admin.get_user_by_id(client_user_id)
+                    user_emails[client_user_id] = user_resp.user.email if user_resp and user_resp.user else client_user_id
+                except Exception:
+                    user_emails[client_user_id] = f"user-{str(client_user_id)[:8]}"
+            client_email = user_emails[client_user_id]
+        if not client_email:
+            client_email = f"visitor-{str(thread.get('client_session_id') or 'unknown')[:8]}"
+
+        question = _previous_user_question(db, tenant_id, thread_id, answer["created_at"])
+        logs = _thread_retrieval_logs(db, tenant_id, thread_id, answer.get("id"))
+        grounded_scores = [
+            float(log["groundedness_score"])
+            for log in logs
+            if log.get("groundedness_score") is not None
+        ]
+        top_scores = [float(log["top_score"]) for log in logs if log.get("top_score") is not None]
+
+        items.append({
+            "feedback_id": feedback["id"],
+            "feedback_created_at": feedback["created_at"],
+            "feedback_comment": feedback.get("comment"),
+            "rating": feedback["rating"],
+            "message_id": feedback.get("message_id"),
+            "resolved_message_id": answer.get("id"),
+            "thread_id": thread_id,
+            "thread_title": thread.get("title") or "Untitled",
+            "client_user_id": client_user_id,
+            "client_email": client_email,
+            "question": question.get("content") if question else "",
+            "question_message_id": question.get("id") if question else None,
+            "answer": answer.get("content") or "",
+            "answer_created_at": answer.get("created_at"),
+            "retrieval_logs": logs,
+            "summary": {
+                "retrieval_count": len(logs),
+                "chunk_count": sum(int(log.get("chunk_count") or 0) for log in logs),
+                "source_count": sum(int(log.get("source_count") or 0) for log in logs),
+                "top_score": max(top_scores) if top_scores else None,
+                "groundedness_score": min(grounded_scores) if grounded_scores else None,
+                "groundedness_flag": any(bool(log.get("groundedness_flag")) for log in logs),
+                "zero_source": any(int(log.get("source_count") or 0) == 0 for log in logs),
+            },
+        })
+
+    return items
 
 
 # --- Message feedback ---

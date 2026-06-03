@@ -5,6 +5,7 @@ from app.services.retrieval import retrieve_context
 from app.services.embeddings import get_embedding_client, get_embedding
 from app.services.qdrant_db import search_similar_chunks
 from app.services.gemini import get_llm_client, generate_chat_response_stream, RAG_SYSTEM_PROMPT, get_primary_model
+from app.services.groundedness import GROUNDEDNESS_THRESHOLD, check_groundedness
 from app.services.performance import elapsed_ms, log_latency, monotonic_ms
 from app.services.web_search import search_web
 
@@ -21,8 +22,6 @@ EXPANSION_SYSTEM_PROMPT = (
     "of the original question. Each variant should use different keywords or phrasing "
     "to improve recall. Return one query per line, nothing else. No numbering, no bullets."
 )
-
-GROUNDEDNESS_THRESHOLD = 0.25  # Minimum token overlap ratio to consider answer grounded
 
 # HyDE constants
 HYDE_SYSTEM_PROMPT = (
@@ -141,33 +140,6 @@ async def expand_queries(message: str, client) -> list[str]:
     except Exception as e:
         logger.warning(f"Query expansion failed: {e}")
     return []
-
-
-def _check_groundedness(answer: str, context_chunks: list[str]) -> float:
-    """Check if the answer is grounded in the retrieved context.
-
-    Uses token-level overlap (Jaccard-like) between answer and context.
-    Returns a score from 0.0 (no grounding) to 1.0 (fully grounded).
-    """
-    if not context_chunks or not answer:
-        return 0.0
-
-    # Combine all context into one string
-    context_text = " ".join(context_chunks).lower()
-    answer_lower = answer.lower()
-
-    # Tokenize (simple whitespace split, remove very short tokens)
-    context_tokens = {t for t in context_text.split() if len(t) > 3}
-    answer_tokens = {t for t in answer_lower.split() if len(t) > 3}
-
-    if not answer_tokens:
-        return 0.0
-
-    # What fraction of answer tokens appear in the context?
-    overlap = answer_tokens & context_tokens
-    groundedness = len(overlap) / len(answer_tokens)
-
-    return groundedness
 
 
 # ---------------------------------------------------------------------------
@@ -398,11 +370,13 @@ async def execute(
     seen_contents: set[str] = set()
     context_chunks: list[str] = []
     sources: list[dict] = []
+    retrieval_log_ids: list[str] = []
 
     for result in retrieval_results:
         if isinstance(result, Exception):
             logger.warning(f"Multi-query retrieval failed for one variant: {result}")
             continue
+        retrieval_log_ids.extend(result.get("retrieval_log_ids", []))
         for chunk in result.get("chunks", []):
             key = chunk[:200].strip().lower()
             if key not in seen_contents:
@@ -481,7 +455,7 @@ async def execute(
             "content": "No matching content found in your documents. Searching the web instead...",
             "action_type": "searching",
             "action_source": "doc_rag",
-            "action_data": {"query": message, "fallback_reason": "no_doc_results"},
+            "action_data": {"query": message, "fallback_reason": "no_doc_results", "retrieval_log_ids": retrieval_log_ids},
         }
 
         web_results = await search_web(augmented_query, max_results=5)
@@ -501,6 +475,13 @@ async def execute(
 
             async for chunk in generate_chat_response_stream(client, message, history, web_chunks, images=images, system_prompt=CORRECTIVE_RAG_SYSTEM_PROMPT):
                 yield {"type": "token", "content": chunk}
+            yield {
+                "type": "rag_quality",
+                "retrieval_log_ids": retrieval_log_ids,
+                "groundedness": None,
+                "groundedness_flag": False,
+                "retrieval_quality": "no_sources_web_fallback",
+            }
             return
 
         yield {
@@ -511,6 +492,13 @@ async def execute(
             "action_data": {"query": message},
         }
         yield {"type": "token", "content": "Thank you for your question. Unfortunately, I don't have the specific details needed to address this right now. Could you try rephrasing, or let me know if there's something else I can help with?"}
+        yield {
+            "type": "rag_quality",
+            "retrieval_log_ids": retrieval_log_ids,
+            "groundedness": None,
+            "groundedness_flag": False,
+            "retrieval_quality": "no_sources",
+        }
         return
 
     # --- Corrective RAG: grade retrieval quality ---
@@ -583,6 +571,7 @@ async def execute(
             "used_web_fallback": used_web_fallback,
             "content_previews": content_previews,
             "sources": _public_sources(sources),
+            "retrieval_log_ids": retrieval_log_ids,
         },
     }
 
@@ -679,7 +668,7 @@ async def execute(
     )
 
     # Post-generation groundedness check
-    groundedness = _check_groundedness(full_answer, context_chunks)
+    groundedness = check_groundedness(full_answer, context_chunks)
     logger.info(f"Groundedness score: {groundedness:.3f} (threshold={GROUNDEDNESS_THRESHOLD})")
 
     if groundedness < GROUNDEDNESS_THRESHOLD and context_chunks:
@@ -695,3 +684,11 @@ async def execute(
             "Please verify the information independently.*"
         )
         yield {"type": "token", "content": disclaimer}
+
+    yield {
+        "type": "rag_quality",
+        "retrieval_log_ids": retrieval_log_ids,
+        "groundedness": round(groundedness, 3),
+        "groundedness_flag": groundedness < GROUNDEDNESS_THRESHOLD,
+        "retrieval_quality": quality,
+    }

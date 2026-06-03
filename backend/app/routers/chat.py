@@ -7,9 +7,10 @@ from langfuse import propagate_attributes
 from app.middleware.auth import get_current_user
 from app.models.chat import ChatRequest, ChatResponse, ThreadListResponse, ThreadSummary, MessageListResponse, MessageResponse, FeedbackRequest
 from app.services.gemini import get_llm_client, generate_chat_response, generate_chat_response_stream, _extract_retry_delay
+from app.services.groundedness import GROUNDEDNESS_THRESHOLD, check_groundedness
 from app.services.retrieval import retrieve_context
 from app.services.agent_supervisor import execute as agent_execute
-from app.services.database import create_thread, save_message, get_thread_messages, get_user_threads, get_thread, delete_thread as db_delete_thread, save_message_feedback, get_message_feedback, get_retrieval_logs
+from app.services.database import create_thread, save_message, get_thread_messages, get_user_threads, get_thread, delete_thread as db_delete_thread, save_message_feedback, get_message_feedback, get_retrieval_logs, update_retrieval_logs_for_answer
 from app.services.rate_limit import check_rate_limit
 from app.config import Settings
 from sse_starlette.sse import EventSourceResponse
@@ -17,6 +18,10 @@ from sse_starlette.sse import EventSourceResponse
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _public_sources(sources: list[dict]) -> list[dict]:
+    return [{key: value for key, value in source.items() if key != "content"} for source in sources]
 
 
 def build_history(messages: list[dict]) -> list[dict]:
@@ -71,10 +76,12 @@ async def chat(request: ChatRequest, user=Depends(get_current_user)):
 
         context_chunks = None
         sources = []
+        retrieval_log_ids: list[str] = []
         if request.use_documents:
             retrieval_result = await retrieve_context(token, user.id, request.message, mode=request.retrieval_mode, tenant_id=user.tenant_id, thread_id=thread_id)
             context_chunks = retrieval_result["chunks"]
             sources = retrieval_result["sources"]
+            retrieval_log_ids = retrieval_result.get("retrieval_log_ids", [])
             logger.info(f"Retrieved {len(context_chunks)} context chunks for user={user.id}")
 
         try:
@@ -85,9 +92,22 @@ async def chat(request: ChatRequest, user=Depends(get_current_user)):
         except APIError:
             raise HTTPException(status_code=503, detail="The AI service is temporarily unavailable. Please try again in a moment.")
 
-        save_message(token, user.id, thread_id, "assistant", response_text, tenant_id=user.tenant_id)
+        assistant_message = save_message(token, user.id, thread_id, "assistant", response_text, tenant_id=user.tenant_id)
+        if retrieval_log_ids:
+            try:
+                groundedness = check_groundedness(response_text, context_chunks or [])
+                update_retrieval_logs_for_answer(
+                    tenant_id=user.tenant_id,
+                    retrieval_log_ids=retrieval_log_ids,
+                    answer_message_id=assistant_message["id"],
+                    groundedness_score=round(groundedness, 3),
+                    groundedness_flag=groundedness < GROUNDEDNESS_THRESHOLD,
+                    retrieval_quality="direct_chat",
+                )
+            except Exception:
+                logger.warning("Failed to attach retrieval logs for direct chat", exc_info=True)
 
-    return ChatResponse(response=response_text, thread_id=thread_id, sources=sources)
+    return ChatResponse(response=response_text, thread_id=thread_id, sources=_public_sources(sources))
 
 
 @router.post("/stream")
@@ -121,6 +141,10 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
 
         async def event_generator():
             full_response = ""
+            retrieval_log_ids: list[str] = []
+            groundedness_score: float | None = None
+            groundedness_flag = False
+            retrieval_quality: str | None = None
             try:
                 async for event in agent_execute(
                     token=token,
@@ -179,14 +203,29 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                                 "thread_id": thread_id,
                             })
                         }
+                    elif event["type"] == "rag_quality":
+                        retrieval_log_ids = event.get("retrieval_log_ids", []) or retrieval_log_ids
+                        groundedness_score = event.get("groundedness")
+                        groundedness_flag = bool(event.get("groundedness_flag"))
+                        retrieval_quality = event.get("retrieval_quality")
 
-                save_message(token, user.id, thread_id, "assistant", full_response, tenant_id=user.tenant_id)
+                assistant_message = save_message(token, user.id, thread_id, "assistant", full_response, tenant_id=user.tenant_id)
+                if retrieval_log_ids:
+                    update_retrieval_logs_for_answer(
+                        tenant_id=user.tenant_id,
+                        retrieval_log_ids=retrieval_log_ids,
+                        answer_message_id=assistant_message["id"],
+                        groundedness_score=groundedness_score,
+                        groundedness_flag=groundedness_flag,
+                        retrieval_quality=retrieval_quality,
+                    )
 
                 yield {
                     "data": json_lib.dumps({
                         "type": "done",
                         "content": "",
                         "thread_id": thread_id,
+                        "message_id": assistant_message["id"],
                         "done": True,
                     })
                 }
