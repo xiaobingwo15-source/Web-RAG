@@ -1,5 +1,6 @@
 import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { SpeedInsights } from '@vercel/speed-insights/react'
 import { ProtectedRoute } from './components/ProtectedRoute'
 import { RoleRedirect } from './components/RoleRedirect'
 
@@ -57,6 +58,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
       </Suspense>
+      <SpeedInsights />
     </BrowserRouter>
   )
 }
