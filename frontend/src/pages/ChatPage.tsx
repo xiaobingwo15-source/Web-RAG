@@ -14,7 +14,7 @@ import { markInteraction, markRouteReady } from '@/lib/performance'
 import { PanelRightOpen, PanelRightClose, MessageSquare, User, LogOut, Clock, AlertTriangle } from 'lucide-react'
 
 export function ChatPage() {
-  const { messages, sendMessage, isStreaming, clearMessages, loadThread, currentAction } = useChat()
+  const { messages, sendMessage, isStreaming, threadId, clearMessages, loadThread, currentAction } = useChat()
   const {
     documents,
     uploadDocument,
@@ -112,14 +112,15 @@ export function ChatPage() {
   }
 
   const handleFeedback = useCallback(async (messageId: string, rating: 1 | -1) => {
-    if (!session?.access_token || !selectedThreadId) return
+    const feedbackThreadId = selectedThreadId || threadId
+    if (!session?.access_token || !feedbackThreadId) return
     setFeedbackMap((prev) => ({ ...prev, [messageId]: rating }))
     try {
-      await submitFeedback(selectedThreadId, messageId, rating, session!.access_token)
+      await submitFeedback(feedbackThreadId, messageId, rating, session!.access_token)
     } catch (err) {
       console.error('Failed to submit feedback:', err)
     }
-  }, [session?.access_token, selectedThreadId])
+  }, [session?.access_token, selectedThreadId, threadId])
 
   const handleDeleteThread = async (threadId: string) => {
     await removeThread(threadId)
@@ -217,8 +218,7 @@ export function ChatPage() {
             ) : (
               <div className="mx-auto max-w-3xl space-y-4">
                 {messages.map((msg, i) => {
-                  // Generate a stable message ID for feedback tracking
-                  const msgId = msg.role === 'assistant' ? `msg-${i}` : undefined
+                  const msgId = msg.role === 'assistant' ? msg.id : undefined
                   return (
                     <ChatMessage
                       key={i}

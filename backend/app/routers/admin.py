@@ -13,6 +13,7 @@ from app.services.database import (
     list_rag_eval_cases,
     list_rag_eval_results,
     list_rag_eval_runs,
+    list_rag_quality_thumbs_down,
     get_tenant_admin_invite,
     get_thread_messages_admin,
     save_admin_message,
@@ -31,6 +32,7 @@ from app.models.rag_eval import (
     RagEvalRunDetail,
     RagEvalRunSummary,
 )
+from app.models.rag_quality import RagQualityThumbsDownResponse
 from app.services.rag_eval import run_rag_eval
 from app.services.widget_tokens import hash_token
 
@@ -248,6 +250,12 @@ async def start_rag_eval_run(request: RagEvalRunCreate, user=Depends(get_current
         access_token=user.access_token,
         retrieval_mode=request.retrieval_mode,
     )
+
+
+@router.get("/rag-quality/thumbs-down", response_model=RagQualityThumbsDownResponse)
+async def get_rag_quality_thumbs_down(limit: int = 50, user=Depends(get_current_user)):
+    _verify_admin(user)
+    return {"items": list_rag_quality_thumbs_down(user.tenant_id, limit=limit)}
 
 
 # --- Admin Manual Answer endpoints ---

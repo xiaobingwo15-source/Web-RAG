@@ -19,6 +19,7 @@ import {
   getRagEvalRun,
   runRagEval,
   updateRagEvalCase,
+  getRagQualityThumbsDown,
   type AdminClient,
   type AdminMessage,
   type FlaggedMessage,
@@ -27,6 +28,8 @@ import {
   type RagEvalCase,
   type RagEvalRunSummary,
   type RagEvalRunDetail,
+  type RagQualityFeedbackItem,
+  type RagQualitySource,
 } from '@/lib/api'
 import { markInteraction, markRouteReady } from '@/lib/performance'
 import {
@@ -93,6 +96,11 @@ export function AdminPage() {
   const [evalCases, setEvalCases] = useState<RagEvalCase[]>([])
   const [evalRuns, setEvalRuns] = useState<RagEvalRunSummary[]>([])
   const [selectedEvalRun, setSelectedEvalRun] = useState<RagEvalRunDetail | null>(null)
+  const [evalWorkspaceView, setEvalWorkspaceView] = useState<'runs' | 'feedback'>('runs')
+  const [qualityFeedback, setQualityFeedback] = useState<RagQualityFeedbackItem[]>([])
+  const [selectedQualityFeedbackId, setSelectedQualityFeedbackId] = useState<string | null>(null)
+  const [qualityLoading, setQualityLoading] = useState(false)
+  const [expandedQualityChunks, setExpandedQualityChunks] = useState<Record<string, boolean>>({})
   const [evalLoading, setEvalLoading] = useState(false)
   const [evalRunning, setEvalRunning] = useState(false)
   const [evalMessage, setEvalMessage] = useState<string | null>(null)
@@ -217,11 +225,31 @@ export function AdminPage() {
     }
   }, [session?.access_token])
 
+  const fetchQualityFeedback = useCallback(async () => {
+    if (!session?.access_token) return
+    setQualityLoading(true)
+    try {
+      const data = await getRagQualityThumbsDown(session.access_token, { limit: 50 })
+      setQualityFeedback(data.items)
+      setSelectedQualityFeedbackId((current) => (
+        current && data.items.some((item) => item.feedback_id === current)
+          ? current
+          : data.items[0]?.feedback_id ?? null
+      ))
+    } catch (err) {
+      console.error('Failed to fetch RAG quality feedback:', err)
+      setEvalMessage('Failed to load feedback review')
+    } finally {
+      setQualityLoading(false)
+    }
+  }, [session?.access_token])
+
   useEffect(() => {
     if (activeTab === 'evals') {
       fetchEvals()
+      fetchQualityFeedback()
     }
-  }, [activeTab, fetchEvals])
+  }, [activeTab, fetchEvals, fetchQualityFeedback])
 
   const handleSettingChange = (key: keyof SystemSettings, value: string) => {
     setSettings((prev) => ({ ...prev, [key]: value }))
@@ -360,6 +388,25 @@ export function AdminPage() {
     } finally {
       setEvalLoading(false)
     }
+  }
+
+  const selectedQualityFeedback = useMemo(
+    () => qualityFeedback.find((item) => item.feedback_id === selectedQualityFeedbackId) ?? qualityFeedback[0] ?? null,
+    [qualityFeedback, selectedQualityFeedbackId],
+  )
+
+  const handleSeedEvalCase = (item: RagQualityFeedbackItem) => {
+    setEditingEvalCaseId(null)
+    setEvalWorkspaceView('runs')
+    setEvalForm({
+      question: item.question || item.thread_title,
+      expectedFacts: '',
+      expectedAnswer: '',
+      expectedDocumentId: '',
+      tags: 'thumbs-down\nquality-loop',
+      enabled: true,
+    })
+    setEvalMessage('Seeded eval case from feedback. Add expected facts before saving.')
   }
 
   const handleUpdateUserStatus = async (userId: string, action: 'approve' | 'suspend') => {
@@ -960,11 +1007,14 @@ export function AdminPage() {
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => fetchEvals()}
-                disabled={evalLoading || evalRunning}
+                onClick={() => {
+                  fetchEvals()
+                  fetchQualityFeedback()
+                }}
+                disabled={evalLoading || evalRunning || qualityLoading}
                 className="flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50"
               >
-                <RefreshCw className={`h-3.5 w-3.5 ${evalLoading ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`h-3.5 w-3.5 ${evalLoading || qualityLoading ? 'animate-spin' : ''}`} />
                 Refresh
               </button>
               <button
@@ -984,6 +1034,34 @@ export function AdminPage() {
                 <div className="rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">{evalMessage}</div>
               )}
 
+              <div className="inline-flex rounded-lg border border-border bg-card p-1">
+                <button
+                  onClick={() => setEvalWorkspaceView('runs')}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    evalWorkspaceView === 'runs'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                  }`}
+                >
+                  Eval Runs
+                </button>
+                <button
+                  onClick={() => setEvalWorkspaceView('feedback')}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    evalWorkspaceView === 'feedback'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                  }`}
+                >
+                  Feedback Review
+                  {qualityFeedback.length > 0 && (
+                    <span className="ml-1 text-[10px] opacity-80">({qualityFeedback.length})</span>
+                  )}
+                </button>
+              </div>
+
+              {evalWorkspaceView === 'runs' ? (
+                <>
               <section className="rounded-lg border border-border bg-card p-4">
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-semibold text-foreground">
@@ -1173,6 +1251,173 @@ export function AdminPage() {
                   )}
                 </div>
               </section>
+                </>
+              ) : (
+                <section className="grid gap-5 lg:grid-cols-[380px_1fr]">
+                  <div className="rounded-lg border border-border bg-card p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <h2 className="text-sm font-semibold text-foreground">Recent Thumbs-Down</h2>
+                      <span className="text-[10px] text-muted-foreground">{qualityFeedback.length} item{qualityFeedback.length !== 1 ? 's' : ''}</span>
+                    </div>
+                    <div className="mt-3 space-y-2">
+                      {qualityLoading ? (
+                        <div className="flex justify-center py-10">
+                          <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
+                        </div>
+                      ) : qualityFeedback.length === 0 ? (
+                        <div className="py-10 text-center text-xs text-muted-foreground">No thumbs-down feedback yet</div>
+                      ) : (
+                        qualityFeedback.map((item) => (
+                          <button
+                            key={item.feedback_id}
+                            onClick={() => setSelectedQualityFeedbackId(item.feedback_id)}
+                            className={`w-full rounded-md border px-3 py-2 text-left transition-colors ${
+                              selectedQualityFeedback?.feedback_id === item.feedback_id
+                                ? 'border-primary bg-primary/5'
+                                : 'border-border bg-background hover:bg-muted/40'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <span className="line-clamp-2 text-xs font-semibold text-foreground">
+                                {item.question || item.thread_title}
+                              </span>
+                              {(item.summary.groundedness_flag || item.summary.zero_source) && (
+                                <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 text-destructive" />
+                              )}
+                            </div>
+                            <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                              <span className="truncate">{item.client_email}</span>
+                              <span>{new Date(item.feedback_created_at).toLocaleDateString()}</span>
+                            </div>
+                            <div className="mt-1 flex flex-wrap gap-1.5">
+                              <QualityPill active={item.summary.zero_source} label="No sources" />
+                              <QualityPill active={item.summary.groundedness_flag} label="Grounding" />
+                              <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                                {item.summary.source_count} source{item.summary.source_count !== 1 ? 's' : ''}
+                              </span>
+                            </div>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-border bg-card p-4">
+                    {!selectedQualityFeedback ? (
+                      <div className="py-12 text-center text-xs text-muted-foreground">
+                        {qualityLoading ? (
+                          <span className="inline-flex items-center gap-2">
+                            <RefreshCw className="h-4 w-4 animate-spin" />
+                            Loading feedback review...
+                          </span>
+                        ) : (
+                          'Select feedback to inspect retrieval evidence'
+                        )}
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <h2 className="text-sm font-semibold text-foreground">{selectedQualityFeedback.thread_title}</h2>
+                            <p className="mt-1 text-[10px] text-muted-foreground">
+                              {selectedQualityFeedback.client_email} · {new Date(selectedQualityFeedback.feedback_created_at).toLocaleString()}
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => handleSeedEvalCase(selectedQualityFeedback)}
+                            className="flex flex-shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            Seed eval case
+                          </button>
+                        </div>
+
+                        <div className="grid gap-2 sm:grid-cols-4">
+                          <SummaryTile label="Retrievals" value={String(selectedQualityFeedback.summary.retrieval_count)} />
+                          <SummaryTile label="Sources" value={String(selectedQualityFeedback.summary.source_count)} />
+                          <SummaryTile label="Top Score" value={formatNullableScore(selectedQualityFeedback.summary.top_score)} />
+                          <SummaryTile label="Grounded" value={formatPercent(selectedQualityFeedback.summary.groundedness_score)} />
+                        </div>
+
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div className="rounded-md border border-border bg-background p-3">
+                            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Question</p>
+                            <p className="mt-2 whitespace-pre-wrap text-xs text-foreground">{selectedQualityFeedback.question || 'No preceding user question resolved'}</p>
+                          </div>
+                          <div className="rounded-md border border-border bg-background p-3">
+                            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Feedback</p>
+                            <p className="mt-2 whitespace-pre-wrap text-xs text-foreground">{selectedQualityFeedback.feedback_comment || 'Thumbs-down without comment'}</p>
+                          </div>
+                        </div>
+
+                        <div className="rounded-md border border-border bg-background p-3">
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Assistant Answer</p>
+                          <p className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-foreground">{selectedQualityFeedback.answer}</p>
+                        </div>
+
+                        <div className="space-y-3">
+                          <h3 className="text-xs font-semibold text-foreground">Retrieval Logs</h3>
+                          {selectedQualityFeedback.retrieval_logs.length === 0 ? (
+                            <div className="rounded-md border border-border bg-background p-4 text-center text-xs text-muted-foreground">
+                              No retrieval logs resolved for this answer
+                            </div>
+                          ) : (
+                            selectedQualityFeedback.retrieval_logs.map((log) => (
+                              <div key={log.id} className="rounded-md border border-border bg-background p-3">
+                                <div className="flex items-center justify-between gap-3 text-[10px] text-muted-foreground">
+                                  <span className="truncate">{log.query}</span>
+                                  <span className="flex-shrink-0">{log.retrieval_mode} · {formatNullableScore(log.top_score)}</span>
+                                </div>
+                                <div className="mt-2 flex flex-wrap gap-1.5">
+                                  <QualityPill active={log.source_count === 0} label="No sources" />
+                                  <QualityPill active={log.groundedness_flag} label="Grounding flag" />
+                                  {log.retrieval_quality && (
+                                    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{log.retrieval_quality}</span>
+                                  )}
+                                  {log.duration_ms !== null && log.duration_ms !== undefined && (
+                                    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{log.duration_ms}ms</span>
+                                  )}
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+
+                        <div className="space-y-3">
+                          <h3 className="text-xs font-semibold text-foreground">Retrieved Documents & Chunks</h3>
+                          {groupQualitySources(selectedQualityFeedback).length === 0 ? (
+                            <div className="rounded-md border border-border bg-background p-4 text-center text-xs text-muted-foreground">
+                              No source chunks were captured
+                            </div>
+                          ) : (
+                            groupQualitySources(selectedQualityFeedback).map((group) => (
+                              <div key={group.key} className="rounded-md border border-border bg-background p-3">
+                                <div className="flex items-center justify-between gap-3">
+                                  <p className="truncate text-xs font-semibold text-foreground">{group.label}</p>
+                                  <span className="text-[10px] text-muted-foreground">{group.sources.length} chunk{group.sources.length !== 1 ? 's' : ''}</span>
+                                </div>
+                                <div className="mt-2 space-y-2">
+                                  {group.sources.map((source, index) => (
+                                    <QualityChunkPreview
+                                      key={`${group.key}-${source.chunk_id || index}`}
+                                      source={source}
+                                      expanded={Boolean(expandedQualityChunks[`${selectedQualityFeedback.feedback_id}-${group.key}-${source.chunk_id || index}`])}
+                                      onToggle={() => {
+                                        const key = `${selectedQualityFeedback.feedback_id}-${group.key}-${source.chunk_id || index}`
+                                        setExpandedQualityChunks((prev) => ({ ...prev, [key]: !prev[key] }))
+                                      }}
+                                    />
+                                  ))}
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )}
             </div>
           </div>
         </main>
@@ -1323,4 +1568,91 @@ function ScoreTile({ label, value }: { label: string; value: number }) {
       <p className="mt-1 text-lg font-bold text-foreground">{percentage}%</p>
     </div>
   )
+}
+
+function SummaryTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border bg-background p-3">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</p>
+      <p className="mt-1 text-sm font-bold text-foreground">{value}</p>
+    </div>
+  )
+}
+
+function QualityPill({ active, label }: { active: boolean; label: string }) {
+  const okLabel = label === 'No sources' ? 'Sources found' : `${label} OK`
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+      active ? 'bg-destructive/10 text-destructive' : 'bg-green-500/10 text-green-500'
+    }`}>
+      {active ? label : okLabel}
+    </span>
+  )
+}
+
+function QualityChunkPreview({
+  source,
+  expanded,
+  onToggle,
+}: {
+  source: RagQualitySource
+  expanded: boolean
+  onToggle: () => void
+}) {
+  const text = source.content || source.snippet || 'No chunk text captured'
+  const shouldTruncate = text.length > 500
+  const visibleText = !shouldTruncate || expanded ? text : `${text.slice(0, 497).trimEnd()}...`
+
+  return (
+    <div className="rounded border border-border/70 bg-muted/20 px-2 py-1.5">
+      <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+        <span className="truncate">{source.chunk_id || 'captured chunk'}</span>
+        <span>{formatNullableScore(source.score)} · {source.retrieval_mode || 'retrieval'}</span>
+      </div>
+      <p className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed text-foreground">
+        {visibleText}
+      </p>
+      {shouldTruncate && (
+        <button
+          type="button"
+          onClick={onToggle}
+          className="mt-1 text-[10px] font-semibold text-primary hover:underline"
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      )}
+    </div>
+  )
+}
+
+function formatNullableScore(value?: number | null): string {
+  return value === null || value === undefined ? 'n/a' : value.toFixed(3)
+}
+
+function formatPercent(value?: number | null): string {
+  return value === null || value === undefined ? 'n/a' : `${Math.round(value * 100)}%`
+}
+
+function groupQualitySources(item: RagQualityFeedbackItem) {
+  const groups = new Map<string, {
+    key: string
+    label: string
+    sources: NonNullable<RagQualityFeedbackItem['retrieval_logs'][number]['sources']>
+  }>()
+
+  for (const log of item.retrieval_logs) {
+    for (const source of log.sources || []) {
+      const key = source.document_id || source.filename || 'unknown-source'
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          label: source.filename || source.document_id || 'Unknown document',
+          sources: [],
+        })
+      }
+      groups.get(key)!.sources.push(source)
+    }
+  }
+
+  return Array.from(groups.values())
 }

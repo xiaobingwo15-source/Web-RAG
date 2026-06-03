@@ -12,11 +12,37 @@ logger = logging.getLogger(__name__)
 
 VECTOR_SIMILARITY_THRESHOLD = 0.1
 MMR_LAMBDA = 0.5  # Balance between relevance (1.0) and diversity (0.0)
+MAX_RETRIEVAL_LOG_ITEMS = 10
+MAX_RETRIEVAL_LOG_TEXT_CHARS = 2000
 
 
 def _snippet(content: str, limit: int = 240) -> str:
     text = " ".join((content or "").split())
     return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
+
+
+def _truncate_log_text(value: str | None, limit: int = MAX_RETRIEVAL_LOG_TEXT_CHARS) -> str:
+    text = value or ""
+    return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
+
+
+def _loggable_retrieval_evidence(sources: list[dict], chunks: list[str]) -> tuple[list[dict], list[str]]:
+    bounded_sources = []
+    for source in sources[:MAX_RETRIEVAL_LOG_ITEMS]:
+        bounded_sources.append({
+            "document_id": source.get("document_id"),
+            "chunk_id": source.get("chunk_id"),
+            "filename": source.get("filename"),
+            "score": source.get("score"),
+            "snippet": _truncate_log_text(source.get("snippet")),
+            "content": _truncate_log_text(source.get("content")),
+            "retrieval_mode": source.get("retrieval_mode"),
+        })
+    bounded_chunks = [
+        _truncate_log_text(chunk)
+        for chunk in chunks[:MAX_RETRIEVAL_LOG_ITEMS]
+    ]
+    return bounded_sources, bounded_chunks
 
 
 def _tokenize(text: str) -> set[str]:
@@ -181,6 +207,7 @@ async def retrieve_context(
         {
             "chunks": list[str],       # content strings for LLM consumption
             "sources": list[dict],     # [{chunk_id, document_id, filename, score, snippet, retrieval_mode, content}, ...]
+            "retrieval_log_ids": list[str],
         }
     """
     t0 = time.monotonic()
@@ -214,9 +241,12 @@ async def retrieve_context(
 
     def _log_and_return(result: dict) -> dict:
         """Log retrieval metrics then return the result unchanged."""
+        result["retrieval_log_ids"] = []
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         sources = result.get("sources", [])
+        chunks = result.get("chunks", [])
         top_score = sources[0]["score"] if sources else None
+        retrieval_quality = "no_sources" if not sources else "retrieved"
         log_latency(
             "retrieval.total",
             elapsed_ms,
@@ -230,17 +260,23 @@ async def retrieve_context(
             thread_id=thread_id,
         )
         try:
-            log_retrieval(
+            log_sources, log_chunks = _loggable_retrieval_evidence(sources, chunks)
+            log_row = log_retrieval(
                 query=message,
                 retrieval_mode=mode,
-                chunk_count=len(result.get("chunks", [])),
+                chunk_count=len(chunks),
                 source_count=len(sources),
                 top_score=top_score,
                 duration_ms=elapsed_ms,
                 user_id=user_id,
                 tenant_id=tenant_id,
                 thread_id=thread_id,
+                sources=log_sources,
+                chunks=log_chunks,
+                retrieval_quality=retrieval_quality,
             )
+            if log_row and log_row.get("id"):
+                result["retrieval_log_ids"] = [log_row["id"]]
         except Exception:
             pass  # fire-and-forget
         return result

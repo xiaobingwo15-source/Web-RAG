@@ -4,6 +4,7 @@ import { streamChat, getThreadMessages, type RetrievalSource, type StreamError }
 import type { AgentAction, ActionType, ActionSource } from '@/lib/agent-types'
 
 export interface ChatMessage {
+  id?: string
   role: 'user' | 'assistant'
   content: string
   images?: string[]
@@ -40,6 +41,7 @@ export function useChat() {
           const json = JSON.parse(m.content)
           if (json && typeof json.text === 'string') {
             parsed.push({
+              id: m.id,
               role: m.role as 'user' | 'assistant',
               content: json.text,
               images: json.images || [],
@@ -47,7 +49,7 @@ export function useChat() {
             continue
           }
         } catch {}
-        parsed.push({ role: m.role as 'user' | 'assistant', content: m.content })
+        parsed.push({ id: m.id, role: m.role as 'user' | 'assistant', content: m.content })
       }
       setMessages(parsed)
       setThreadId(id)
@@ -87,21 +89,21 @@ export function useChat() {
           return updated
         })
       },
-      () => {
+      (messageId) => {
         setIsStreaming(false)
-        if (currentActionRef.current) {
-          setMessages((prev) => {
-            const updated = [...prev]
-            const last = updated[updated.length - 1]
-            if (last.actions && last.actions.length > 0) {
-              const actions = [...last.actions]
-              actions[actions.length - 1] = { ...actions[actions.length - 1], status: "completed" }
-              updated[updated.length - 1] = { ...last, actions }
-            }
-            return updated
-          })
-          currentActionRef.current = null
-        }
+        setMessages((prev) => {
+          const updated = [...prev]
+          const last = updated[updated.length - 1]
+          if (!last || last.role !== 'assistant') return updated
+          let actions = last.actions
+          if (actions && actions.length > 0 && currentActionRef.current) {
+            actions = [...actions]
+            actions[actions.length - 1] = { ...actions[actions.length - 1], status: "completed" }
+          }
+          updated[updated.length - 1] = { ...last, ...(messageId ? { id: messageId } : {}), actions }
+          return updated
+        })
+        currentActionRef.current = null
       },
       (err: StreamError) => {
         console.error('Stream error:', err)

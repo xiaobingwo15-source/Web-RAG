@@ -22,7 +22,7 @@ export async function streamChat(
   threadId: string | null,
   token: string,
   onChunk: (text: string) => void,
-  onDone: () => void,
+  onDone: (messageId?: string) => void,
   onError: (err: StreamError) => void,
   onThreadId?: (threadId: string) => void,
   useDocuments: boolean = false,
@@ -103,7 +103,7 @@ export async function streamChat(
               onSources(data.sources || [])
             } else if (data.done || data.type === 'done') {
               clearTimeout(timeout)
-              onDone()
+              onDone(data.message_id)
               return
             } else if (data.content) {
               onChunk(data.content)
@@ -581,6 +581,66 @@ export interface RagEvalRunDetail {
   results: RagEvalResult[]
 }
 
+export interface RagQualitySource {
+  document_id?: string | null
+  filename?: string | null
+  chunk_id?: string | null
+  score?: number | null
+  snippet?: string | null
+  content?: string | null
+  retrieval_mode?: string | null
+}
+
+export interface RagQualityRetrievalLog {
+  id: string
+  query: string
+  retrieval_mode: string
+  chunk_count: number
+  source_count: number
+  top_score?: number | null
+  duration_ms?: number | null
+  created_at: string
+  sources: RagQualitySource[]
+  chunks: string[]
+  answer_message_id?: string | null
+  groundedness_score?: number | null
+  groundedness_flag: boolean
+  retrieval_quality?: string | null
+}
+
+export interface RagQualitySummary {
+  retrieval_count: number
+  chunk_count: number
+  source_count: number
+  top_score?: number | null
+  groundedness_score?: number | null
+  groundedness_flag: boolean
+  zero_source: boolean
+}
+
+export interface RagQualityFeedbackItem {
+  feedback_id: string
+  feedback_created_at: string
+  feedback_comment?: string | null
+  rating: -1 | 1
+  message_id?: string | null
+  resolved_message_id?: string | null
+  thread_id: string
+  thread_title: string
+  client_user_id?: string | null
+  client_email: string
+  question: string
+  question_message_id?: string | null
+  answer: string
+  answer_created_at?: string | null
+  retrieval_logs: RagQualityRetrievalLog[]
+  summary: RagQualitySummary
+}
+
+export interface RagQualityThumbsDownResponse {
+  items: RagQualityFeedbackItem[]
+}
+
 export async function getRagEvalCases(token: string): Promise<RagEvalCase[]> {
   const response = await fetch('/api/admin/rag-evals/cases', {
     headers: { Authorization: `Bearer ${token}` },
@@ -644,6 +704,18 @@ export async function getRagEvalRun(runId: string, token: string): Promise<RagEv
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!response.ok) throw new Error(`Fetch eval run failed: ${response.status}`)
+  return response.json()
+}
+
+export async function getRagQualityThumbsDown(
+  token: string,
+  params: { limit?: number } = {},
+): Promise<RagQualityThumbsDownResponse> {
+  const search = new URLSearchParams({ limit: String(params.limit || 50) })
+  const response = await fetch(`/api/admin/rag-quality/thumbs-down?${search.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Fetch RAG quality feedback failed: ${response.status}`)
   return response.json()
 }
 
