@@ -135,6 +135,44 @@ def _parse_blocks(text: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Internal: semantic chunking helpers
+# ---------------------------------------------------------------------------
+
+def _split_into_sentences(text: str) -> list[str]:
+    """Split text into sentence-like segments.
+
+    Uses regex to split on sentence-ending punctuation followed by whitespace
+    or newline. Falls back to newline splitting for structured text.
+    """
+    import re
+    if not text or not text.strip():
+        return []
+
+    # Try sentence-level splitting first
+    # Split on: period/exclamation/question + space/newline, keeping the delimiter
+    parts = re.split(r'(?<=[.!?])\s+', text.strip())
+
+    # Filter empty and strip whitespace
+    sentences = [p.strip() for p in parts if p.strip()]
+
+    # If we got fewer than 2 sentences, try newline splitting
+    if len(sentences) < 2:
+        sentences = [p.strip() for p in text.strip().split("\n") if p.strip()]
+
+    return sentences
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two vectors without numpy."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+# ---------------------------------------------------------------------------
 # Internal: sliding-window chunker (original algorithm, extracted)
 # ---------------------------------------------------------------------------
 
