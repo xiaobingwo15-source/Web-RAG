@@ -5,9 +5,6 @@ from app.config import Settings
 
 logger = logging.getLogger(__name__)
 
-EMBEDDING_MODEL = "gemini-embedding-001"
-EMBEDDING_DIMENSION = 768
-
 _embedding_client: genai.Client | None = None
 
 
@@ -20,12 +17,20 @@ def get_embedding_client() -> genai.Client:
 
 
 async def get_embedding(client: genai.Client, text: str, max_retries: int = 2) -> list[float]:
+    """Embed a single query string. Uses RETRIEVAL_QUERY task type."""
+    settings = Settings()
+    model = settings.get_embedding_model
+    dimension = settings.get_embedding_dimension
+
     for attempt in range(max_retries + 1):
         try:
             result = await client.aio.models.embed_content(
-                model=EMBEDDING_MODEL,
+                model=model,
                 contents=text,
-                config={"output_dimensionality": EMBEDDING_DIMENSION},
+                config={
+                    "output_dimensionality": dimension,
+                    "task_type": "RETRIEVAL_QUERY",
+                },
             )
             return result.embeddings[0].values
         except Exception as e:
@@ -38,11 +43,20 @@ async def get_embedding(client: genai.Client, text: str, max_retries: int = 2) -
 
 
 async def get_embeddings(client: genai.Client, texts: list[str]) -> list[list[float]]:
+    """Embed a batch of document strings. Uses RETRIEVAL_DOCUMENT task type."""
     if not texts:
         return []
+
+    settings = Settings()
+    model = settings.get_embedding_model
+    dimension = settings.get_embedding_dimension
+
     result = await client.aio.models.embed_content(
-        model=EMBEDDING_MODEL,
+        model=model,
         contents=texts,
-        config={"output_dimensionality": EMBEDDING_DIMENSION},
+        config={
+            "output_dimensionality": dimension,
+            "task_type": "RETRIEVAL_DOCUMENT",
+        },
     )
     return [e.values for e in result.embeddings]

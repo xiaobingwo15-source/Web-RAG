@@ -3,6 +3,7 @@ import { MessageCircle, X } from 'lucide-react'
 import { useAnonymousChat } from '@/hooks/useAnonymousChat'
 import { ChatWidgetMessages } from './ChatWidgetMessages'
 import { ChatWidgetInput } from './ChatWidgetInput'
+import { markInteraction } from '@/lib/performance'
 
 export function ChatWidget() {
   const [open, setOpen] = useState(false)
@@ -17,7 +18,10 @@ export function ChatWidget() {
               IE Industrial Technology
             </span>
             <button
-              onClick={() => setOpen(false)}
+              onClick={() => {
+                markInteraction('widget.close')
+                setOpen(false)
+              }}
               className="text-muted-foreground hover:text-foreground"
             >
               <X className="h-4 w-4" />
@@ -41,7 +45,10 @@ export function ChatWidget() {
 
       {!open && (
         <button
-          onClick={() => setOpen(true)}
+          onClick={() => {
+            markInteraction('widget.open')
+            setOpen(true)
+          }}
           className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-all hover:scale-105 hover:opacity-90"
         >
           <MessageCircle className="h-6 w-6" />

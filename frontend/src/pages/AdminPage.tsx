@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useDocuments } from '@/hooks/useDocuments'
@@ -28,6 +28,7 @@ import {
   type RagEvalRunSummary,
   type RagEvalRunDetail,
 } from '@/lib/api'
+import { markInteraction, markRouteReady } from '@/lib/performance'
 import {
   Shield,
   LogOut,
@@ -105,8 +106,18 @@ export function AdminPage() {
     enabled: true,
   })
 
+  useEffect(() => {
+    markRouteReady('/admin')
+  }, [])
+
+  const switchTab = (tab: 'conversations' | 'users' | 'evals' | 'settings') => {
+    markInteraction('admin.tab.switch', { tab })
+    setActiveTab(tab)
+  }
+
   const fetchConversations = useCallback(async () => {
     if (!session?.access_token) return
+    markInteraction('admin.conversations.refresh')
     setLoading(true)
     try {
       const data = await getAdminConversations(session.access_token)
@@ -138,6 +149,7 @@ export function AdminPage() {
 
   const fetchUsers = useCallback(async () => {
     if (!session?.access_token) return
+    markInteraction('admin.users.refresh')
     setUsersLoading(true)
     try {
       const data = await getAdminUsers(session.access_token)
@@ -157,6 +169,7 @@ export function AdminPage() {
 
   const fetchSettings = useCallback(async () => {
     if (!session?.access_token) return
+    markInteraction('admin.settings.load')
     setSettingsLoading(true)
     setSettingsMessage(null)
     try {
@@ -216,6 +229,7 @@ export function AdminPage() {
 
   const handleSaveSettings = async () => {
     if (!session?.access_token) return
+    markInteraction('admin.settings.save')
     setSettingsSaving(true)
     setSettingsMessage(null)
     try {
@@ -232,6 +246,7 @@ export function AdminPage() {
 
   const handleSaveEvalCase = async () => {
     if (!session?.access_token || !evalForm.question.trim()) return
+    markInteraction('admin.evals.save_case', { editing: Boolean(editingEvalCaseId) })
     const expectedFacts = splitFactsInput(evalForm.expectedFacts)
     if (expectedFacts.length === 0) {
       setEvalMessage('Add at least one expected fact')
@@ -316,6 +331,7 @@ export function AdminPage() {
 
   const handleRunEval = async () => {
     if (!session?.access_token || evalRunning) return
+    markInteraction('admin.evals.run')
     setEvalRunning(true)
     setEvalMessage(null)
     try {
@@ -333,6 +349,7 @@ export function AdminPage() {
 
   const handleSelectEvalRun = async (runId: string) => {
     if (!session?.access_token) return
+    markInteraction('admin.evals.select_run')
     setEvalLoading(true)
     try {
       const detail = await getRagEvalRun(runId, session.access_token)
@@ -357,6 +374,7 @@ export function AdminPage() {
 
   const handleSelectThread = async (threadId: string, title: string) => {
     if (!session?.access_token) return
+    markInteraction('admin.thread.select')
     setSelectedThread({ threadId, title })
     setMessagesLoading(true)
     try {
@@ -397,20 +415,35 @@ export function AdminPage() {
     setExpandedClient((prev) => (prev === userId ? null : userId))
   }
 
-  const filteredClients = flaggedFilter
-    ? clients
-        .filter((c) => c.threads.some((t) => flaggedMessages.some((f) => f.thread_id === t.id)))
-        .map((c) => ({
-          ...c,
-          threads: c.threads.filter((t) => flaggedMessages.some((f) => f.thread_id === t.id)),
-        }))
-        .filter((c) => c.email.toLowerCase().includes(searchQuery.toLowerCase()))
-    : clients.filter((c) => c.email.toLowerCase().includes(searchQuery.toLowerCase()))
+  const flaggedThreadIds = useMemo(
+    () => new Set(flaggedMessages.map((message) => message.thread_id)),
+    [flaggedMessages],
+  )
 
-  const totalThreads = clients.reduce((sum, c) => sum + c.threads.length, 0)
-  const totalMessages = clients.reduce(
-    (sum, c) => sum + c.threads.reduce((s, t) => s + t.message_count, 0),
-    0
+  const filteredClients = useMemo(() => {
+    const normalizedQuery = searchQuery.toLowerCase()
+    const visibleClients = flaggedFilter
+      ? clients
+          .filter((client) => client.threads.some((thread) => flaggedThreadIds.has(thread.id)))
+          .map((client) => ({
+            ...client,
+            threads: client.threads.filter((thread) => flaggedThreadIds.has(thread.id)),
+          }))
+      : clients
+
+    return visibleClients.filter((client) => client.email.toLowerCase().includes(normalizedQuery))
+  }, [clients, flaggedFilter, flaggedThreadIds, searchQuery])
+
+  const totalThreads = useMemo(
+    () => clients.reduce((sum, client) => sum + client.threads.length, 0),
+    [clients],
+  )
+  const totalMessages = useMemo(
+    () => clients.reduce(
+      (sum, client) => sum + client.threads.reduce((threadSum, thread) => threadSum + thread.message_count, 0),
+      0,
+    ),
+    [clients],
   )
 
   return (
@@ -425,7 +458,7 @@ export function AdminPage() {
         {/* Workspace Tab Selector */}
         <div className="flex border-b border-border bg-muted/5 p-1.5 gap-1.5">
           <button
-            onClick={() => setActiveTab('conversations')}
+            onClick={() => switchTab('conversations')}
             className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold transition-all ${
               activeTab === 'conversations'
                 ? 'bg-primary text-primary-foreground shadow-sm'
@@ -441,7 +474,7 @@ export function AdminPage() {
             )}
           </button>
           <button
-            onClick={() => setActiveTab('users')}
+            onClick={() => switchTab('users')}
             className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold transition-all ${
               activeTab === 'users'
                 ? 'bg-primary text-primary-foreground shadow-sm'
@@ -452,7 +485,7 @@ export function AdminPage() {
             Users
           </button>
           <button
-            onClick={() => setActiveTab('settings')}
+            onClick={() => switchTab('settings')}
             className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold transition-all ${
               activeTab === 'settings'
                 ? 'bg-primary text-primary-foreground shadow-sm'
@@ -463,7 +496,7 @@ export function AdminPage() {
             Settings
           </button>
           <button
-            onClick={() => setActiveTab('evals')}
+            onClick={() => switchTab('evals')}
             className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold transition-all ${
               activeTab === 'evals'
                 ? 'bg-primary text-primary-foreground shadow-sm'

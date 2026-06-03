@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     parent_chunk_size: int = 1500
     child_chunk_size: int = 500
 
+    # Embeddings
+    embedding_model: str = "gemini-embedding-exp-05-28"
+    embedding_dimension: int = 768
+
     @property
     def cors_origins(self) -> list[str]:
         """Parse comma-separated FRONTEND_URL into a list of allowed origins."""
@@ -103,6 +107,16 @@ class Settings(BaseSettings):
     def get_google_api_key(self) -> str:
         val = self._get_db_setting("GOOGLE_API_KEY")
         return val if val else self.google_api_key
+
+    @property
+    def get_embedding_model(self) -> str:
+        val = self._get_db_setting("EMBEDDING_MODEL")
+        return val if val else self.embedding_model
+
+    @property
+    def get_embedding_dimension(self) -> int:
+        val = self._get_db_setting("EMBEDDING_DIMENSION")
+        return int(val) if val else self.embedding_dimension
 
     @property
     def get_tavly_api_key(self) -> str:
