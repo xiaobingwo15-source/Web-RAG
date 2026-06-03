@@ -574,3 +574,84 @@ def create_parent_child_chunks(
         })
 
     return {"parents": parents, "children": children}
+
+
+async def create_parent_child_chunks_semantic(
+    text: str,
+    embed_fn: object,  # async (texts: list[str]) -> list[list[float]]
+    threshold: float | None = None,
+    parent_chunk_size: int | None = None,
+    child_chunk_size: int | None = None,
+) -> dict:
+    """Semantic-aware parent-child chunking.
+
+    Uses embedding similarity to find topic boundaries instead of fixed
+    character counts.  Parent chunks are created at topic boundaries;
+    child chunks are fixed-size subdivisions of parents for embedding.
+
+    Args:
+        text: Full document text.
+        embed_fn: Async callable that embeds a list of strings.
+        threshold: Similarity threshold for breakpoints (default from Settings).
+        parent_chunk_size: Max size for parent chunks (default from Settings).
+        child_chunk_size: Max size for child chunks (default from Settings).
+
+    Returns:
+        Same structure as ``create_parent_child_chunks``:
+        {"parents": [...], "children": [...]}
+    """
+    from app.config import Settings
+    settings = Settings()
+
+    if threshold is None:
+        threshold = settings.semantic_similarity_threshold
+    if parent_chunk_size is None:
+        parent_chunk_size = settings.parent_chunk_size
+    if child_chunk_size is None:
+        child_chunk_size = settings.child_chunk_size
+
+    if not text or not text.strip():
+        return {"parents": [], "children": []}
+
+    # Step 1: Split text into semantically coherent chunks (these become parents)
+    semantic_chunks = await semantic_chunk_text(
+        text,
+        embed_fn=embed_fn,
+        threshold=threshold,
+        min_chunk_size=200,
+        max_chunk_size=parent_chunk_size,
+    )
+
+    if not semantic_chunks:
+        return {"parents": [], "children": []}
+
+    parents = []
+    children = []
+
+    for parent_text in semantic_chunks:
+        parent_id = str(uuid.uuid4())
+
+        # Step 2: Split each semantic parent into fixed-size child chunks
+        child_texts = chunk_text(parent_text, chunk_size=child_chunk_size)
+
+        if not child_texts:
+            child_texts = [parent_text]
+
+        child_ids = []
+        for position, child_text in enumerate(child_texts):
+            child_id = str(uuid.uuid4())
+            child_ids.append(child_id)
+            children.append({
+                "id": child_id,
+                "text": child_text,
+                "parent_id": parent_id,
+                "position_in_parent": position,
+            })
+
+        parents.append({
+            "id": parent_id,
+            "text": parent_text,
+            "child_ids": child_ids,
+        })
+
+    return {"parents": parents, "children": children}

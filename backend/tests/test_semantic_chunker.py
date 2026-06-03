@@ -166,3 +166,59 @@ class TestSemanticChunkText:
         )
         # Very high threshold should create many small chunks
         assert len(result) >= 2
+
+
+from app.services.chunker import create_parent_child_chunks_semantic
+
+
+class TestCreateParentChildChunksSemantic:
+    def _mock_embed_fn(self):
+        topic_vectors = {
+            "The cat sat on the mat.": [1.0, 0.0, 0.0],
+            "It was a fluffy cat.": [0.8, 0.5, 0.3],
+            "The cat liked to nap.": [0.6, 0.3, 0.7],
+            "Quantum physics is complex.": [0.0, 1.0, 0.0],
+            "Particles behave as waves.": [0.0, 0.9, 0.1],
+            "The observer effect is real.": [0.0, 1.0, 0.1],
+        }
+
+        async def embed_fn(texts):
+            return [topic_vectors.get(t, [0.5, 0.5, 0.0]) for t in texts]
+
+        return embed_fn
+
+    def test_returns_parents_and_children(self):
+        embed_fn = self._mock_embed_fn()
+        text = (
+            "The cat sat on the mat. It was a fluffy cat. The cat liked to nap. "
+            "Quantum physics is complex. Particles behave as waves. The observer effect is real."
+        )
+        result = asyncio.run(
+            create_parent_child_chunks_semantic(text, embed_fn=embed_fn, threshold=0.5)
+        )
+        assert "parents" in result
+        assert "children" in result
+        assert len(result["parents"]) >= 1
+        assert len(result["children"]) >= 1
+
+    def test_children_reference_valid_parent_ids(self):
+        embed_fn = self._mock_embed_fn()
+        text = (
+            "The cat sat on the mat. It was a fluffy cat. "
+            "Quantum physics is complex. Particles behave as waves."
+        )
+        result = asyncio.run(
+            create_parent_child_chunks_semantic(text, embed_fn=embed_fn, threshold=0.5)
+        )
+        parent_ids = {p["id"] for p in result["parents"]}
+        for child in result["children"]:
+            assert child["parent_id"] in parent_ids
+
+    def test_empty_text_returns_empty(self):
+        async def embed_fn(texts):
+            return [[0.0] * 3 for _ in texts]
+
+        result = asyncio.run(
+            create_parent_child_chunks_semantic("", embed_fn=embed_fn)
+        )
+        assert result == {"parents": [], "children": []}
