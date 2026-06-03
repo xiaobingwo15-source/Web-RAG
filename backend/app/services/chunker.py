@@ -173,6 +173,111 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Internal: grouping adjacent sentences by embedding similarity
+# ---------------------------------------------------------------------------
+
+async def semantic_chunk_text(
+    text: str,
+    embed_fn: object,  # async (texts: list[str]) -> list[list[float]]
+    threshold: float = 0.75,
+    min_chunk_size: int = 200,
+    max_chunk_size: int = 2000,
+) -> list[str]:
+    """Chunk text by embedding similarity between consecutive sentence groups.
+
+    Algorithm:
+    1. Split text into sentences.
+    2. Embed each sentence via ``embed_fn``.
+    3. Compute cosine similarity between each consecutive pair.
+    4. Where similarity < threshold, insert a breakpoint.
+    5. Merge consecutive non-breakpoint sentences into chunks.
+    6. Enforce min/max chunk size constraints.
+
+    Args:
+        text: Full document text.
+        embed_fn: Async callable that embeds a list of strings and returns
+                  a list of embedding vectors. Decoupled from the concrete
+                  embedding service for testability.
+        threshold: Similarity below this value triggers a split (0.0--1.0).
+        min_chunk_size: Minimum character count per chunk. Short chunks are
+                        merged with their neighbor.
+        max_chunk_size: Maximum character count per chunk. Oversized chunks
+                        are force-split at sentence boundaries.
+
+    Returns:
+        List of chunk strings.
+    """
+    if not text or not text.strip():
+        return []
+
+    sentences = _split_into_sentences(text)
+    if not sentences:
+        return []
+
+    if len(sentences) == 1:
+        return [sentences[0]]
+
+    # Embed all sentences in one batch
+    embeddings = await embed_fn(sentences)
+
+    # Compute similarity between consecutive sentence embeddings
+    similarities = []
+    for i in range(len(embeddings) - 1):
+        sim = _cosine_similarity(embeddings[i], embeddings[i + 1])
+        similarities.append(sim)
+
+    # Identify breakpoints: where similarity drops below threshold
+    breakpoints: set[int] = set()
+    for i, sim in enumerate(similarities):
+        if sim < threshold:
+            breakpoints.add(i + 1)  # split AFTER sentence i
+
+    # Build chunks by grouping sentences between breakpoints
+    chunks: list[str] = []
+    current_sentences: list[str] = [sentences[0]]
+
+    for i in range(1, len(sentences)):
+        if i in breakpoints:
+            # Flush current group
+            chunks.append(" ".join(current_sentences))
+            current_sentences = [sentences[i]]
+        else:
+            current_sentences.append(sentences[i])
+
+    if current_sentences:
+        chunks.append(" ".join(current_sentences))
+
+    # Enforce min_chunk_size: merge small chunks with neighbors
+    merged: list[str] = []
+    for chunk in chunks:
+        if merged and len(chunk) < min_chunk_size:
+            merged[-1] = merged[-1] + " " + chunk
+        else:
+            merged.append(chunk)
+    chunks = merged
+
+    # Enforce max_chunk_size: force-split oversized chunks at sentence boundaries
+    final_chunks: list[str] = []
+    for chunk in chunks:
+        if len(chunk) <= max_chunk_size:
+            final_chunks.append(chunk)
+        else:
+            # Re-split this chunk at sentence boundaries
+            sents = _split_into_sentences(chunk)
+            current = ""
+            for s in sents:
+                if current and len(current) + len(s) + 1 > max_chunk_size:
+                    final_chunks.append(current.strip())
+                    current = s
+                else:
+                    current = (current + " " + s).strip() if current else s
+            if current:
+                final_chunks.append(current.strip())
+
+    return [c for c in final_chunks if c.strip()]
+
+
+# ---------------------------------------------------------------------------
 # Internal: sliding-window chunker (original algorithm, extracted)
 # ---------------------------------------------------------------------------
 
