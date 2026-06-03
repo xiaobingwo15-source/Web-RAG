@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useChat } from '@/hooks/useChat'
 import { useDocuments } from '@/hooks/useDocuments'
@@ -10,6 +10,7 @@ import { ChatSidebar } from '@/components/ChatSidebar'
 import { ChatMessage } from '@/components/ChatMessage'
 import { ChatInput } from '@/components/ChatInput'
 import { ChatHistoryPanel } from '@/components/ChatHistoryPanel'
+import { markInteraction, markRouteReady } from '@/lib/performance'
 import { PanelRightOpen, PanelRightClose, MessageSquare, User, LogOut, Clock, AlertTriangle } from 'lucide-react'
 
 export function ChatPage() {
@@ -30,6 +31,10 @@ export function ChatPage() {
   const admin = isAdmin(role || user?.email)
   const [showPanel, setShowPanel] = useState(true)
   const [feedbackMap, setFeedbackMap] = useState<Record<string, 1 | -1>>({})
+
+  useEffect(() => {
+    markRouteReady('/chat')
+  }, [])
 
   const handleLogout = async () => {
     await signOut()
@@ -124,6 +129,7 @@ export function ChatPage() {
   }
 
   const handleSendMessage = async (content: string, useDocuments: boolean = false, retrievalMode: string = 'hybrid', images?: string[]) => {
+    markInteraction('chat.send', { use_documents: useDocuments, retrieval_mode: retrievalMode })
     await sendMessage(content, useDocuments, retrievalMode, images)
     refreshThreads()
   }
@@ -177,7 +183,10 @@ export function ChatPage() {
             {admin ? (hasProcessed ? 'Documents loaded' : 'No documents') : 'Chat'}
           </span>
           <button
-            onClick={() => setShowPanel((prev) => !prev)}
+            onClick={() => {
+              markInteraction('chat.history_panel.toggle')
+              setShowPanel((prev) => !prev)
+            }}
             className="rounded-md p-1.5 text-muted-foreground hover:bg-muted transition-colors cursor-pointer"
             title={showPanel ? 'Hide chat history' : 'Show chat history'}
           >

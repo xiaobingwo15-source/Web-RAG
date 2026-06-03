@@ -5,6 +5,7 @@ from app.services.retrieval import retrieve_context
 from app.services.embeddings import get_embedding_client, get_embedding
 from app.services.qdrant_db import search_similar_chunks
 from app.services.gemini import get_llm_client, generate_chat_response_stream, RAG_SYSTEM_PROMPT, get_primary_model
+from app.services.performance import elapsed_ms, log_latency, monotonic_ms
 from app.services.web_search import search_web
 
 logger = logging.getLogger(__name__)
@@ -648,9 +649,34 @@ async def execute(
 
     # Collect streamed response for groundedness check
     full_answer = ""
+    llm_start = monotonic_ms()
+    first_token_logged = False
     async for chunk in generate_chat_response_stream(client, message, history, context_chunks, images=images, system_prompt=system_prompt):
+        if not first_token_logged:
+            log_latency(
+                "llm.first_token",
+                elapsed_ms(llm_start),
+                mode=retrieval_mode,
+                user_id=user_id,
+                target_user_id=target_user_id,
+                tenant_id=tenant_id,
+                thread_id=thread_id,
+                context_chunk_count=len(context_chunks),
+            )
+            first_token_logged = True
         full_answer += chunk
         yield {"type": "token", "content": chunk}
+    log_latency(
+        "llm.completion",
+        elapsed_ms(llm_start),
+        mode=retrieval_mode,
+        user_id=user_id,
+        target_user_id=target_user_id,
+        tenant_id=tenant_id,
+        thread_id=thread_id,
+        context_chunk_count=len(context_chunks),
+        answer_chars=len(full_answer),
+    )
 
     # Post-generation groundedness check
     groundedness = _check_groundedness(full_answer, context_chunks)

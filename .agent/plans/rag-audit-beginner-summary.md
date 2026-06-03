@@ -70,7 +70,7 @@
 | Task                                                   | What You'll Learn                        | Time    | Status |
 | -------------------------------------------------------- | ------------------------------------------ | --------- | ------ |
 | Change chunk size to 500, then 1500 — compare results | How chunk size affects retrieval quality | 1 hour  | ✅ Done (2026-06-02) — reduced to 800/50, env-configurable |
-| Try different embedding models (if available)          | How embedding quality affects search     | 1 hour  | ⬜     |
+| Try different embedding models (if available)          | How embedding quality affects search     | 1 hour  | ✅ Done (2026-06-03) — upgraded to gemini-embedding-exp-05-28 with task_type |
 | Add a thumbs up/down button to chat                    | User feedback loop basics                | 2 hours | ✅ Done (2026-06-02) |
 | Log failed queries (where 0 chunks found)              | Understanding retrieval gaps             | 1 hour  | ✅ Done (2026-06-02) |
 

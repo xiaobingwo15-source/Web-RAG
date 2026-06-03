@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { Menu, X } from 'lucide-react'
+import { markInteraction } from '@/lib/performance'
 
 const NAV_LINKS = [
   { label: 'Solutions', href: '#solutions' },
@@ -54,6 +55,7 @@ export function Navbar() {
           </a>
           <Link
             to="/login"
+            onClick={() => markInteraction('nav.portal')}
             className="px-4 py-2 border border-outline-variant text-on-surface font-semibold text-xs rounded-sm hover:bg-surface-variant transition-all duration-200 active:scale-95"
           >
             Portal
@@ -95,7 +97,10 @@ export function Navbar() {
             </a>
             <Link
               to="/login"
-              onClick={() => setMobileOpen(false)}
+              onClick={() => {
+                markInteraction('nav.portal')
+                setMobileOpen(false)
+              }}
               className="w-full py-3 border border-outline-variant text-on-surface font-semibold text-xs rounded-sm text-center hover:bg-surface-variant"
             >
               Portal
@@ -106,4 +111,3 @@ export function Navbar() {
     </nav>
   );
 }
-

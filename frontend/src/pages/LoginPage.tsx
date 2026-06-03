@@ -3,6 +3,7 @@ import { useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { validateTenantSlug, resolveTenant } from '@/lib/api'
 import type { TenantInfo } from '@/lib/api'
+import { markRouteReady } from '@/lib/performance'
 import {
   Lock,
   Mail,
@@ -26,6 +27,10 @@ export function LoginPage() {
   const [searchParams] = useSearchParams()
 
   const overlayRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    markRouteReady('/login')
+  }, [])
 
   // Resolve tenant: try ?tenant= slug first, then auto-detect from domain
   useEffect(() => {

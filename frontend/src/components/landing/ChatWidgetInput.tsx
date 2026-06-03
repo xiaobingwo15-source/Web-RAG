@@ -1,5 +1,6 @@
 import { useState, type KeyboardEvent } from 'react'
 import { Send } from 'lucide-react'
+import { markInteraction } from '@/lib/performance'
 
 export function ChatWidgetInput({
   onSend,
@@ -13,6 +14,7 @@ export function ChatWidgetInput({
   const handleSend = () => {
     const trimmed = value.trim()
     if (!trimmed || disabled) return
+    markInteraction('widget.send')
     onSend(trimmed)
     setValue('')
   }

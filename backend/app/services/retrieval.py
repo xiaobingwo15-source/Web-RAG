@@ -5,6 +5,7 @@ from app.services.embeddings import get_embedding_client, get_embedding
 from app.services.reranker import rerank_with_cohere
 from app.services.qdrant_db import search_similar_chunks, get_parent_chunks_by_ids
 from app.services.database import get_documents_by_ids, search_chunks_fts, log_retrieval
+from app.services.performance import elapsed_ms, log_latency, monotonic_ms
 from app.services.semantic_cache import get_semantic_cache
 
 logger = logging.getLogger(__name__)
@@ -209,11 +210,25 @@ async def retrieve_context(
         except Exception as e:
             logger.warning(f"Error checking user role in retrieve_context: {e}")
 
+    cache_namespace = f"mode={mode}|tenant={tenant_id or ''}|target={target_user_id or ''}|match={match_count}"
+
     def _log_and_return(result: dict) -> dict:
         """Log retrieval metrics then return the result unchanged."""
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         sources = result.get("sources", [])
         top_score = sources[0]["score"] if sources else None
+        log_latency(
+            "retrieval.total",
+            elapsed_ms,
+            mode=mode,
+            chunk_count=len(result.get("chunks", [])),
+            source_count=len(sources),
+            top_score=top_score,
+            user_id=user_id,
+            target_user_id=target_user_id,
+            tenant_id=tenant_id,
+            thread_id=thread_id,
+        )
         try:
             log_retrieval(
                 query=message,
@@ -234,7 +249,18 @@ async def retrieve_context(
         return _log_and_return({"chunks": [], "sources": []})
 
     if mode == "fts":
+        fts_start = monotonic_ms()
         chunks = await asyncio.to_thread(search_chunks_fts, token, target_user_id, message, match_count, tenant_id)
+        log_latency(
+            "retrieval.fts",
+            elapsed_ms(fts_start),
+            mode=mode,
+            result_count=len(chunks),
+            user_id=user_id,
+            target_user_id=target_user_id,
+            tenant_id=tenant_id,
+            thread_id=thread_id,
+        )
         if not chunks:
             return _empty()
         raw_sources = [{"id": c.get("id", ""), "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("rank", 0), **({"parent_id": c["parent_id"]} if c.get("parent_id") else {})} for c in chunks]
@@ -248,24 +274,73 @@ async def retrieve_context(
 
     if mode == "hybrid":
         # FTS doesn't need the embedding — run it concurrently with embedding generation
-        embedding_task = get_embedding(get_embedding_client(), message)
-        fts_task = asyncio.to_thread(search_chunks_fts, token, target_user_id, message, match_count * 2, tenant_id)
+        async def _embed_query() -> list[float]:
+            embedding_start = monotonic_ms()
+            result = await get_embedding(get_embedding_client(), message)
+            log_latency(
+                "retrieval.embedding",
+                elapsed_ms(embedding_start),
+                mode=mode,
+                user_id=user_id,
+                target_user_id=target_user_id,
+                tenant_id=tenant_id,
+                thread_id=thread_id,
+            )
+            return result
+
+        async def _search_fts() -> list[dict]:
+            fts_start = monotonic_ms()
+            result = await asyncio.to_thread(search_chunks_fts, token, target_user_id, message, match_count * 2, tenant_id)
+            log_latency(
+                "retrieval.fts",
+                elapsed_ms(fts_start),
+                mode=mode,
+                result_count=len(result),
+                user_id=user_id,
+                target_user_id=target_user_id,
+                tenant_id=tenant_id,
+                thread_id=thread_id,
+            )
+            return result
+
+        embedding_task = _embed_query()
+        fts_task = _search_fts()
         query_embedding, fts_results = await asyncio.gather(embedding_task, fts_task)
         query_embedding_for_cache = query_embedding
 
         # Check semantic cache after we have the embedding
-        cached = cache.lookup(query_embedding)
+        cached = cache.lookup(query_embedding, namespace=cache_namespace)
         if cached is not None:
             logger.info("Semantic cache hit — returning cached retrieval result")
+            log_latency(
+                "retrieval.cache_hit",
+                0,
+                mode=mode,
+                user_id=user_id,
+                target_user_id=target_user_id,
+                tenant_id=tenant_id,
+                thread_id=thread_id,
+            )
             return _log_and_return(cached)
 
         # Vector search starts only after embedding completes
+        vector_start = monotonic_ms()
         vector_results = await search_similar_chunks(
             target_user_id or "",
             query_embedding,
             match_count * 2,
             similarity_threshold=VECTOR_SIMILARITY_THRESHOLD,
             tenant_id=tenant_id,
+        )
+        log_latency(
+            "retrieval.qdrant_vector",
+            elapsed_ms(vector_start),
+            mode=mode,
+            result_count=len(vector_results),
+            user_id=user_id,
+            target_user_id=target_user_id,
+            tenant_id=tenant_id,
+            thread_id=thread_id,
         )
 
         print(f"[RETRIEVAL] Hybrid results: vector={len(vector_results)}, fts={len(fts_results)}")
@@ -300,7 +375,19 @@ async def retrieve_context(
         logger.info(f"Hybrid RRF merge: {len(combined)} unique -> {len(candidates)} after MMR diversification")
 
         if candidates:
+            rerank_start = monotonic_ms()
             scored = await rerank_with_cohere(message, candidates, top_n=match_count)
+            log_latency(
+                "retrieval.rerank",
+                elapsed_ms(rerank_start),
+                mode=mode,
+                candidate_count=len(candidates),
+                result_count=len(scored),
+                user_id=user_id,
+                target_user_id=target_user_id,
+                tenant_id=tenant_id,
+                thread_id=thread_id,
+            )
             sources = []
             for s in scored:
                 idx = s["index"]
@@ -318,17 +405,28 @@ async def retrieve_context(
             logger.info(f"Hybrid reranker: {len(scored)} scored -> {len(sources)} final results")
             result = {"chunks": [s["content"] for s in sources], "sources": sources}
             if query_embedding_for_cache:
-                cache.store(query_embedding_for_cache, result)
+                cache.store(query_embedding_for_cache, result, namespace=cache_namespace)
             return _log_and_return(result)
 
         # Fallback to vector-only
         logger.warning("Hybrid: RRF merge produced 0 candidates, falling back to vector-only")
+        fallback_vector_start = monotonic_ms()
         chunks = await search_similar_chunks(
             target_user_id or "",
             query_embedding,
             match_count,
             similarity_threshold=VECTOR_SIMILARITY_THRESHOLD,
             tenant_id=tenant_id,
+        )
+        log_latency(
+            "retrieval.qdrant_vector_fallback",
+            elapsed_ms(fallback_vector_start),
+            mode=mode,
+            result_count=len(chunks),
+            user_id=user_id,
+            target_user_id=target_user_id,
+            tenant_id=tenant_id,
+            thread_id=thread_id,
         )
         if not chunks:
             return _empty()
@@ -338,21 +436,51 @@ async def retrieve_context(
         return _log_and_return({"chunks": [s["content"] for s in sources], "sources": sources})
 
     # mode == "vector"
+    embedding_start = monotonic_ms()
     query_embedding = await get_embedding(get_embedding_client(), message)
+    log_latency(
+        "retrieval.embedding",
+        elapsed_ms(embedding_start),
+        mode=mode,
+        user_id=user_id,
+        target_user_id=target_user_id,
+        tenant_id=tenant_id,
+        thread_id=thread_id,
+    )
     query_embedding_for_cache = query_embedding
 
     # Check semantic cache
-    cached = cache.lookup(query_embedding)
+    cached = cache.lookup(query_embedding, namespace=cache_namespace)
     if cached is not None:
         logger.info("Semantic cache hit (vector mode) — returning cached result")
+        log_latency(
+            "retrieval.cache_hit",
+            0,
+            mode=mode,
+            user_id=user_id,
+            target_user_id=target_user_id,
+            tenant_id=tenant_id,
+            thread_id=thread_id,
+        )
         return _log_and_return(cached)
 
+    vector_start = monotonic_ms()
     chunks = await search_similar_chunks(
         target_user_id or "",
         query_embedding,
         match_count,
         similarity_threshold=VECTOR_SIMILARITY_THRESHOLD,
         tenant_id=tenant_id,
+    )
+    log_latency(
+        "retrieval.qdrant_vector",
+        elapsed_ms(vector_start),
+        mode=mode,
+        result_count=len(chunks),
+        user_id=user_id,
+        target_user_id=target_user_id,
+        tenant_id=tenant_id,
+        thread_id=thread_id,
     )
     if not chunks:
         return _empty()
@@ -362,5 +490,5 @@ async def retrieve_context(
     logger.info(f"Vector retrieval: {len(sources)} chunks")
     result = {"chunks": [s["content"] for s in sources], "sources": sources}
     if query_embedding_for_cache:
-        cache.store(query_embedding_for_cache, result)
+        cache.store(query_embedding_for_cache, result, namespace=cache_namespace)
     return _log_and_return(result)

@@ -3,7 +3,8 @@ import hashlib
 import logging
 from app.services.text_extractor import extract_text, extract_text_with_ocr
 from app.services.chunker import chunk_text, create_parent_child_chunks
-from app.services.embeddings import get_embedding_client, get_embeddings, EMBEDDING_DIMENSION
+from app.services.embeddings import get_embedding_client, get_embeddings
+from app.config import Settings
 from app.services.metadata_extractor import extract_metadata
 from app.services.document_enrichment import emphasize_document_text
 from app.services.gemini import get_llm_client
@@ -71,7 +72,8 @@ async def process_document(
             })
 
         # Build parent chunk data with zero-vector embeddings
-        zero_vector = [0.0] * EMBEDDING_DIMENSION
+        settings = Settings()
+        zero_vector = [0.0] * settings.get_embedding_dimension
         parent_chunk_data = []
         for i, parent in enumerate(parents):
             parent_chunk_data.append({

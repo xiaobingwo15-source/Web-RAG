@@ -38,9 +38,9 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-def _embedding_key(embedding: list[float]) -> str:
+def _embedding_key(embedding: list[float], namespace: str = "") -> str:
     """Create a short hash key from an embedding for fast dict lookup."""
-    raw = ",".join(f"{v:.6f}" for v in embedding[:16])  # first 16 dims as rough key
+    raw = namespace + "|" + ",".join(f"{v:.6f}" for v in embedding[:16])  # first 16 dims as rough key
     return hashlib.md5(raw.encode()).hexdigest()[:12]
 
 
@@ -60,10 +60,10 @@ class SemanticCache:
         self._total_hits = 0
         self._total_misses = 0
 
-    def lookup(self, query_embedding: list[float]) -> dict | None:
+    def lookup(self, query_embedding: list[float], namespace: str = "") -> dict | None:
         """Find a cached result for a semantically similar query."""
         now = time.monotonic()
-        bucket_key = _embedding_key(query_embedding)
+        bucket_key = _embedding_key(query_embedding, namespace)
 
         entries = self._entries.get(bucket_key, [])
         for entry in entries:
@@ -83,9 +83,9 @@ class SemanticCache:
         self._total_misses += 1
         return None
 
-    def store(self, query_embedding: list[float], result: dict) -> None:
+    def store(self, query_embedding: list[float], result: dict, namespace: str = "") -> None:
         """Cache a retrieval result."""
-        bucket_key = _embedding_key(query_embedding)
+        bucket_key = _embedding_key(query_embedding, namespace)
         entry = CacheEntry(embedding=query_embedding, result=result)
 
         if bucket_key not in self._entries:

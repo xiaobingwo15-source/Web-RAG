@@ -4,7 +4,6 @@ import uuid
 import time
 from qdrant_client import AsyncQdrantClient, models
 from app.config import Settings
-from app.services.embeddings import EMBEDDING_DIMENSION
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +25,7 @@ async def get_qdrant_client() -> AsyncQdrantClient:
 
 
 async def _ensure_collection_inner():
+    settings = Settings()
     client = await get_qdrant_client()
     collections = await client.get_collections()
     names = [c.name for c in collections.collections]
@@ -33,7 +33,7 @@ async def _ensure_collection_inner():
         await client.create_collection(
             collection_name=COLLECTION_NAME,
             vectors_config=models.VectorParams(
-                size=EMBEDDING_DIMENSION,
+                size=settings.get_embedding_dimension,
                 distance=models.Distance.COSINE,
             ),
         )
