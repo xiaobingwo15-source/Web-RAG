@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useAuth } from './useAuth'
-import { streamChat, getThreadMessages, type RetrievalSource, type StreamError } from '@/lib/api'
+import { streamChat, getThreadMessages, type RetrievalSource, type StreamError, type StreamHandle } from '@/lib/api'
 import type { AgentAction, ActionType, ActionSource } from '@/lib/agent-types'
 import { LatencyTimer } from '@/lib/performance'
 
@@ -126,7 +126,7 @@ export function useChat() {
     setMessages((prev) => [...prev, { role: 'assistant', content: '', thoughts: [], actions: [] }])
 
     latencyTimer.current = new LatencyTimer('chat.send')
-    const handle = await streamChat(
+    await streamChat(
       content,
       threadId,
       session.access_token,
@@ -258,7 +258,7 @@ export function useChat() {
         })
       },
       replyTo,
-      (h) => { abortRef.current = h.abort },
+      (h: StreamHandle) => { abortRef.current = h.abort },
     )
   }
 

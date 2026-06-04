@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { createWidgetSession, resolveTenant, streamWidgetChat, submitWidgetFeedback, type StreamError } from '@/lib/api'
+import { createWidgetSession, resolveTenant, streamWidgetChat, submitWidgetFeedback, type StreamError, type StreamHandle } from '@/lib/api'
 import { LatencyTimer } from '@/lib/performance'
 
 const FREE_TIER_LIMIT = 5
@@ -70,7 +70,7 @@ export function useAnonymousChat() {
       setMessages((prev) => [...prev, { role: 'assistant', content: '' }])
 
       latencyTimer.current = new LatencyTimer('widget.send')
-      const handle = await streamWidgetChat(
+      await streamWidgetChat(
         content,
         threadId.current,
         token,
@@ -146,7 +146,8 @@ export function useAnonymousChat() {
         (id) => {
           threadId.current = id
         },
-        (h) => { abortRef.current = h.abort },
+        undefined,
+        (h: StreamHandle) => { abortRef.current = h.abort },
       )
 
       // Also check frontend count after successful send
