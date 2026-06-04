@@ -25,22 +25,44 @@ def _public_sources(sources: list[dict]) -> list[dict]:
 
 
 def build_history(messages: list[dict]) -> list[dict]:
+    # Build a lookup map of message id -> content for reply context
+    msg_map = {m["id"]: m["content"] for m in messages if m.get("id")}
+
     history = []
     for msg in messages:
         role = "assistant" if msg["role"] == "assistant" else "user"
         content = msg["content"]
+
+        # Add reply context for user messages that reference another message
+        reply_to = msg.get("reply_to")
+        if reply_to and reply_to in msg_map:
+            quoted = msg_map[reply_to]
+            # Extract plain text from JSON content (image-bearing messages)
+            try:
+                parsed_quote = json_lib.loads(quoted)
+                if isinstance(parsed_quote, dict) and "text" in parsed_quote:
+                    quoted = parsed_quote["text"]
+            except (json_lib.JSONDecodeError, TypeError):
+                pass
+            # Truncate quoted text to avoid blowing up context
+            if len(quoted) > 500:
+                quoted = quoted[:497] + "..."
+            reply_context = f"[Replying to: {quoted}]\n\n"
+        else:
+            reply_context = ""
+
         if role == "user":
             try:
                 parsed = json_lib.loads(content)
                 if isinstance(parsed, dict) and "text" in parsed:
-                    parts = [{"type": "text", "text": parsed["text"]}]
+                    parts = [{"type": "text", "text": reply_context + parsed["text"]}]
                     for img in parsed.get("images", []):
                         parts.append({"type": "image_url", "image_url": {"url": img}})
                     history.append({"role": role, "content": parts})
                     continue
             except (json_lib.JSONDecodeError, TypeError):
                 pass
-        history.append({"role": role, "content": content})
+        history.append({"role": role, "content": reply_context + content})
     return history
 
 
@@ -69,7 +91,7 @@ async def chat(request: ChatRequest, user=Depends(get_current_user)):
             create_thread(token, user.id, thread_id, title=title, tenant_id=user.tenant_id)
 
         stored_content = json_lib.dumps({"text": request.message, "images": request.images}) if request.images else request.message
-        save_message(token, user.id, thread_id, "user", stored_content, tenant_id=user.tenant_id)
+        save_message(token, user.id, thread_id, "user", stored_content, tenant_id=user.tenant_id, reply_to=request.reply_to)
 
         history_messages = get_thread_messages(token, thread_id, tenant_id=user.tenant_id)[:-1]
         history = build_history(history_messages)
@@ -134,7 +156,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
             create_thread(token, user.id, thread_id, title=title, tenant_id=user.tenant_id)
 
         stored_content = json_lib.dumps({"text": request.message, "images": request.images}) if request.images else request.message
-        save_message(token, user.id, thread_id, "user", stored_content, tenant_id=user.tenant_id)
+        save_message(token, user.id, thread_id, "user", stored_content, tenant_id=user.tenant_id, reply_to=request.reply_to)
 
         history_messages = get_thread_messages(token, thread_id, tenant_id=user.tenant_id)[:-1]
         history = build_history(history_messages)
@@ -269,6 +291,7 @@ async def list_thread_messages(thread_id: str, user=Depends(get_current_user)):
                 role=m["role"],
                 content=m["content"],
                 created_at=m["created_at"],
+                reply_to=m.get("reply_to"),
             )
             for m in messages
         ]

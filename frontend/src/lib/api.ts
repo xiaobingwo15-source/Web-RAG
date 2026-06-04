@@ -30,6 +30,7 @@ export async function streamChat(
   images?: string[],
   onThought?: (thought: string, action?: ActionMeta) => void,
   onSources?: (sources: RetrievalSource[]) => void,
+  replyTo?: string,
 ) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 120_000)
@@ -48,6 +49,7 @@ export async function streamChat(
         use_documents: useDocuments,
         retrieval_mode: retrievalMode,
         ...(images && images.length > 0 ? { images } : {}),
+        ...(replyTo ? { reply_to: replyTo } : {}),
       }),
       signal: controller.signal,
     })
@@ -239,6 +241,7 @@ export interface MessageResponse {
   role: string
   content: string
   created_at: string
+  reply_to?: string | null
 }
 
 export async function getThreads(token: string): Promise<ThreadSummary[]> {

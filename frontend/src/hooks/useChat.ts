@@ -8,6 +8,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   images?: string[]
+  replyTo?: string  // ID of the message being replied to
+  replyToContent?: string  // preview of the quoted message content
   thoughts?: string[]
   actions?: AgentAction[]
   sources?: RetrievalSource[]
@@ -27,6 +29,18 @@ export function useChat() {
     if (!session?.access_token) return
     try {
       const msgs = await getThreadMessages(id, session.access_token)
+      // Build a lookup map of message ID → content for reply previews
+      const contentMap: Record<string, string> = {}
+      for (const m of msgs) {
+        try {
+          const json = JSON.parse(m.content)
+          if (json && typeof json.text === 'string') {
+            contentMap[m.id] = json.text
+            continue
+          }
+        } catch {}
+        contentMap[m.id] = m.content
+      }
       const parsed: ChatMessage[] = []
       for (const m of msgs) {
         if (m.role === 'admin') {
@@ -45,11 +59,19 @@ export function useChat() {
               role: m.role as 'user' | 'assistant',
               content: json.text,
               images: json.images || [],
+              replyTo: m.reply_to || undefined,
+              replyToContent: m.reply_to ? contentMap[m.reply_to] : undefined,
             })
             continue
           }
         } catch {}
-        parsed.push({ id: m.id, role: m.role as 'user' | 'assistant', content: m.content })
+        parsed.push({
+          id: m.id,
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+          replyTo: m.reply_to || undefined,
+          replyToContent: m.reply_to ? contentMap[m.reply_to] : undefined,
+        })
       }
       setMessages(parsed)
       setThreadId(id)
@@ -63,10 +85,12 @@ export function useChat() {
     useDocuments: boolean = false,
     retrievalMode: string = 'hybrid',
     images?: string[],
+    replyTo?: string,
+    replyToContent?: string,
   ) => {
     if (!session?.access_token) return
 
-    const userMsg: ChatMessage = { role: 'user', content, images }
+    const userMsg: ChatMessage = { id: crypto.randomUUID(), role: 'user', content, images, replyTo, replyToContent }
     setMessages((prev) => [...prev, userMsg])
     setIsStreaming(true)
     currentThoughts.current = []
@@ -185,6 +209,7 @@ export function useChat() {
           return updated
         })
       },
+      replyTo,
     )
   }
 

@@ -20,6 +20,7 @@ class ChatRequest(BaseModel):
     enable_web_search: bool = True
     enable_sql: bool = True
     images: Optional[list[str]] = None  # base64 data URLs
+    reply_to: Optional[str] = None  # message ID being replied to
 
     @field_validator("message")
     @classmethod
@@ -76,6 +77,7 @@ class MessageResponse(BaseModel):
     role: str
     content: str
     created_at: str
+    reply_to: Optional[str] = None
 
 
 class MessageListResponse(BaseModel):

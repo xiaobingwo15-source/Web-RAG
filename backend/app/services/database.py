@@ -273,33 +273,39 @@ def get_thread_service(tenant_id: str, thread_id: str) -> dict | None:
     return result.data[0] if result.data else None
 
 
-def save_message(access_token: str, user_id: str, thread_id: str, role: str, content: str, tenant_id: str | None = None) -> dict:
+def save_message(access_token: str, user_id: str, thread_id: str, role: str, content: str, tenant_id: str | None = None, reply_to: str | None = None) -> dict:
     db = get_user_db(access_token)
+    row = {
+        "thread_id": thread_id,
+        "user_id": user_id,
+        "role": role,
+        "content": content,
+        **_tenant_payload(tenant_id),
+    }
+    if reply_to is not None:
+        row["reply_to"] = reply_to
     result = (
         db.table("messages")
-        .insert({
-            "thread_id": thread_id,
-            "user_id": user_id,
-            "role": role,
-            "content": content,
-            **_tenant_payload(tenant_id),
-        })
+        .insert(row)
         .execute()
     )
     return result.data[0]
 
 
-def save_widget_message(tenant_id: str, client_session_id: str, thread_id: str, role: str, content: str) -> dict:
+def save_widget_message(tenant_id: str, client_session_id: str, thread_id: str, role: str, content: str, reply_to: str | None = None) -> dict:
     db = get_db()
+    row = {
+        "tenant_id": tenant_id,
+        "client_session_id": client_session_id,
+        "thread_id": thread_id,
+        "role": role,
+        "content": content,
+    }
+    if reply_to is not None:
+        row["reply_to"] = reply_to
     result = (
         db.table("messages")
-        .insert({
-            "tenant_id": tenant_id,
-            "client_session_id": client_session_id,
-            "thread_id": thread_id,
-            "role": role,
-            "content": content,
-        })
+        .insert(row)
         .execute()
     )
     return result.data[0]
