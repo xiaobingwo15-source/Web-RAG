@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useAuth } from './useAuth'
 import { streamChat, getThreadMessages, type RetrievalSource, type StreamError } from '@/lib/api'
 import type { AgentAction, ActionType, ActionSource } from '@/lib/agent-types'
+import { LatencyTimer } from '@/lib/performance'
 
 export interface ChatMessage {
   id?: string
@@ -25,6 +26,8 @@ export function useChat() {
   const actionIdCounter = useRef(0)
   const tokenBuffer = useRef<string>('')
   const rafId = useRef<number | null>(null)
+  const latencyTimer = useRef<LatencyTimer | null>(null)
+  const abortRef = useRef<(() => void) | null>(null)
   const { session } = useAuth()
 
   const flushTokens = useCallback(() => {
@@ -122,11 +125,15 @@ export function useChat() {
 
     setMessages((prev) => [...prev, { role: 'assistant', content: '', thoughts: [], actions: [] }])
 
-    await streamChat(
+    latencyTimer.current = new LatencyTimer('chat.send')
+    const handle = await streamChat(
       content,
       threadId,
       session.access_token,
       (chunk) => {
+        if (latencyTimer.current && latencyTimer.current.firstTokenLatency === null) {
+          latencyTimer.current.markFirstToken()
+        }
         tokenBuffer.current += chunk
         if (rafId.current === null) {
           rafId.current = requestAnimationFrame(flushTokens)
@@ -159,6 +166,9 @@ export function useChat() {
           return updated
         })
         currentActionRef.current = null
+        latencyTimer.current?.markDone()
+        latencyTimer.current = null
+        abortRef.current = null
       },
       (err: StreamError) => {
         console.error('Stream error:', err)
@@ -179,6 +189,8 @@ export function useChat() {
         })
         currentActionRef.current = null
         setIsStreaming(false)
+        latencyTimer.current = null
+        abortRef.current = null
       },
       (id) => setThreadId(id),
       useDocuments,
@@ -242,7 +254,19 @@ export function useChat() {
       },
       replyTo,
     )
+    abortRef.current = handle.abort
   }
+
+  const cancel = useCallback(() => {
+    abortRef.current?.()
+    abortRef.current = null
+    if (rafId.current !== null) {
+      cancelAnimationFrame(rafId.current)
+      rafId.current = null
+    }
+    tokenBuffer.current = ''
+    setIsStreaming(false)
+  }, [])
 
   const clearMessages = () => {
     setMessages([])
@@ -253,5 +277,5 @@ export function useChat() {
     ? messages[messages.length - 1].actions?.find(a => a.status === "active") || null
     : null
 
-  return { messages, sendMessage, isStreaming, threadId, clearMessages, loadThread, currentAction }
+  return { messages, sendMessage, isStreaming, threadId, clearMessages, loadThread, currentAction, cancel }
 }

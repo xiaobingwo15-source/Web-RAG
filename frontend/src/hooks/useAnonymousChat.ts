@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { createWidgetSession, resolveTenant, streamWidgetChat, submitWidgetFeedback, type StreamError } from '@/lib/api'
+import { LatencyTimer } from '@/lib/performance'
 
 const FREE_TIER_LIMIT = 5
 
@@ -20,6 +21,8 @@ export function useAnonymousChat() {
   const userMessageCount = useRef(0)
   const tokenBuffer = useRef('')
   const rafId = useRef<number | null>(null)
+  const latencyTimer = useRef<LatencyTimer | null>(null)
+  const abortRef = useRef<(() => void) | null>(null)
 
   const flushTokens = useCallback(() => {
     rafId.current = null
@@ -66,11 +69,15 @@ export function useAnonymousChat() {
       setIsStreaming(true)
       setMessages((prev) => [...prev, { role: 'assistant', content: '' }])
 
-      await streamWidgetChat(
+      latencyTimer.current = new LatencyTimer('widget.send')
+      const handle = await streamWidgetChat(
         content,
         threadId.current,
         token,
         (chunk) => {
+          if (latencyTimer.current && latencyTimer.current.firstTokenLatency === null) {
+            latencyTimer.current.markFirstToken()
+          }
           tokenBuffer.current += chunk
           if (rafId.current === null) {
             rafId.current = requestAnimationFrame(flushTokens)
@@ -103,6 +110,9 @@ export function useAnonymousChat() {
             })
           }
           setIsStreaming(false)
+          latencyTimer.current?.markDone()
+          latencyTimer.current = null
+          abortRef.current = null
         },
         (err: StreamError) => {
           if (err.error_code === 'free_tier_limit') {
@@ -125,11 +135,14 @@ export function useAnonymousChat() {
             })
           }
           setIsStreaming(false)
+          latencyTimer.current = null
+          abortRef.current = null
         },
         (id) => {
           threadId.current = id
         },
       )
+      abortRef.current = handle?.abort ?? null
 
       // Also check frontend count after successful send
       if (userMessageCount.current >= FREE_TIER_LIMIT && !limitReached) {
@@ -163,5 +176,16 @@ export function useAnonymousChat() {
     ensureSession()
   }, [ensureSession])
 
-  return { messages, sendMessage, isStreaming, authError, limitReached, feedbackMap, submitFeedback, preWarmSession }
+  const cancel = useCallback(() => {
+    abortRef.current?.()
+    abortRef.current = null
+    if (rafId.current !== null) {
+      cancelAnimationFrame(rafId.current)
+      rafId.current = null
+    }
+    tokenBuffer.current = ''
+    setIsStreaming(false)
+  }, [])
+
+  return { messages, sendMessage, isStreaming, authError, limitReached, preWarmSession, feedbackMap, submitFeedback, cancel }
 }
