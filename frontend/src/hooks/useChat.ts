@@ -254,7 +254,7 @@ export function useChat() {
       },
       replyTo,
     )
-    abortRef.current = handle.abort
+    abortRef.current = handle?.abort ?? null
   }
 
   const cancel = useCallback(() => {

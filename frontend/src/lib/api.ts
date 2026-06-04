@@ -94,7 +94,7 @@ export async function streamChat(
               err.error_code = data.error_code
               clearTimeout(timeout)
               onError(err)
-              return
+              return { abort: () => {} }
             } else if (data.type === 'thought' && onThought) {
               if (data.action_type) {
                 onThought(data.content, {
@@ -110,7 +110,7 @@ export async function streamChat(
             } else if (data.done || data.type === 'done') {
               clearTimeout(timeout)
               onDone(data.message_id)
-              return
+              return { abort: () => {} }
             } else if (data.content) {
               onChunk(data.content)
             }
@@ -213,11 +213,11 @@ export async function streamWidgetChat(
               err.error_code = data.error_code
               clearTimeout(timeout)
               onError(err)
-              return
+              return { abort: () => {} }
             } else if (data.done || data.type === 'done') {
               clearTimeout(timeout)
               onDone(data.message_id)
-              return
+              return { abort: () => {} }
             } else if (data.type === 'token' && data.content) {
               onChunk(data.content)
             }
