@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     semantic_similarity_threshold: float = 0.75
 
     # Embeddings
-    embedding_model: str = "gemini-embedding-exp-05-28"
+    embedding_model: str = "gemini-embedding-001"
     embedding_dimension: int = 768
 
     @property
