@@ -1,7 +1,8 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { useAuth } from './useAuth'
 import { streamChat, getThreadMessages, type RetrievalSource, type StreamError } from '@/lib/api'
 import type { AgentAction, ActionType, ActionSource } from '@/lib/agent-types'
+import { LatencyTimer } from '@/lib/performance'
 
 export interface ChatMessage {
   id?: string
@@ -23,7 +24,33 @@ export function useChat() {
   const currentThoughts = useRef<string[]>([])
   const currentActionRef = useRef<AgentAction | null>(null)
   const actionIdCounter = useRef(0)
+  const tokenBuffer = useRef<string>('')
+  const rafId = useRef<number | null>(null)
+  const latencyTimer = useRef<LatencyTimer | null>(null)
+  const abortRef = useRef<(() => void) | null>(null)
   const { session } = useAuth()
+
+  const flushTokens = useCallback(() => {
+    rafId.current = null
+    const buffered = tokenBuffer.current
+    if (!buffered) return
+    tokenBuffer.current = ''
+    setMessages((prev) => {
+      const updated = [...prev]
+      const last = updated[updated.length - 1]
+      updated[updated.length - 1] = {
+        ...last,
+        content: last.content + buffered,
+      }
+      return updated
+    })
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (rafId.current !== null) cancelAnimationFrame(rafId.current)
+    }
+  }, [])
 
   const loadThread = useCallback(async (id: string) => {
     if (!session?.access_token) return
@@ -98,22 +125,28 @@ export function useChat() {
 
     setMessages((prev) => [...prev, { role: 'assistant', content: '', thoughts: [], actions: [] }])
 
-    await streamChat(
+    latencyTimer.current = new LatencyTimer('chat.send')
+    const handle = await streamChat(
       content,
       threadId,
       session.access_token,
       (chunk) => {
-        setMessages((prev) => {
-          const updated = [...prev]
-          const last = updated[updated.length - 1]
-          updated[updated.length - 1] = {
-            ...last,
-            content: last.content + chunk,
-          }
-          return updated
-        })
+        if (latencyTimer.current && latencyTimer.current.firstTokenLatency === null) {
+          latencyTimer.current.markFirstToken()
+        }
+        tokenBuffer.current += chunk
+        if (rafId.current === null) {
+          rafId.current = requestAnimationFrame(flushTokens)
+        }
       },
       (messageId) => {
+        // Flush any buffered tokens before marking done
+        if (rafId.current !== null) {
+          cancelAnimationFrame(rafId.current)
+          rafId.current = null
+        }
+        const buffered = tokenBuffer.current
+        tokenBuffer.current = ''
         setIsStreaming(false)
         setMessages((prev) => {
           const updated = [...prev]
@@ -124,13 +157,26 @@ export function useChat() {
             actions = [...actions]
             actions[actions.length - 1] = { ...actions[actions.length - 1], status: "completed" }
           }
-          updated[updated.length - 1] = { ...last, ...(messageId ? { id: messageId } : {}), actions }
+          updated[updated.length - 1] = {
+            ...last,
+            content: last.content + buffered,
+            ...(messageId ? { id: messageId } : {}),
+            actions,
+          }
           return updated
         })
         currentActionRef.current = null
+        latencyTimer.current?.markDone()
+        latencyTimer.current = null
+        abortRef.current = null
       },
       (err: StreamError) => {
         console.error('Stream error:', err)
+        if (rafId.current !== null) {
+          cancelAnimationFrame(rafId.current)
+          rafId.current = null
+        }
+        tokenBuffer.current = ''
         const message = err.error_code === 'rate_limit'
           ? err.message
           : `Sorry, something went wrong: ${err.message}`
@@ -148,6 +194,8 @@ export function useChat() {
         })
         currentActionRef.current = null
         setIsStreaming(false)
+        latencyTimer.current = null
+        abortRef.current = null
       },
       (id) => setThreadId(id),
       useDocuments,
@@ -210,8 +258,21 @@ export function useChat() {
         })
       },
       replyTo,
+      (h) => { abortRef.current = h.abort },
     )
   }
+
+  const cancel = useCallback(() => {
+    abortRef.current?.()
+    abortRef.current = null
+    if (rafId.current !== null) {
+      cancelAnimationFrame(rafId.current)
+      rafId.current = null
+    }
+    tokenBuffer.current = ''
+    latencyTimer.current = null
+    setIsStreaming(false)
+  }, [])
 
   const clearMessages = () => {
     setMessages([])
@@ -222,5 +283,5 @@ export function useChat() {
     ? messages[messages.length - 1].actions?.find(a => a.status === "active") || null
     : null
 
-  return { messages, sendMessage, isStreaming, threadId, clearMessages, loadThread, currentAction }
+  return { messages, sendMessage, isStreaming, threadId, clearMessages, loadThread, currentAction, cancel }
 }

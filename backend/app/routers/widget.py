@@ -1,5 +1,6 @@
 import json as json_lib
 import uuid
+from typing import Literal
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, field_validator
 from sse_starlette.sse import EventSourceResponse
@@ -8,9 +9,12 @@ from app.routers.chat import build_history
 from app.services.agent_supervisor import execute as agent_execute
 from app.services.database import (
     create_widget_thread,
+    get_db,
     get_thread_messages_service,
     get_thread_service,
     get_tenant_by_slug,
+    get_tenant_admin_user_id,
+    save_widget_feedback,
     save_widget_message,
 )
 from app.services.widget_tokens import create_widget_token, verify_widget_token
@@ -18,6 +22,26 @@ from app.services.rate_limit import check_rate_limit
 from app.config import Settings
 
 router = APIRouter()
+
+
+def _resolve_widget_rag_target_user_id(tenant_id: str) -> str:
+    admin_id = get_tenant_admin_user_id(tenant_id)
+    if not admin_id:
+        raise HTTPException(status_code=503, detail="Widget RAG is not configured for this tenant.")
+
+    result = (
+        get_db()
+        .table("documents")
+        .select("id")
+        .eq("tenant_id", tenant_id)
+        .eq("user_id", admin_id)
+        .eq("status", "processed")
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=503, detail="Widget RAG has no processed knowledge-base documents for this tenant.")
+    return admin_id
 
 
 class WidgetSessionRequest(BaseModel):
@@ -52,6 +76,13 @@ class WidgetChatRequest(BaseModel):
             if not image.startswith("data:image/"):
                 raise ValueError("images must be data:image URLs")
         return value
+
+
+class WidgetFeedbackRequest(BaseModel):
+    thread_id: str
+    message_id: str
+    rating: Literal[1, -1]
+    comment: str | None = None
 
 
 @router.post("/session")
@@ -92,6 +123,29 @@ async def chat_stream(
     session_id = payload["session_id"]
     settings = Settings()
     check_rate_limit(f"widget:{tenant_id}:{session_id}", limit=settings.rate_limit_widget_requests, window_seconds=settings.rate_limit_widget_window)
+
+    # Free tier limit: count user messages for this session
+    msg_count_result = (
+        get_db()
+        .table("messages")
+        .select("id")
+        .eq("tenant_id", tenant_id)
+        .eq("client_session_id", session_id)
+        .eq("role", "user")
+        .execute()
+    )
+    user_msg_count = len(msg_count_result.data or [])
+    if user_msg_count >= settings.widget_free_tier_limit:
+        async def _limit_reached():
+            yield {"data": json_lib.dumps({
+                "type": "error",
+                "content": "You've reached the free question limit. Please sign up to continue the conversation.",
+                "error_code": "free_tier_limit",
+                "thread_id": request.thread_id or "",
+            })}
+        return EventSourceResponse(_limit_reached())
+
+    target_user_id = _resolve_widget_rag_target_user_id(tenant_id)
     is_new_thread = not request.thread_id
     thread_id = request.thread_id or str(uuid.uuid4())
 
@@ -121,6 +175,7 @@ async def chat_stream(
             enable_sql=False,
             images=request.images,
             tenant_id=tenant_id,
+            target_user_id=target_user_id,
         ):
             if event["type"] == "token":
                 full_response += event["content"]
@@ -130,7 +185,35 @@ async def chat_stream(
                 return
             yield {"data": json_lib.dumps({**event, "thread_id": thread_id})}
 
-        save_widget_message(tenant_id, session_id, thread_id, "assistant", full_response)
-        yield {"data": json_lib.dumps({"type": "done", "content": "", "thread_id": thread_id, "done": True})}
+        saved = save_widget_message(tenant_id, session_id, thread_id, "assistant", full_response)
+        saved_id = str(saved["id"]) if saved and "id" in saved else None
+        yield {"data": json_lib.dumps({"type": "done", "content": "", "thread_id": thread_id, "done": True, "message_id": saved_id})}
 
     return EventSourceResponse(event_generator())
+
+
+@router.post("/feedback")
+async def submit_widget_feedback(
+    request: WidgetFeedbackRequest,
+    authorization: str | None = Header(default=None),
+    origin: str | None = Header(default=None),
+):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Widget token required")
+    try:
+        payload = verify_widget_token(authorization.split(" ", 1)[1])
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    if origin and origin.rstrip("/") != payload["origin"]:
+        raise HTTPException(status_code=403, detail="Origin does not match widget session")
+
+    result = save_widget_feedback(
+        client_session_id=payload["session_id"],
+        thread_id=request.thread_id,
+        message_id=request.message_id,
+        rating=request.rating,
+        comment=request.comment,
+        tenant_id=payload["tenant_id"],
+    )
+    return {"status": "ok", "id": result.get("id") if result else None}

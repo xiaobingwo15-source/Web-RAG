@@ -8,6 +8,10 @@ export interface ActionMeta {
   data: Record<string, unknown>
 }
 
+export interface StreamHandle {
+  abort: () => void
+}
+
 export interface RetrievalSource {
   document_id: string
   filename?: string | null
@@ -31,8 +35,11 @@ export async function streamChat(
   onThought?: (thought: string, action?: ActionMeta) => void,
   onSources?: (sources: RetrievalSource[]) => void,
   replyTo?: string,
-) {
+  onHandle?: (handle: StreamHandle) => void,
+): Promise<StreamHandle> {
   const controller = new AbortController()
+  const handle: StreamHandle = { abort: () => controller.abort() }
+  onHandle?.(handle)
   const timeout = setTimeout(() => controller.abort(), 120_000)
 
   let response: Response
@@ -57,13 +64,13 @@ export async function streamChat(
     clearTimeout(timeout)
     const isAbort = (err as Error).name === 'AbortError'
     onError(new Error(isAbort ? 'Request timed out' : (err as Error).message))
-    return
+    return { abort: () => {} }
   }
 
   if (!response.ok) {
     clearTimeout(timeout)
     onError(new Error(`HTTP ${response.status}`))
-    return
+    return { abort: () => {} }
   }
 
   const reader = response.body?.getReader()
@@ -71,7 +78,7 @@ export async function streamChat(
 
   if (!reader) {
     onDone()
-    return
+    return { abort: () => {} }
   }
 
   try {
@@ -90,7 +97,7 @@ export async function streamChat(
               err.error_code = data.error_code
               clearTimeout(timeout)
               onError(err)
-              return
+              return { abort: () => {} }
             } else if (data.type === 'thought' && onThought) {
               if (data.action_type) {
                 onThought(data.content, {
@@ -106,7 +113,7 @@ export async function streamChat(
             } else if (data.done || data.type === 'done') {
               clearTimeout(timeout)
               onDone(data.message_id)
-              return
+              return { abort: () => {} }
             } else if (data.content) {
               onChunk(data.content)
             }
@@ -122,6 +129,7 @@ export async function streamChat(
     clearTimeout(timeout)
     onError(err as Error)
   }
+  return handle
 }
 
 export interface WidgetSessionResponse {
@@ -147,12 +155,15 @@ export async function streamWidgetChat(
   threadId: string | null,
   token: string,
   onChunk: (text: string) => void,
-  onDone: () => void,
+  onDone: (messageId?: string) => void,
   onError: (err: StreamError) => void,
   onThreadId?: (threadId: string) => void,
   images?: string[],
-) {
+  onHandle?: (handle: StreamHandle) => void,
+): Promise<StreamHandle> {
   const controller = new AbortController()
+  const handle: StreamHandle = { abort: () => controller.abort() }
+  onHandle?.(handle)
   const timeout = setTimeout(() => controller.abort(), 120_000)
 
   let response: Response
@@ -174,13 +185,13 @@ export async function streamWidgetChat(
     clearTimeout(timeout)
     const isAbort = (err as Error).name === 'AbortError'
     onError(new Error(isAbort ? 'Request timed out' : (err as Error).message))
-    return
+    return { abort: () => {} }
   }
 
   if (!response.ok) {
     clearTimeout(timeout)
     onError(new Error(`HTTP ${response.status}`))
-    return
+    return { abort: () => {} }
   }
 
   const reader = response.body?.getReader()
@@ -189,7 +200,7 @@ export async function streamWidgetChat(
   if (!reader) {
     clearTimeout(timeout)
     onDone()
-    return
+    return { abort: () => {} }
   }
 
   try {
@@ -208,11 +219,11 @@ export async function streamWidgetChat(
               err.error_code = data.error_code
               clearTimeout(timeout)
               onError(err)
-              return
+              return { abort: () => {} }
             } else if (data.done || data.type === 'done') {
               clearTimeout(timeout)
-              onDone()
-              return
+              onDone(data.message_id)
+              return { abort: () => {} }
             } else if (data.type === 'token' && data.content) {
               onChunk(data.content)
             }
@@ -228,6 +239,7 @@ export async function streamWidgetChat(
     clearTimeout(timeout)
     onError(err as Error)
   }
+  return handle
 }
 
 export interface ThreadSummary {
@@ -957,6 +969,24 @@ export async function submitFeedback(
     body: JSON.stringify({ thread_id: threadId, message_id: messageId, rating, comment }),
   })
   if (!response.ok) throw new Error(`Submit feedback failed: ${response.status}`)
+}
+
+export async function submitWidgetFeedback(
+  threadId: string,
+  messageId: string,
+  rating: 1 | -1,
+  token: string,
+  comment?: string,
+): Promise<void> {
+  const response = await fetch('/api/widget/feedback', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ thread_id: threadId, message_id: messageId, rating, comment }),
+  })
+  if (!response.ok) throw new Error(`Submit widget feedback failed: ${response.status}`)
 }
 
 export async function getThreadFeedback(

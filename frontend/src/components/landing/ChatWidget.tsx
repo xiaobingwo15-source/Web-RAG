@@ -7,7 +7,7 @@ import { markInteraction } from '@/lib/performance'
 
 export function ChatWidget() {
   const [open, setOpen] = useState(false)
-  const { messages, sendMessage, isStreaming, authError } = useAnonymousChat()
+  const { messages, sendMessage, isStreaming, authError, limitReached, feedbackMap, submitFeedback, preWarmSession } = useAnonymousChat()
 
   return (
     <>
@@ -36,8 +36,22 @@ export function ChatWidget() {
             </div>
           ) : (
             <>
-              <ChatWidgetMessages messages={messages} isStreaming={isStreaming} />
-              <ChatWidgetInput onSend={sendMessage} disabled={isStreaming} />
+              <ChatWidgetMessages messages={messages} isStreaming={isStreaming} feedbackMap={feedbackMap} onFeedback={submitFeedback} />
+              {limitReached ? (
+                <div className="border-t border-border bg-[#F0F2F5] px-4 py-4 text-center">
+                  <p className="text-sm text-[#667781] mb-3">
+                    You've reached the free question limit.
+                  </p>
+                  <a
+                    href="/login"
+                    className="inline-block rounded-lg bg-[#00A884] px-5 py-2 text-sm font-medium text-white hover:bg-[#008F72] transition-colors"
+                  >
+                    Sign up to continue
+                  </a>
+                </div>
+              ) : (
+                <ChatWidgetInput onSend={sendMessage} disabled={isStreaming} />
+              )}
             </>
           )}
         </div>
@@ -48,6 +62,7 @@ export function ChatWidget() {
           onClick={() => {
             markInteraction('widget.open')
             setOpen(true)
+            preWarmSession()
           }}
           className="fixed bottom-6 right-6 z-50 flex h-14 w-14 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-all hover:scale-105 hover:opacity-90"
         >
