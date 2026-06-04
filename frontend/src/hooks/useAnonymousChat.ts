@@ -115,6 +115,11 @@ export function useAnonymousChat() {
           abortRef.current = null
         },
         (err: StreamError) => {
+          if (rafId.current !== null) {
+            cancelAnimationFrame(rafId.current)
+            rafId.current = null
+          }
+          tokenBuffer.current = ''
           if (err.error_code === 'free_tier_limit') {
             setLimitReached(true)
             // Remove the empty assistant placeholder
@@ -141,8 +146,8 @@ export function useAnonymousChat() {
         (id) => {
           threadId.current = id
         },
+        (h) => { abortRef.current = h.abort },
       )
-      abortRef.current = handle?.abort ?? null
 
       // Also check frontend count after successful send
       if (userMessageCount.current >= FREE_TIER_LIMIT && !limitReached) {
@@ -184,6 +189,7 @@ export function useAnonymousChat() {
       rafId.current = null
     }
     tokenBuffer.current = ''
+    latencyTimer.current = null
     setIsStreaming(false)
   }, [])
 

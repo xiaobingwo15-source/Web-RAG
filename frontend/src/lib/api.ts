@@ -35,8 +35,11 @@ export async function streamChat(
   onThought?: (thought: string, action?: ActionMeta) => void,
   onSources?: (sources: RetrievalSource[]) => void,
   replyTo?: string,
+  onHandle?: (handle: StreamHandle) => void,
 ): Promise<StreamHandle> {
   const controller = new AbortController()
+  const handle: StreamHandle = { abort: () => controller.abort() }
+  onHandle?.(handle)
   const timeout = setTimeout(() => controller.abort(), 120_000)
 
   let response: Response
@@ -126,7 +129,7 @@ export async function streamChat(
     clearTimeout(timeout)
     onError(err as Error)
   }
-  return { abort: () => controller.abort() }
+  return handle
 }
 
 export interface WidgetSessionResponse {
@@ -156,8 +159,11 @@ export async function streamWidgetChat(
   onError: (err: StreamError) => void,
   onThreadId?: (threadId: string) => void,
   images?: string[],
+  onHandle?: (handle: StreamHandle) => void,
 ): Promise<StreamHandle> {
   const controller = new AbortController()
+  const handle: StreamHandle = { abort: () => controller.abort() }
+  onHandle?.(handle)
   const timeout = setTimeout(() => controller.abort(), 120_000)
 
   let response: Response
@@ -233,7 +239,7 @@ export async function streamWidgetChat(
     clearTimeout(timeout)
     onError(err as Error)
   }
-  return { abort: () => controller.abort() }
+  return handle
 }
 
 export interface ThreadSummary {

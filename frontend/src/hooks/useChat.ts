@@ -172,6 +172,11 @@ export function useChat() {
       },
       (err: StreamError) => {
         console.error('Stream error:', err)
+        if (rafId.current !== null) {
+          cancelAnimationFrame(rafId.current)
+          rafId.current = null
+        }
+        tokenBuffer.current = ''
         const message = err.error_code === 'rate_limit'
           ? err.message
           : `Sorry, something went wrong: ${err.message}`
@@ -253,8 +258,8 @@ export function useChat() {
         })
       },
       replyTo,
+      (h) => { abortRef.current = h.abort },
     )
-    abortRef.current = handle?.abort ?? null
   }
 
   const cancel = useCallback(() => {
@@ -265,6 +270,7 @@ export function useChat() {
       rafId.current = null
     }
     tokenBuffer.current = ''
+    latencyTimer.current = null
     setIsStreaming(false)
   }, [])
 
