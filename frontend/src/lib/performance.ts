@@ -24,3 +24,63 @@ export function markRouteReady(route: string) {
     }))
   })
 }
+
+/**
+ * Measures wall-clock time from an interaction start to an arbitrary end marker.
+ * Usage:
+ *   const timer = new LatencyTimer('chat.send')
+ *   // ... later, when first token arrives:
+ *   timer.markFirstToken()
+ *   // ... when stream ends:
+ *   timer.markDone()
+ */
+export class LatencyTimer {
+  private name: string
+  private startTime: number
+  private firstTokenMs: number | null = null
+  private doneMs: number | null = null
+
+  constructor(name: string) {
+    this.name = name
+    this.startTime = performance.now()
+  }
+
+  markFirstToken(): number {
+    if (this.firstTokenMs !== null) return this.firstTokenMs
+    this.firstTokenMs = Math.round(performance.now() - this.startTime)
+    window.dispatchEvent(
+      new CustomEvent('web-rag:latency', {
+        detail: {
+          name: this.name,
+          phase: 'first_token',
+          ms: this.firstTokenMs,
+        },
+      }),
+    )
+    return this.firstTokenMs
+  }
+
+  markDone(): number {
+    if (this.doneMs !== null) return this.doneMs
+    this.doneMs = Math.round(performance.now() - this.startTime)
+    window.dispatchEvent(
+      new CustomEvent('web-rag:latency', {
+        detail: {
+          name: this.name,
+          phase: 'done',
+          ms: this.doneMs,
+          first_token_ms: this.firstTokenMs,
+        },
+      }),
+    )
+    return this.doneMs
+  }
+
+  get firstTokenLatency(): number | null {
+    return this.firstTokenMs
+  }
+
+  get totalLatency(): number | null {
+    return this.doneMs
+  }
+}
