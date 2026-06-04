@@ -1,32 +1,63 @@
 @import "tailwindcss";
 
 @theme {
-  --color-background: #111316;
-  --color-foreground: #e2e2e6;
-  --color-primary: #9fcaff;
-  --color-primary-container: #007acc;
-  --color-on-primary: #003258;
-  --color-primary-foreground: #003258;
-  --color-secondary: #ffb77d;
-  --color-secondary-container: #fd8b00;
-  --color-on-secondary: #4d2600;
-  --color-surface: #111316;
-  --color-surface-container: #1e2023;
-  --color-surface-container-low: #1a1c1f;
-  --color-surface-container-high: #282a2d;
-  --color-surface-container-highest: #333538;
-  --color-on-surface: #e2e2e6;
-  --color-on-surface-variant: #c0c7d3;
-  --color-outline: #8a919d;
-  --color-outline-variant: #404751;
-  --color-border: #404751;
-  --color-card: #1e2023;
-  --color-card-foreground: #e2e2e6;
-  --color-muted: #1a1c1f;
-  --color-muted-foreground: #c0c7d3;
-  --color-destructive: #ffb4ab;
-  --radius-sm: 0.125rem;
-  --radius-md: 0.25rem;
+  /* ── Base palette: warm light theme ── */
+  --color-background: #F5F1EB;
+  --color-foreground: #1A1A2E;
+
+  /* ── Primary: WhatsApp teal ── */
+  --color-primary: #00A884;
+  --color-primary-container: #128C7E;
+  --color-on-primary: #FFFFFF;
+  --color-primary-foreground: #FFFFFF;
+
+  /* ── Secondary: warm terracotta ── */
+  --color-secondary: #E8A87C;
+  --color-secondary-container: #D4956B;
+  --color-on-secondary: #FFFFFF;
+
+  /* ── Surfaces ── */
+  --color-surface: #FFFFFF;
+  --color-surface-container: #F5F1EB;
+  --color-surface-container-low: #FAF8F5;
+  --color-surface-container-high: #EDE8E1;
+  --color-surface-container-highest: #E0DBD3;
+  --color-on-surface: #1A1A2E;
+  --color-on-surface-variant: #6B7280;
+
+  /* ── Borders & outlines ── */
+  --color-outline: #D1D5DB;
+  --color-outline-variant: #E5E7EB;
+  --color-border: #E5E7EB;
+
+  /* ── Cards ── */
+  --color-card: #FFFFFF;
+  --color-card-foreground: #1A1A2E;
+
+  /* ── Muted ── */
+  --color-muted: #F3F4F6;
+  --color-muted-foreground: #6B7280;
+
+  /* ── Destructive ── */
+  --color-destructive: #EF4444;
+
+  /* ── WhatsApp chat tokens ── */
+  --color-chat-bg: #EFEAE2;
+  --color-bubble-out: #D9FDD3;
+  --color-bubble-in: #FFFFFF;
+  --color-bubble-out-text: #111B21;
+  --color-bubble-in-text: #111B21;
+  --color-timestamp: #667781;
+  --color-sidebar-hover: #F5F6F6;
+  --color-sidebar-active: #F0F2F5;
+  --color-unread-badge: #25D366;
+  --color-wa-header: #00A884;
+  --color-wa-input-bg: #F0F2F5;
+  --color-wa-icon: #54656F;
+
+  /* ── Radii ── */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
   --radius-lg: 0.5rem;
   --radius-xl: 0.75rem;
   --radius-full: 9999px;
@@ -38,11 +69,9 @@ html {
 
 body {
   margin: 0;
-  background-color: #111316;
-  background-image: radial-gradient(circle at 2px 2px, rgba(255, 255, 255, 0.05) 1px, transparent 0);
-  background-size: 24px 24px;
-  color: #e2e2e6;
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background-color: #F5F1EB;
+  color: #1A1A2E;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -51,39 +80,11 @@ body {
   min-height: 100vh;
 }
 
-/* Custom technical aesthetic border classes */
-.crosshair-corner {
-  position: relative;
-}
-
-.crosshair-corner::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 8px;
-  height: 8px;
-  border-top: 1px solid var(--color-outline-variant);
-  border-left: 1px solid var(--color-outline-variant);
-  pointer-events: none;
-}
-
-.crosshair-corner::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  right: 0;
-  width: 8px;
-  height: 8px;
-  border-bottom: 1px solid var(--color-outline-variant);
-  border-right: 1px solid var(--color-outline-variant);
-  pointer-events: none;
-}
-
 /* Chat markdown rendering — used inside assistant message bubbles */
 .chat-markdown {
-  line-height: 1.65;
+  line-height: 1.5;
   overflow-wrap: anywhere;
+  color: #111B21;
 }
 .chat-markdown > *:first-child {
   margin-top: 0;
@@ -94,33 +95,34 @@ body {
 .chat-markdown h1,
 .chat-markdown h2,
 .chat-markdown h3 {
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1.3;
-  margin: 1.25em 0 0.5em;
+  margin: 1em 0 0.4em;
+  color: #111B21;
 }
 .chat-markdown h1 {
-  font-size: 1.25rem;
-  padding-bottom: 0.375rem;
-  border-bottom: 1px solid var(--color-outline-variant);
-}
-.chat-markdown h2 {
   font-size: 1.125rem;
   padding-bottom: 0.25rem;
-  border-bottom: 1px solid var(--color-outline-variant);
+  border-bottom: 1px solid #E9EDEF;
+}
+.chat-markdown h2 {
+  font-size: 1rem;
+  padding-bottom: 0.2rem;
+  border-bottom: 1px solid #E9EDEF;
 }
 .chat-markdown h3 {
-  font-size: 1rem;
+  font-size: 0.9375rem;
 }
 .chat-markdown p {
-  margin: 0 0 0.75em;
+  margin: 0 0 0.5em;
 }
 .chat-markdown ul,
 .chat-markdown ol {
-  margin: 0.5em 0 0.75em;
-  padding-left: 1.5em;
+  margin: 0.4em 0 0.5em;
+  padding-left: 1.25em;
 }
 .chat-markdown li {
-  margin: 0.25em 0;
+  margin: 0.2em 0;
 }
 .chat-markdown ul li {
   list-style-type: disc;
@@ -130,87 +132,89 @@ body {
 }
 .chat-markdown li > ul,
 .chat-markdown li > ol {
-  margin: 0.125em 0;
+  margin: 0.1em 0;
 }
 .chat-markdown strong {
-  font-weight: 700;
-  color: var(--color-primary);
+  font-weight: 600;
 }
 .chat-markdown em {
   font-style: italic;
 }
 .chat-markdown a {
-  color: var(--color-primary);
+  color: #027EB5;
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 .chat-markdown a:hover {
-  color: var(--color-secondary);
+  color: #00A884;
 }
 .chat-markdown code {
   font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
   font-size: 0.85em;
-  background: var(--color-surface-container-high);
+  background: #F3F4F6;
   padding: 0.15em 0.4em;
   border-radius: 4px;
+  color: #111B21;
 }
 .chat-markdown pre {
-  margin: 0.75em 0;
+  margin: 0.5em 0;
   padding: 0.75em 1em;
-  background: var(--color-surface-container-high);
-  border-radius: 6px;
+  background: #1A1A2E;
+  border-radius: 8px;
   overflow-x: auto;
 }
 .chat-markdown pre code {
   background: none;
   padding: 0;
   font-size: 0.85em;
+  color: #E5E7EB;
 }
 .chat-markdown blockquote {
-  margin: 0.75em 0;
-  padding: 0.5em 1em;
-  border-left: 3px solid var(--color-outline-variant);
-  color: var(--color-muted-foreground);
+  margin: 0.5em 0;
+  padding: 0.4em 0.75em;
+  border-left: 3px solid #00A884;
+  color: #667781;
+  background: #F5F6F6;
+  border-radius: 0 4px 4px 0;
 }
 .chat-markdown hr {
   border: 0;
   height: 1px;
-  background: var(--color-outline-variant);
-  margin: 1.25em 0;
+  background: #E9EDEF;
+  margin: 1em 0;
 }
 .chat-markdown table {
-  margin: 0.75em 0;
+  margin: 0.5em 0;
   border-collapse: collapse;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
   width: 100%;
-  border: 1px solid var(--color-outline-variant);
+  border: 1px solid #E9EDEF;
   border-radius: 8px;
   overflow: hidden;
   display: table;
 }
 .chat-markdown thead {
-  background: var(--color-surface-container-high);
+  background: #F5F6F6;
 }
 .chat-markdown th {
-  padding: 0.625em 0.875em;
+  padding: 0.5em 0.75em;
   text-align: left;
-  font-weight: 700;
-  color: var(--color-primary);
-  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #111B21;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  border-bottom: 2px solid var(--color-outline-variant);
+  border-bottom: 2px solid #E9EDEF;
   white-space: nowrap;
 }
 .chat-markdown td {
-  padding: 0.625em 0.875em;
-  border-bottom: 1px solid var(--color-outline-variant);
-  color: var(--color-foreground);
+  padding: 0.5em 0.75em;
+  border-bottom: 1px solid #E9EDEF;
+  color: #111B21;
 }
 .chat-markdown tbody tr:last-child td {
   border-bottom: none;
 }
 .chat-markdown tbody tr:hover {
-  background: var(--color-surface-container);
+  background: #F5F6F6;
 }
-

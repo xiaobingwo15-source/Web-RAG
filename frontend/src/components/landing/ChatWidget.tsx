@@ -15,7 +15,7 @@ export function ChatWidget() {
         <div className="fixed bottom-6 right-6 z-50 flex h-[500px] w-96 flex-col rounded-lg border border-border bg-card shadow-2xl opacity-100 scale-100 transition-all duration-200">
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <span className="text-sm font-semibold text-foreground">
-              IE Industrial Technology
+              Web RAG Assistant
             </span>
             <button
               onClick={() => {

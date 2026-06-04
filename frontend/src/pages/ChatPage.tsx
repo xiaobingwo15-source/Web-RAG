@@ -9,9 +9,20 @@ import { submitFeedback, getThreadFeedback } from '@/lib/api'
 import { ChatSidebar } from '@/components/ChatSidebar'
 import { ChatMessage } from '@/components/ChatMessage'
 import { ChatInput } from '@/components/ChatInput'
+import { ChatThreadList } from '@/components/ChatThreadList'
 import { ChatHistoryPanel } from '@/components/ChatHistoryPanel'
 import { markInteraction, markRouteReady } from '@/lib/performance'
-import { PanelRightOpen, PanelRightClose, MessageSquare, User, LogOut, Clock, AlertTriangle } from 'lucide-react'
+import {
+  MessageSquare,
+  LogOut,
+  Clock,
+  AlertTriangle,
+  PanelRightOpen,
+  PanelRightClose,
+  Download,
+  Copy,
+  FileText
+} from 'lucide-react'
 
 export function ChatPage() {
   const { messages, sendMessage, isStreaming, threadId, clearMessages, loadThread, currentAction } = useChat()
@@ -32,6 +43,8 @@ export function ChatPage() {
   const [showPanel, setShowPanel] = useState(true)
   const [feedbackMap, setFeedbackMap] = useState<Record<string, 1 | -1>>({})
   const [replyTo, setReplyTo] = useState<{ id: string; content: string } | null>(null)
+  const [showExportMenu, setShowExportMenu] = useState(false)
+  const [showDocUpload, setShowDocUpload] = useState(false)
 
   useEffect(() => {
     markRouteReady('/chat')
@@ -47,19 +60,14 @@ export function ChatPage() {
     return (
       <div className="flex h-screen bg-background items-center justify-center">
         <div className="text-center max-w-md p-8">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 border border-primary/20">
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
             <Clock className="h-7 w-7 text-primary" />
           </div>
-          <h2 className="text-xl font-semibold text-foreground mb-2">
-            Account Pending Approval
-          </h2>
+          <h2 className="text-xl font-semibold text-foreground mb-2">Account Pending Approval</h2>
           <p className="text-sm text-muted-foreground mb-6">
             Your account has been created successfully. An administrator will review and approve your access shortly.
           </p>
-          <button
-            onClick={handleLogout}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-          >
+          <button onClick={handleLogout} className="text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
             Sign out
           </button>
         </div>
@@ -72,19 +80,14 @@ export function ChatPage() {
     return (
       <div className="flex h-screen bg-background items-center justify-center">
         <div className="text-center max-w-md p-8">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-destructive/10 border border-destructive/20">
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10">
             <AlertTriangle className="h-7 w-7 text-destructive" />
           </div>
-          <h2 className="text-xl font-semibold text-foreground mb-2">
-            Account Suspended
-          </h2>
+          <h2 className="text-xl font-semibold text-foreground mb-2">Account Suspended</h2>
           <p className="text-sm text-muted-foreground mb-6">
             Your account has been suspended. Please contact your administrator for more information.
           </p>
-          <button
-            onClick={handleLogout}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-          >
+          <button onClick={handleLogout} className="text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
             Sign out
           </button>
         </div>
@@ -99,14 +102,13 @@ export function ChatPage() {
     setReplyTo(null)
   }
 
-  const handleSelectThread = async (threadId: string) => {
-    setSelectedThreadId(threadId)
+  const handleSelectThread = async (tid: string) => {
+    setSelectedThreadId(tid)
     setReplyTo(null)
-    await loadThread(threadId)
-    // Load existing feedback for this thread
+    await loadThread(tid)
     if (session?.access_token) {
       try {
-        const feedback = await getThreadFeedback(threadId, session!.access_token)
+        const feedback = await getThreadFeedback(tid, session!.access_token)
         setFeedbackMap(feedback)
       } catch {
         setFeedbackMap({})
@@ -125,11 +127,9 @@ export function ChatPage() {
     }
   }, [session?.access_token, selectedThreadId, threadId])
 
-  const handleDeleteThread = async (threadId: string) => {
-    await removeThread(threadId)
-    if (selectedThreadId === threadId) {
-      handleNewChat()
-    }
+  const handleDeleteThread = async (tid: string) => {
+    await removeThread(tid)
+    if (selectedThreadId === tid) handleNewChat()
   }
 
   const handleReply = useCallback((messageId: string, content: string) => {
@@ -143,112 +143,238 @@ export function ChatPage() {
     refreshThreads()
   }
 
+  const exportToMarkdown = () => {
+    if (messages.length === 0) return
+    let md = `# Chat Record - ${new Date().toLocaleString()}\n\n`
+    messages.forEach((msg) => {
+      md += `### ${msg.role === 'user' ? 'User' : 'Assistant'}\n${msg.content}\n\n`
+    })
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `chat_${selectedThreadId ?? 'new'}.md`
+    a.click()
+    URL.revokeObjectURL(url)
+    setShowExportMenu(false)
+  }
+
+  const exportToJSON = () => {
+    if (messages.length === 0) return
+    const blob = new Blob([JSON.stringify(messages, null, 2)], { type: 'application/json;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `chat_${selectedThreadId ?? 'new'}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    setShowExportMenu(false)
+  }
+
+  const copyToClipboard = () => {
+    if (messages.length === 0) return
+    let text = ''
+    messages.forEach((msg) => {
+      text += `[${msg.role === 'user' ? 'User' : 'Assistant'}]: ${msg.content}\n\n`
+    })
+    navigator.clipboard.writeText(text)
+    setShowExportMenu(false)
+  }
+
+  const selectedThread = threads.find((t) => t.id === selectedThreadId)
+
   return (
     <div className="flex h-screen bg-background">
-      {admin ? (
-        <ChatSidebar
-          documents={documents}
-          isUploading={isUploading}
-          onUpload={uploadDocument}
-          duplicateWarning={duplicateWarning}
-          onDismissWarning={clearDuplicateWarning}
-          uploadFailure={uploadFailure}
-          onDismissFailure={clearUploadFailure}
-        />
-      ) : (
-        <aside className="flex w-72 flex-col border-r border-border bg-card">
-          <div className="flex items-center gap-2 border-b border-border px-4 py-3 bg-muted/10">
-            <MessageSquare className="h-5 w-5 text-primary" />
-            <h2 className="text-sm font-bold text-foreground">Chat</h2>
-          </div>
-
-          <div className="flex-1" />
-
-          <div className="border-t border-border p-4 bg-muted/40">
-            <div className="flex items-center gap-3">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/20 ring-2 ring-primary/30">
-                <User className="h-4 w-4 text-primary" />
-              </div>
-              <div className="flex-1 truncate">
-                <p className="truncate text-xs font-semibold text-foreground">Client</p>
-                <p className="truncate text-[10px] text-muted-foreground">
-                  {user?.email ?? 'Unknown'}
-                </p>
-              </div>
-              <button
-                onClick={handleLogout}
-                className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                title="Logout"
-              >
-                <LogOut className="h-4 w-4" />
-              </button>
+      {/* ── Left Sidebar: WhatsApp-style thread list ── */}
+      <aside className="flex w-80 lg:w-96 flex-col bg-surface border-r border-border shrink-0">
+        {/* Sidebar Header */}
+        <div className="flex items-center justify-between px-4 py-3 bg-primary text-primary-foreground">
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 rounded-full bg-white/20 flex items-center justify-center">
+              <span className="text-sm font-semibold text-white">
+                {user?.email?.[0].toUpperCase() ?? 'U'}
+              </span>
             </div>
+            <span className="text-sm font-medium">{admin ? 'Admin' : 'Chat'}</span>
           </div>
-        </aside>
-      )}
-      <main className="flex flex-1 flex-col">
-        <div className="flex items-center justify-between border-b border-border px-4 py-2 bg-muted/20">
-          <span className="text-sm font-medium text-foreground">
-            {admin ? (hasProcessed ? 'Documents loaded' : 'No documents') : 'Chat'}
-          </span>
           <button
-            onClick={() => {
-              markInteraction('chat.history_panel.toggle')
-              setShowPanel((prev) => !prev)
-            }}
-            className="rounded-md p-1.5 text-muted-foreground hover:bg-muted transition-colors cursor-pointer"
-            title={showPanel ? 'Hide chat history' : 'Show chat history'}
+            onClick={handleNewChat}
+            className="p-2 rounded-full hover:bg-white/10 transition-colors cursor-pointer"
+            title="New chat"
           >
-            {showPanel ? (
-              <PanelRightClose className="h-4 w-4" />
-            ) : (
-              <PanelRightOpen className="h-4 w-4" />
-            )}
+            <MessageSquare className="h-5 w-5" />
           </button>
         </div>
+
+        {/* Thread List */}
+        <ChatThreadList
+          threads={threads}
+          selectedThreadId={selectedThreadId}
+          onSelectThread={handleSelectThread}
+          onDeleteThread={handleDeleteThread}
+        />
+
+        {/* Admin: Collapsible Document Upload */}
+        {admin && (
+          <div className="border-t border-border">
+            <button
+              onClick={() => setShowDocUpload(!showDocUpload)}
+              className="flex items-center justify-between w-full px-4 py-3 text-sm font-medium text-foreground hover:bg-sidebar-hover transition-colors cursor-pointer"
+            >
+              <span>Knowledge Base</span>
+              <svg
+                className={`h-4 w-4 text-muted-foreground transition-transform ${showDocUpload ? 'rotate-180' : ''}`}
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {showDocUpload && (
+              <div className="px-4 pb-4 max-h-64 overflow-y-auto">
+                <ChatSidebar
+                  documents={documents}
+                  isUploading={isUploading}
+                  onUpload={uploadDocument}
+                  duplicateWarning={duplicateWarning}
+                  onDismissWarning={clearDuplicateWarning}
+                  uploadFailure={uploadFailure}
+                  onDismissFailure={clearUploadFailure}
+                  compact
+                />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* User Footer */}
+        <div className="mt-auto border-t border-border px-4 py-3 bg-surface">
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center">
+              <span className="text-sm font-semibold text-primary">
+                {user?.email?.[0].toUpperCase() ?? 'U'}
+              </span>
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-foreground truncate">{user?.email ?? 'User'}</p>
+              <p className="text-xs text-muted-foreground truncate">{admin ? 'Administrator' : 'Client'}</p>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="p-2 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground transition-colors cursor-pointer"
+              title="Sign out"
+            >
+              <LogOut className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      {/* ── Right Panel: Chat Area ── */}
+      <main className="flex flex-1 flex-col min-w-0">
+        {/* Chat Header */}
+        <div className="flex items-center justify-between px-4 py-2.5 bg-wa-header text-white border-b border-primary/20">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="h-9 w-9 rounded-full bg-white/20 flex items-center justify-center shrink-0">
+              <MessageSquare className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <h2 className="text-sm font-medium truncate">
+                {selectedThread?.title ?? (messages.length > 0 ? 'Current Chat' : 'New Chat')}
+              </h2>
+              <p className="text-xs text-white/70">
+                {isStreaming ? 'typing...' : selectedThread ? 'online' : ''}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            {/* Export menu */}
+            <div className="relative">
+              <button
+                onClick={() => setShowExportMenu(!showExportMenu)}
+                className="p-2 rounded-full hover:bg-white/10 transition-colors cursor-pointer"
+                title="Export chat"
+              >
+                <Download className="h-5 w-5" />
+              </button>
+              {showExportMenu && messages.length > 0 && (
+                <div className="absolute top-full right-0 mt-1 w-48 rounded-lg border border-border bg-surface p-1 shadow-lg z-20">
+                  <button onClick={copyToClipboard} className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-foreground hover:bg-muted transition-colors">
+                    <Copy className="h-4 w-4 text-muted-foreground" />
+                    Copy transcript
+                  </button>
+                  <button onClick={exportToMarkdown} className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-foreground hover:bg-muted transition-colors">
+                    <FileText className="h-4 w-4 text-muted-foreground" />
+                    Save as Markdown
+                  </button>
+                  <button onClick={exportToJSON} className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-foreground hover:bg-muted transition-colors">
+                    <Download className="h-4 w-4 text-muted-foreground" />
+                    Save as JSON
+                  </button>
+                </div>
+              )}
+            </div>
+            {/* History panel toggle */}
+            <button
+              onClick={() => setShowPanel((prev) => !prev)}
+              className="p-2 rounded-full hover:bg-white/10 transition-colors cursor-pointer"
+              title={showPanel ? 'Hide history' : 'Show history'}
+            >
+              {showPanel ? <PanelRightClose className="h-5 w-5" /> : <PanelRightOpen className="h-5 w-5" />}
+            </button>
+          </div>
+        </div>
+
+        {/* Messages Area */}
         <div className="flex flex-1 overflow-hidden">
-          <div className="flex-1 overflow-y-auto p-4">
+          <div className="flex-1 overflow-y-auto" style={{ backgroundColor: '#EFEAE2' }}>
             {messages.length === 0 ? (
               <div className="flex h-full items-center justify-center">
-                <div className="text-center">
-                  <h2 className="text-xl font-semibold text-foreground">
-                    Agentic RAG Masterclass
-                  </h2>
-                  <p className="mt-2 text-muted-foreground">
+                <div className="text-center px-6">
+                  <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-white/60 mb-4">
+                    <MessageSquare className="h-8 w-8 text-[#667781]" />
+                  </div>
+                  <h2 className="text-lg font-medium text-[#111B21] mb-1">Web RAG Chat</h2>
+                  <p className="text-sm text-[#667781]">
                     {admin
-                      ? (hasProcessed
+                      ? hasProcessed
                         ? 'Ask a question about your documents'
-                        : 'Upload documents or start a conversation')
+                        : 'Upload documents or start a conversation'
                       : 'Start a conversation'}
                   </p>
                 </div>
               </div>
             ) : (
-              <div className="mx-auto max-w-3xl space-y-4">
-                {messages.map((msg, i) => {
-                  const msgId = msg.id
-                  return (
-                    <ChatMessage
-                      key={i}
-                      message={msg}
-                      messageId={msgId}
-                      threadId={selectedThreadId}
-                      feedback={msgId && msg.role === 'assistant' ? feedbackMap[msgId] ?? null : null}
-                      onFeedback={msgId && msg.role === 'assistant' ? handleFeedback : undefined}
-                      onReply={handleReply}
-                    />
-                  )
-                })}
+              <div className="px-4 py-3 space-y-1 max-w-4xl mx-auto">
+                {messages.map((msg, i) => (
+                  <ChatMessage
+                    key={i}
+                    message={msg}
+                    messageId={msg.id}
+                    threadId={selectedThreadId}
+                    feedback={msg.id && msg.role === 'assistant' ? feedbackMap[msg.id] ?? null : null}
+                    onFeedback={msg.id && msg.role === 'assistant' ? handleFeedback : undefined}
+                    onReply={handleReply}
+                  />
+                ))}
 
                 {isStreaming && !currentAction && (
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <div className="h-2 w-2 animate-pulse rounded-full bg-primary" />
-                    Thinking...
+                  <div className="flex items-start gap-2">
+                    <div className="bg-bubble-in rounded-lg px-3 py-2 shadow-sm max-w-[65%]">
+                      <div className="flex items-center gap-1">
+                        <div className="h-2 w-2 rounded-full bg-[#8696A0] animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <div className="h-2 w-2 rounded-full bg-[#8696A0] animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <div className="h-2 w-2 rounded-full bg-[#8696A0] animate-bounce" style={{ animationDelay: '300ms' }} />
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
             )}
           </div>
+
+          {/* History Panel */}
           {showPanel && (
             <ChatHistoryPanel
               threads={threads}
@@ -260,7 +386,15 @@ export function ChatPage() {
             />
           )}
         </div>
-        <ChatInput onSend={handleSendMessage} disabled={isStreaming} hasDocuments={hasProcessed} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} />
+
+        {/* Chat Input */}
+        <ChatInput
+          onSend={handleSendMessage}
+          disabled={isStreaming}
+          hasDocuments={hasProcessed}
+          replyTo={replyTo}
+          onCancelReply={() => setReplyTo(null)}
+        />
       </main>
     </div>
   )

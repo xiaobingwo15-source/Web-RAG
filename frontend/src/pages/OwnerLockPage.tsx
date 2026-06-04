@@ -31,9 +31,9 @@ const filters: Array<{ value: OwnerAdminStatus; label: string }> = [
 ]
 
 function statusClasses(status: string) {
-  if (status === 'approved') return 'border-green-500/30 bg-green-500/10 text-green-400'
-  if (status === 'pending') return 'border-amber-500/30 bg-amber-500/10 text-amber-400'
-  return 'border-destructive/30 bg-destructive/10 text-destructive'
+  if (status === 'approved') return 'border-green-300 bg-green-50 text-green-700'
+  if (status === 'pending') return 'border-amber-300 bg-amber-50 text-amber-700'
+  return 'border-red-300 bg-red-50 text-red-700'
 }
 
 function formatDate(value: string) {

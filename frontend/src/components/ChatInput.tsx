@@ -1,5 +1,5 @@
 import { useState, type KeyboardEvent, type ClipboardEvent } from 'react'
-import { Send, FileSearch, X, Reply } from 'lucide-react'
+import { Send, FileSearch, X } from 'lucide-react'
 
 export function ChatInput({
   onSend,
@@ -46,7 +46,6 @@ export function ChatInput({
     }
 
     if (imageFiles.length === 0) return
-
     e.preventDefault()
 
     for (const file of imageFiles) {
@@ -64,21 +63,24 @@ export function ChatInput({
     setImages((prev) => prev.filter((_, i) => i !== index))
   }
 
+  const hasContent = value.trim().length > 0 || images.length > 0
+
   return (
-    <div className="border-t border-border p-4">
+    <div className="bg-[#F0F2F5] px-3 py-2">
+      {/* Pasted images preview */}
       {images.length > 0 && (
-        <div className="mx-auto mb-2 flex max-w-3xl flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 mb-2 px-1">
           {images.map((src, idx) => (
             <div key={idx} className="relative group">
               <img
                 src={src}
                 alt={`Pasted ${idx + 1}`}
-                className="h-16 w-16 rounded-md border border-border object-cover"
+                className="h-16 w-16 rounded-lg border border-[#E9EDEF] object-cover"
               />
               <button
                 onClick={() => removeImage(idx)}
-                className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-destructive-foreground opacity-0 group-hover:opacity-100 transition-opacity"
-                title="Remove image"
+                className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[#EF4444] text-white opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                title="Remove"
               >
                 <X className="h-3 w-3" />
               </button>
@@ -86,53 +88,72 @@ export function ChatInput({
           ))}
         </div>
       )}
+
+      {/* Reply preview */}
       {replyTo && (
-        <div className="mx-auto flex max-w-3xl items-center gap-2 rounded-t-md border border-b-0 border-primary/30 bg-primary/5 px-3 py-2">
-          <Reply className="h-3.5 w-3.5 shrink-0 text-primary" />
-          <p className="flex-1 truncate text-xs text-muted-foreground">
-            {replyTo.content.length > 120 ? replyTo.content.slice(0, 117) + '...' : replyTo.content}
-          </p>
+        <div className="flex items-center gap-2 rounded-t-lg border border-b-0 border-[#00A884]/30 bg-white px-3 py-2 mb-0">
+          <div className="w-0.5 h-8 bg-[#00A884] rounded-full shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-medium text-[#00A884]">Reply</p>
+            <p className="truncate text-xs text-[#667781]">
+              {replyTo.content.length > 100 ? replyTo.content.slice(0, 97) + '...' : replyTo.content}
+            </p>
+          </div>
           {onCancelReply && (
-            <button onClick={onCancelReply} className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground">
-              <X className="h-3.5 w-3.5" />
+            <button onClick={onCancelReply} className="shrink-0 p-1 text-[#8696A0] hover:text-[#111B21] cursor-pointer">
+              <X className="h-4 w-4" />
             </button>
           )}
         </div>
       )}
-      <div className="mx-auto flex max-w-3xl items-end gap-2">
+
+      {/* Input row */}
+      <div className="flex items-end gap-2">
+        {/* RAG toggle */}
         {hasDocuments && (
           <button
             onClick={() => setUseDocuments((prev) => !prev)}
             title={useDocuments ? 'RAG mode ON — answers from documents' : 'RAG mode OFF — general chat'}
-            className={`rounded-md p-2 transition-colors ${
+            className={`p-2.5 rounded-full transition-colors shrink-0 cursor-pointer ${
               useDocuments
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-muted text-muted-foreground hover:bg-muted/80'
+                ? 'text-[#00A884] bg-[#00A884]/10'
+                : 'text-[#54656F] hover:bg-[#E9EDEF]'
             }`}
           >
-            <FileSearch className="h-4 w-4" />
+            <FileSearch className="h-5 w-5" />
           </button>
         )}
-        <textarea
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          disabled={disabled}
-          rows={1}
-          placeholder={
-            hasDocuments && useDocuments
-              ? 'Ask a question about your documents...'
-              : 'Type a message... (Shift+Enter for new line)'
-          }
-          className="flex-1 resize-none rounded-md border border-border bg-input px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
-        />
+
+        {/* Text input */}
+        <div className="flex-1 flex items-end bg-white rounded-lg border-none overflow-hidden">
+          <textarea
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            disabled={disabled}
+            rows={1}
+            placeholder={
+              hasDocuments && useDocuments
+                ? 'Ask about your documents...'
+                : 'Type a message'
+            }
+            className="flex-1 resize-none border-none bg-transparent px-3 py-2.5 text-[15px] text-[#111B21] placeholder:text-[#8696A0] focus:outline-none disabled:opacity-50 min-h-[42px] max-h-[150px]"
+            style={{ lineHeight: '1.35' }}
+          />
+        </div>
+
+        {/* Send button */}
         <button
           onClick={handleSend}
-          disabled={disabled || (!value.trim() && images.length === 0)}
-          className="rounded-md bg-primary p-2 text-primary-foreground hover:opacity-90 disabled:opacity-50"
+          disabled={disabled || !hasContent}
+          className={`p-2.5 rounded-full transition-colors shrink-0 cursor-pointer ${
+            hasContent && !disabled
+              ? 'text-[#00A884] hover:bg-[#00A884]/10'
+              : 'text-[#54656F]'
+          } disabled:opacity-50`}
         >
-          <Send className="h-4 w-4" />
+          <Send className="h-5 w-5" />
         </button>
       </div>
     </div>
