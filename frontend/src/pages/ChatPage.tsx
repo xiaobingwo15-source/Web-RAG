@@ -31,6 +31,7 @@ export function ChatPage() {
   const admin = isAdmin(role || user?.email)
   const [showPanel, setShowPanel] = useState(true)
   const [feedbackMap, setFeedbackMap] = useState<Record<string, 1 | -1>>({})
+  const [replyTo, setReplyTo] = useState<{ id: string; content: string } | null>(null)
 
   useEffect(() => {
     markRouteReady('/chat')
@@ -95,10 +96,12 @@ export function ChatPage() {
     clearMessages()
     setSelectedThreadId(null)
     setFeedbackMap({})
+    setReplyTo(null)
   }
 
   const handleSelectThread = async (threadId: string) => {
     setSelectedThreadId(threadId)
+    setReplyTo(null)
     await loadThread(threadId)
     // Load existing feedback for this thread
     if (session?.access_token) {
@@ -129,9 +132,14 @@ export function ChatPage() {
     }
   }
 
+  const handleReply = useCallback((messageId: string, content: string) => {
+    setReplyTo({ id: messageId, content })
+  }, [])
+
   const handleSendMessage = async (content: string, useDocuments: boolean = false, retrievalMode: string = 'hybrid', images?: string[]) => {
     markInteraction('chat.send', { use_documents: useDocuments, retrieval_mode: retrievalMode })
-    await sendMessage(content, useDocuments, retrievalMode, images)
+    await sendMessage(content, useDocuments, retrievalMode, images, replyTo?.id, replyTo?.content)
+    setReplyTo(null)
     refreshThreads()
   }
 
@@ -218,15 +226,16 @@ export function ChatPage() {
             ) : (
               <div className="mx-auto max-w-3xl space-y-4">
                 {messages.map((msg, i) => {
-                  const msgId = msg.role === 'assistant' ? msg.id : undefined
+                  const msgId = msg.id
                   return (
                     <ChatMessage
                       key={i}
                       message={msg}
                       messageId={msgId}
                       threadId={selectedThreadId}
-                      feedback={msgId ? feedbackMap[msgId] ?? null : null}
-                      onFeedback={msgId ? handleFeedback : undefined}
+                      feedback={msgId && msg.role === 'assistant' ? feedbackMap[msgId] ?? null : null}
+                      onFeedback={msgId && msg.role === 'assistant' ? handleFeedback : undefined}
+                      onReply={handleReply}
                     />
                   )
                 })}
@@ -251,7 +260,7 @@ export function ChatPage() {
             />
           )}
         </div>
-        <ChatInput onSend={handleSendMessage} disabled={isStreaming} hasDocuments={hasProcessed} />
+        <ChatInput onSend={handleSendMessage} disabled={isStreaming} hasDocuments={hasProcessed} replyTo={replyTo} onCancelReply={() => setReplyTo(null)} />
       </main>
     </div>
   )

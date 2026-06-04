@@ -1,14 +1,18 @@
 import { useState, type KeyboardEvent, type ClipboardEvent } from 'react'
-import { Send, FileSearch, X } from 'lucide-react'
+import { Send, FileSearch, X, Reply } from 'lucide-react'
 
 export function ChatInput({
   onSend,
   disabled,
   hasDocuments,
+  replyTo,
+  onCancelReply,
 }: {
   onSend: (msg: string, useDocuments: boolean, retrievalMode: string, images?: string[]) => void
   disabled: boolean
   hasDocuments: boolean
+  replyTo?: { id: string; content: string } | null
+  onCancelReply?: () => void
 }) {
   const [value, setValue] = useState('')
   const [useDocuments, setUseDocuments] = useState(true)
@@ -80,6 +84,19 @@ export function ChatInput({
               </button>
             </div>
           ))}
+        </div>
+      )}
+      {replyTo && (
+        <div className="mx-auto flex max-w-3xl items-center gap-2 rounded-t-md border border-b-0 border-primary/30 bg-primary/5 px-3 py-2">
+          <Reply className="h-3.5 w-3.5 shrink-0 text-primary" />
+          <p className="flex-1 truncate text-xs text-muted-foreground">
+            {replyTo.content.length > 120 ? replyTo.content.slice(0, 117) + '...' : replyTo.content}
+          </p>
+          {onCancelReply && (
+            <button onClick={onCancelReply} className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
       )}
       <div className="mx-auto flex max-w-3xl items-end gap-2">

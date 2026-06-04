@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { ChatMessage as ChatMessageType } from '@/hooks/useChat'
 import { ThoughtTrace } from '@/components/ThoughtTrace'
-import { BookOpen, Shield, ThumbsUp, ThumbsDown } from 'lucide-react'
+import { BookOpen, Shield, ThumbsUp, ThumbsDown, Reply } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -11,9 +11,10 @@ interface ChatMessageProps {
   threadId?: string | null
   feedback?: 1 | -1 | null
   onFeedback?: (messageId: string, rating: 1 | -1) => void
+  onReply?: (messageId: string, content: string) => void
 }
 
-export function ChatMessage({ message, messageId, threadId: _threadId, feedback, onFeedback }: ChatMessageProps) {
+export function ChatMessage({ message, messageId, threadId: _threadId, feedback, onFeedback, onReply }: ChatMessageProps) {
   const isUser = message.role === 'user'
   const [localFeedback, setLocalFeedback] = useState<1 | -1 | null>(feedback ?? null)
 
@@ -38,6 +39,13 @@ export function ChatMessage({ message, messageId, threadId: _threadId, feedback,
               : 'bg-muted text-foreground'
           }`}
         >
+          {message.replyToContent && (
+            <div className="mb-2 rounded border-l-2 border-primary/40 bg-primary/5 px-3 py-1.5">
+              <p className="line-clamp-2 text-xs text-muted-foreground">
+                {message.replyToContent}
+              </p>
+            </div>
+          )}
           {isUser && message.images && message.images.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-2">
               {message.images.map((src, idx) => (
@@ -119,6 +127,26 @@ export function ChatMessage({ message, messageId, threadId: _threadId, feedback,
               title="Poor response"
             >
               <ThumbsDown className="h-3.5 w-3.5" />
+            </button>
+            {onReply && (
+              <button
+                onClick={() => onReply(messageId, message.content)}
+                className="rounded p-1 text-muted-foreground hover:text-primary hover:bg-primary/5 transition-colors"
+                title="Reply to this message"
+              >
+                <Reply className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        )}
+        {isUser && message.content && messageId && onReply && (
+          <div className="mt-1 flex items-center justify-end gap-1">
+            <button
+              onClick={() => onReply(messageId, message.content)}
+              className="rounded p-1 text-muted-foreground hover:text-primary hover:bg-primary/5 transition-colors"
+              title="Reply to this message"
+            >
+              <Reply className="h-3.5 w-3.5" />
             </button>
           </div>
         )}
