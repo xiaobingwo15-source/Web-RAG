@@ -24,6 +24,37 @@ def _public_sources(sources: list[dict]) -> list[dict]:
     return [{key: value for key, value in source.items() if key != "content"} for source in sources]
 
 
+def _plain_message_text(content: str) -> str:
+    try:
+        parsed = json_lib.loads(content)
+        if isinstance(parsed, dict) and isinstance(parsed.get("text"), str):
+            return parsed["text"]
+    except (json_lib.JSONDecodeError, TypeError):
+        pass
+    return content
+
+
+def _reply_quote_text(messages: list[dict], reply_to: str | None) -> str | None:
+    if not reply_to:
+        return None
+
+    for msg in messages:
+        if msg.get("id") == reply_to:
+            quoted = _plain_message_text(msg.get("content") or "")
+            if len(quoted) > 500:
+                quoted = quoted[:497] + "..."
+            return quoted
+
+    return None
+
+
+def build_active_message(message: str, messages: list[dict], reply_to: str | None) -> str:
+    quoted = _reply_quote_text(messages, reply_to)
+    if not quoted:
+        return message
+    return f"Replying to: {quoted}\n\nUser message: {message}"
+
+
 def build_history(messages: list[dict]) -> list[dict]:
     # Build a lookup map of message id -> content for reply context
     msg_map = {m["id"]: m["content"] for m in messages if m.get("id")}
@@ -36,15 +67,7 @@ def build_history(messages: list[dict]) -> list[dict]:
         # Add reply context for user messages that reference another message
         reply_to = msg.get("reply_to")
         if reply_to and reply_to in msg_map:
-            quoted = msg_map[reply_to]
-            # Extract plain text from JSON content (image-bearing messages)
-            try:
-                parsed_quote = json_lib.loads(quoted)
-                if isinstance(parsed_quote, dict) and "text" in parsed_quote:
-                    quoted = parsed_quote["text"]
-            except (json_lib.JSONDecodeError, TypeError):
-                pass
-            # Truncate quoted text to avoid blowing up context
+            quoted = _plain_message_text(msg_map[reply_to])
             if len(quoted) > 500:
                 quoted = quoted[:497] + "..."
             reply_context = f"[Replying to: {quoted}]\n\n"
@@ -93,21 +116,23 @@ async def chat(request: ChatRequest, user=Depends(get_current_user)):
         stored_content = json_lib.dumps({"text": request.message, "images": request.images}) if request.images else request.message
         save_message(token, user.id, thread_id, "user", stored_content, tenant_id=user.tenant_id, reply_to=request.reply_to)
 
-        history_messages = get_thread_messages(token, thread_id, tenant_id=user.tenant_id)[:-1]
+        thread_messages = get_thread_messages(token, thread_id, tenant_id=user.tenant_id)
+        active_message = build_active_message(request.message, thread_messages, request.reply_to)
+        history_messages = thread_messages[:-1]
         history = build_history(history_messages)
 
         context_chunks = None
         sources = []
         retrieval_log_ids: list[str] = []
         if request.use_documents:
-            retrieval_result = await retrieve_context(token, user.id, request.message, mode=request.retrieval_mode, tenant_id=user.tenant_id, thread_id=thread_id)
+            retrieval_result = await retrieve_context(token, user.id, active_message, mode=request.retrieval_mode, tenant_id=user.tenant_id, thread_id=thread_id)
             context_chunks = retrieval_result["chunks"]
             sources = retrieval_result["sources"]
             retrieval_log_ids = retrieval_result.get("retrieval_log_ids", [])
             logger.info(f"Retrieved {len(context_chunks)} context chunks for user={user.id}")
 
         try:
-            response_text = await generate_chat_response(client, request.message, history, context_chunks, images=request.images)
+            response_text = await generate_chat_response(client, active_message, history, context_chunks, images=request.images)
         except RateLimitError as e:
             retry_hint = _extract_retry_delay(e)
             raise HTTPException(status_code=429, detail=f"Rate limit reached. Please wait {int(retry_hint)} seconds and try again.")
@@ -158,7 +183,9 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
         stored_content = json_lib.dumps({"text": request.message, "images": request.images}) if request.images else request.message
         save_message(token, user.id, thread_id, "user", stored_content, tenant_id=user.tenant_id, reply_to=request.reply_to)
 
-        history_messages = get_thread_messages(token, thread_id, tenant_id=user.tenant_id)[:-1]
+        thread_messages = get_thread_messages(token, thread_id, tenant_id=user.tenant_id)
+        active_message = build_active_message(request.message, thread_messages, request.reply_to)
+        history_messages = thread_messages[:-1]
         history = build_history(history_messages)
 
         async def event_generator():
@@ -171,7 +198,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                 async for event in agent_execute(
                     token=token,
                     user_id=user.id,
-                    message=request.message,
+                    message=active_message,
                     history=history,
                     thread_id=thread_id,
                     use_documents=request.use_documents,
