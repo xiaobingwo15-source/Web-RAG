@@ -95,16 +95,16 @@ export function DocumentUpload({
   return (
     <div className="flex flex-col gap-4">
       {uploadFailure && (
-        <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2">
+        <div className="flex items-start gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-2">
           <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
           <div className="flex-1">
-            <h5 className="text-xs font-bold text-red-400">Upload Failed</h5>
-            <p className="text-xs text-red-200 mt-0.5">
+            <h5 className="text-xs font-bold text-red-700">Upload Failed</h5>
+            <p className="text-xs text-red-600 mt-0.5">
               Failed to process <span className="font-semibold">{uploadFailure.filename}</span>: {uploadFailure.error}
             </p>
           </div>
           {onDismissFailure && (
-            <button onClick={onDismissFailure} className="text-red-400 hover:text-red-200">
+            <button onClick={onDismissFailure} className="text-red-400 hover:text-red-600">
               <XCircle className="h-4 w-4" />
             </button>
           )}
@@ -112,13 +112,13 @@ export function DocumentUpload({
       )}
 
       {duplicateWarning && (
-        <div className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2">
+        <div className="flex items-start gap-2 rounded-md border border-yellow-300 bg-yellow-50 px-3 py-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-500" />
           <div className="flex-1">
-            <p className="text-sm text-yellow-200">{duplicateWarning}</p>
+            <p className="text-sm text-yellow-700">{duplicateWarning}</p>
           </div>
           {onDismissWarning && (
-            <button onClick={onDismissWarning} className="text-yellow-400 hover:text-yellow-200">
+            <button onClick={onDismissWarning} className="text-yellow-400 hover:text-yellow-600">
               <XCircle className="h-4 w-4" />
             </button>
           )}
@@ -126,23 +126,23 @@ export function DocumentUpload({
       )}
 
       {deleteError && (
-        <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2">
+        <div className="flex items-start gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-2">
           <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
           <div className="flex-1">
-            <p className="text-xs text-red-200">{deleteError}</p>
+            <p className="text-xs text-red-600">{deleteError}</p>
           </div>
-          <button onClick={() => setDeleteError(null)} className="text-red-400 hover:text-red-200">
+          <button onClick={() => setDeleteError(null)} className="text-red-400 hover:text-red-600">
             <XCircle className="h-4 w-4" />
           </button>
         </div>
       )}
 
       {loadError && (
-        <div className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2">
+        <div className="flex items-start gap-2 rounded-md border border-red-300 bg-red-50 px-3 py-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
           <div className="flex-1">
-            <h5 className="text-xs font-bold text-red-400">Documents Unavailable</h5>
-            <p className="mt-0.5 text-xs text-red-200">{loadError}</p>
+            <h5 className="text-xs font-bold text-red-700">Documents Unavailable</h5>
+            <p className="mt-0.5 text-xs text-red-600">{loadError}</p>
           </div>
         </div>
       )}

@@ -27,22 +27,27 @@ export function ChatWidgetInput({
   }
 
   return (
-    <div className="flex items-end gap-2 border-t border-border p-3">
+    <div className="flex items-end gap-2 bg-[#F0F2F5] px-3 py-2">
       <textarea
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
         disabled={disabled}
         rows={1}
-        placeholder="Ask about our solutions..."
-        className="flex-1 resize-none rounded-md border border-border bg-input px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+        placeholder="Type a message"
+        className="flex-1 resize-none rounded-lg border-none bg-white px-3 py-2.5 text-[15px] text-[#111B21] placeholder:text-[#8696A0] focus:outline-none disabled:opacity-50 min-h-[42px]"
+        style={{ lineHeight: '1.35' }}
       />
       <button
         onClick={handleSend}
         disabled={disabled || !value.trim()}
-        className="rounded-md bg-primary p-2 text-primary-foreground hover:opacity-90 disabled:opacity-50"
+        className={`p-2.5 rounded-full transition-colors cursor-pointer ${
+          value.trim() && !disabled
+            ? 'text-[#00A884] hover:bg-[#00A884]/10'
+            : 'text-[#54656F]'
+        } disabled:opacity-50`}
       >
-        <Send className="h-4 w-4" />
+        <Send className="h-5 w-5" />
       </button>
     </div>
   )

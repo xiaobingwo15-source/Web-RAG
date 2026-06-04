@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { validateTenantSlug, resolveTenant } from '@/lib/api'
@@ -10,7 +10,8 @@ import {
   ArrowRight,
   ArrowLeft,
   Eye,
-  EyeOff
+  EyeOff,
+  MessageSquare
 } from 'lucide-react'
 
 export function LoginPage() {
@@ -25,8 +26,6 @@ export function LoginPage() {
   const { signIn, signUp } = useAuth()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-
-  const overlayRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     markRouteReady('/login')
@@ -46,7 +45,6 @@ export function LoginPage() {
           setTenantValidating(false)
         })
     } else {
-      // Auto-detect tenant from the current domain
       resolveTenant()
         .then((info) => {
           setTenantInfo(info)
@@ -58,18 +56,6 @@ export function LoginPage() {
         })
     }
   }, [searchParams])
-
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (overlayRef.current && window.innerWidth > 1024) {
-        const x = (e.clientX / window.innerWidth) * 100
-        const y = (e.clientY / window.innerHeight) * 100
-        overlayRef.current.style.background = `radial-gradient(circle at ${x}% ${y}%, rgba(159, 202, 255, 0.05) 0%, rgba(18, 20, 23, 0.8) 70%)`
-      }
-    }
-    window.addEventListener('mousemove', handleMouseMove)
-    return () => window.removeEventListener('mousemove', handleMouseMove)
-  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -100,80 +86,52 @@ export function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background text-on-surface flex flex-col font-sans selection:bg-primary selection:text-on-primary relative overflow-hidden">
-      
+    <div className="min-h-screen bg-background text-foreground flex flex-col font-sans">
       {/* Top Navbar */}
-      <header className="fixed top-0 left-0 right-0 z-50 bg-surface border-b border-outline-variant">
+      <header className="w-full">
         <div className="flex justify-between items-center w-full px-6 md:px-12 h-16 max-w-[1440px] mx-auto">
-          <Link to="/" className="text-lg md:text-xl font-bold text-primary hover:opacity-90 active:scale-95 transition-all">
-            IE Industrial Electronics
+          <Link to="/" className="flex items-center gap-2 text-lg font-semibold text-primary hover:opacity-90 transition-opacity">
+            <MessageSquare className="h-5 w-5" />
+            <span>Web RAG</span>
           </Link>
-          
-          <Link to="/" className="flex items-center gap-1.5 text-xs font-semibold text-on-surface-variant hover:text-primary transition-all uppercase tracking-wider group">
+
+          <Link to="/" className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors group">
             <ArrowLeft className="h-3.5 w-3.5 group-hover:-translate-x-0.5 transition-transform" />
-            <span>Back to main site</span>
+            <span>Back to home</span>
           </Link>
         </div>
       </header>
 
-      {/* Main Canvas with Custom Dot Grid */}
-      <main className="flex-grow flex items-center justify-center pt-16 pb-12 relative min-h-[calc(100vh-160px)] z-10 px-4">
-        
-        {/* Background Overlay Asset */}
-        <div className="absolute inset-0 z-0 pointer-events-none">
-          <img 
-            alt="Industrial tech interface" 
-            className="w-full h-full object-cover opacity-35 mix-blend-luminosity" 
-            src="https://lh3.googleusercontent.com/aida-public/AB6AXuBrHAIVRDtYn55yX6zB2cGOMhD8j9xQlcwQmeJWuO1QMmEp8TQqKP0sqdWVkifmOWRmUGKbx_J4RF8TrGBslBaDPQvw6MwTcOsVeJIBtIFrJYaAbMpOly-5JHIHjECPHy1vJUgDICnityOXihi9-GFPJAGBO-CxfalvZKSEnH_bM4A19FR4VE71rIECCT7mZVMavmmr-Mkp4Ycm5z0D1BnE2KFXulqw0hpK1ANHFMj2_IWgxA5SGcLL7IiVNpcsZSEm14FCBVsISzka"
-          />
-          {/* Radial mouse-glow tracking backdrop */}
-          <div 
-            ref={overlayRef}
-            className="absolute inset-0 transition-all duration-300 pointer-events-none"
-            style={{
-              background: 'linear-gradient(180deg, rgba(18, 20, 23, 0.4) 0%, rgba(18, 20, 23, 0.8) 100%)'
-            }}
-          />
-        </div>
-
-        {/* Dynamic Card Container */}
-        <div className="relative z-10 w-full max-w-[440px] animate-in fade-in slide-in-from-bottom-4 duration-700">
-          
-          {/* Main Card */}
-          <div className="bg-surface-container-low border border-outline-variant p-8 shadow-2xl relative backdrop-blur-sm">
-            
-            {/* Top Indicator Strip (Signup only) */}
-            {isSignUp && <div className="absolute -top-px left-0 right-0 h-0.5 bg-primary"></div>}
-
-            {/* Decorative Industrial Corner Accents */}
-            <div className="absolute top-0 left-0 w-2 h-2 border-t-2 border-l-2 border-primary"></div>
-            <div className="absolute top-0 right-0 w-2 h-2 border-t-2 border-r-2 border-primary"></div>
-            <div className="absolute bottom-0 left-0 w-2 h-2 border-b-2 border-l-2 border-primary"></div>
-            <div className="absolute bottom-0 right-0 w-2 h-2 border-b-2 border-r-2 border-primary"></div>
-
-            {/* Card Header */}
-            <div className="mb-6">
-              <h1 className="text-2xl font-bold tracking-tight text-on-surface mb-1">
-                {isSignUp ? 'Create Portal Account' : 'Portal Access'}
+      {/* Main Content */}
+      <main className="flex-grow flex items-center justify-center px-4 py-12">
+        <div className="w-full max-w-md">
+          {/* Card */}
+          <div className="bg-surface rounded-2xl shadow-lg border border-border p-8">
+            {/* Header */}
+            <div className="text-center mb-8">
+              <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-primary/10 mb-4">
+                <MessageSquare className="h-7 w-7 text-primary" />
+              </div>
+              <h1 className="text-2xl font-bold text-foreground mb-1">
+                {isSignUp ? 'Create your account' : 'Welcome back'}
               </h1>
-              <p className="text-sm text-on-surface-variant">
-                {isSignUp 
-                  ? 'Initialize your secure portal access credentials.' 
-                  : 'Sign in to access your secure workspace.'}
+              <p className="text-sm text-muted-foreground">
+                {isSignUp
+                  ? 'Sign up to get started with your workspace.'
+                  : 'Sign in to continue to your workspace.'}
               </p>
             </div>
 
             {/* Form */}
-            <form onSubmit={handleSubmit} className="space-y-6" aria-disabled={tenantValidating}>
-              
+            <form onSubmit={handleSubmit} className="space-y-5" aria-disabled={tenantValidating}>
               {/* Email Field */}
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-on-surface-variant uppercase tracking-wider block" htmlFor="email">
-                  Email Address
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-foreground block" htmlFor="email">
+                  Email
                 </label>
                 <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                    <Mail className="h-4.5 w-4.5 text-outline" />
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                    <Mail className="h-4 w-4 text-muted-foreground" />
                   </div>
                   <input
                     id="email"
@@ -181,27 +139,27 @@ export function LoginPage() {
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     required
-                    className="w-full bg-surface-container-lowest border border-outline-variant text-on-surface text-sm rounded-none py-3 pl-11 pr-4 outline-none focus:border-primary transition-all duration-200"
-                    placeholder="name@example.com"
+                    className="w-full bg-surface border border-border text-foreground text-sm rounded-lg py-2.5 pl-10 pr-4 outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+                    placeholder="you@example.com"
                   />
                 </div>
               </div>
 
               {/* Password Field */}
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 <div className="flex justify-between items-center">
-                  <label className="text-xs font-bold text-on-surface-variant uppercase tracking-wider block" htmlFor="password">
+                  <label className="text-sm font-medium text-foreground block" htmlFor="password">
                     Password
                   </label>
                   {!isSignUp && (
                     <Link to="/forgot-password" className="text-xs text-primary hover:underline transition-all">
-                      Forgot?
+                      Forgot password?
                     </Link>
                   )}
                 </div>
                 <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                    <Lock className="h-4.5 w-4.5 text-outline" />
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                    <Lock className="h-4 w-4 text-muted-foreground" />
                   </div>
                   <input
                     id="password"
@@ -210,18 +168,18 @@ export function LoginPage() {
                     onChange={(e) => setPassword(e.target.value)}
                     required
                     minLength={6}
-                    className="w-full bg-surface-container-lowest border border-outline-variant text-on-surface text-sm rounded-none py-3 pl-11 pr-11 outline-none focus:border-primary transition-all duration-200"
-                    placeholder="••••••••"
+                    className="w-full bg-surface border border-border text-foreground text-sm rounded-lg py-2.5 pl-10 pr-10 outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+                    placeholder="Enter your password"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute inset-y-0 right-0 pr-3 flex items-center cursor-pointer focus:outline-none"
+                    className="absolute inset-y-0 right-0 pr-3.5 flex items-center cursor-pointer focus:outline-none"
                   >
                     {showPassword ? (
-                      <EyeOff className="h-4.5 w-4.5 text-white hover:opacity-80 transition-opacity" />
+                      <EyeOff className="h-4 w-4 text-muted-foreground hover:text-foreground transition-colors" />
                     ) : (
-                      <Eye className="h-4.5 w-4.5 text-white hover:opacity-80 transition-opacity" />
+                      <Eye className="h-4 w-4 text-muted-foreground hover:text-foreground transition-colors" />
                     )}
                   </button>
                 </div>
@@ -229,74 +187,68 @@ export function LoginPage() {
 
               {/* Error Message */}
               {error && (
-                <div className="p-3 bg-error-container/20 border border-error/30 text-error text-xs">
+                <div className="p-3 bg-destructive/10 border border-destructive/30 text-destructive text-sm rounded-lg">
                   {error}
                 </div>
               )}
 
-              {/* Action Buttons */}
-              <div className="pt-2 space-y-4">
-                <button
-                  type="submit"
-                  disabled={loading || tenantValidating}
-                  className="group w-full bg-primary-container text-on-primary-container font-bold text-xs py-3.5 flex justify-center items-center gap-2 hover:bg-opacity-90 transition-all active:scale-[0.98] uppercase tracking-widest cursor-pointer disabled:opacity-50"
-                >
-                  {loading ? (
-                    'Authorizing...'
-                  ) : tenantValidating ? (
-                    'Validating...'
-                  ) : (
-                    <>
-                      <span>{isSignUp ? 'Create Account' : 'Sign In'}</span>
-                      <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
-                    </>
-                  )}
-                </button>
+              {/* Submit Button */}
+              <button
+                type="submit"
+                disabled={loading || tenantValidating}
+                className="group w-full bg-primary text-primary-foreground font-semibold text-sm py-2.5 rounded-lg flex justify-center items-center gap-2 hover:opacity-90 transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
+              >
+                {loading ? (
+                  'Signing in...'
+                ) : tenantValidating ? (
+                  'Validating...'
+                ) : (
+                  <>
+                    <span>{isSignUp ? 'Create account' : 'Sign in'}</span>
+                    <ArrowRight className="h-4 w-4 group-hover:translate-x-0.5 transition-transform" />
+                  </>
+                )}
+              </button>
 
-                {/* Switch link */}
-                <div className="text-center">
-                  {isSignUp ? (
+              {/* Switch link */}
+              <div className="text-center pt-1">
+                {isSignUp ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSignUp(false)
+                      setError('')
+                    }}
+                    className="text-sm text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    <ArrowLeft className="h-3.5 w-3.5" />
+                    <span>Back to sign in</span>
+                  </button>
+                ) : tenantInfo ? (
+                  <p className="text-sm text-muted-foreground">
+                    Need access?{' '}
                     <button
                       type="button"
                       onClick={() => {
-                        setIsSignUp(false)
+                        setIsSignUp(true)
                         setError('')
                       }}
-                      className="text-on-surface-variant font-medium hover:text-primary transition-colors text-xs flex items-center justify-center gap-1 group mx-auto cursor-pointer"
+                      className="text-primary font-medium hover:underline transition-all cursor-pointer"
                     >
-                      <ArrowLeft className="h-3.5 w-3.5 group-hover:-translate-x-0.5 transition-transform" />
-                      <span>Back to Sign In</span>
+                      Create an account
                     </button>
-                  ) : tenantInfo ? (
-                    <p className="text-xs text-on-surface-variant">
-                      Need access?{' '}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsSignUp(true)
-                          setError('')
-                        }}
-                        className="text-secondary font-bold hover:underline transition-all cursor-pointer"
-                      >
-                        Create an account
-                      </button>
-                    </p>
-                  ) : null}
-                </div>
+                  </p>
+                ) : null}
               </div>
             </form>
           </div>
+
+          {/* Footer */}
+          <p className="text-center text-xs text-muted-foreground mt-8">
+            &copy; 2026 Web RAG. All rights reserved.
+          </p>
         </div>
       </main>
-
-      {/* Global Page Footer */}
-      <footer className="w-full mt-auto bg-surface-container border-t border-outline-variant z-10">
-        <div className="flex justify-center items-center w-full px-6 py-6 max-w-[1440px] mx-auto">
-          <span className="text-xs text-on-surface-variant">
-            © 2026 IE Industrial Electronics. All rights reserved.
-          </span>
-        </div>
-      </footer>
     </div>
   )
 }

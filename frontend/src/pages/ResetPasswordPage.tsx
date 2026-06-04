@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
-import { Lock, ArrowLeft, ArrowRight } from 'lucide-react'
+import { Lock, ArrowLeft, ArrowRight, CheckCircle, MessageSquare } from 'lucide-react'
 
 export function ResetPasswordPage() {
   const [password, setPassword] = useState('')
@@ -11,20 +11,6 @@ export function ResetPasswordPage() {
   const [success, setSuccess] = useState(false)
   const { updatePassword } = useAuth()
   const navigate = useNavigate()
-
-  const overlayRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (overlayRef.current && window.innerWidth > 1024) {
-        const x = (e.clientX / window.innerWidth) * 100
-        const y = (e.clientY / window.innerHeight) * 100
-        overlayRef.current.style.background = `radial-gradient(circle at ${x}% ${y}%, rgba(159, 202, 255, 0.05) 0%, rgba(18, 20, 23, 0.8) 70%)`
-      }
-    }
-    window.addEventListener('mousemove', handleMouseMove)
-    return () => window.removeEventListener('mousemove', handleMouseMove)
-  }, [])
 
   useEffect(() => {
     if (success) {
@@ -59,89 +45,62 @@ export function ResetPasswordPage() {
   }
 
   return (
-    <div className="min-h-screen bg-background text-on-surface flex flex-col font-sans selection:bg-primary selection:text-on-primary relative overflow-hidden">
-
+    <div className="min-h-screen bg-background text-foreground flex flex-col font-sans">
       {/* Top Navbar */}
-      <header className="fixed top-0 left-0 right-0 z-50 bg-surface border-b border-outline-variant">
+      <header className="w-full">
         <div className="flex justify-between items-center w-full px-6 md:px-12 h-16 max-w-[1440px] mx-auto">
-          <Link to="/" className="text-lg md:text-xl font-bold text-primary hover:opacity-90 active:scale-95 transition-all">
-            IE Industrial Electronics
+          <Link to="/" className="flex items-center gap-2 text-lg font-semibold text-primary hover:opacity-90 transition-opacity">
+            <MessageSquare className="h-5 w-5" />
+            <span>Web RAG</span>
           </Link>
-
-          <Link to="/login" className="flex items-center gap-1.5 text-xs font-semibold text-on-surface-variant hover:text-primary transition-all uppercase tracking-wider group">
+          <Link to="/login" className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors group">
             <ArrowLeft className="h-3.5 w-3.5 group-hover:-translate-x-0.5 transition-transform" />
-            <span>Back to Sign In</span>
+            <span>Back to sign in</span>
           </Link>
         </div>
       </header>
 
-      {/* Main Canvas */}
-      <main className="flex-grow flex items-center justify-center pt-16 pb-12 relative min-h-[calc(100vh-160px)] z-10 px-4">
-
-        {/* Background Overlay */}
-        <div className="absolute inset-0 z-0 pointer-events-none">
-          <div
-            ref={overlayRef}
-            className="absolute inset-0 transition-all duration-300 pointer-events-none"
-            style={{
-              background: 'linear-gradient(180deg, rgba(18, 20, 23, 0.4) 0%, rgba(18, 20, 23, 0.8) 100%)'
-            }}
-          />
-        </div>
-
-        {/* Card Container */}
-        <div className="relative z-10 w-full max-w-[440px] animate-in fade-in slide-in-from-bottom-4 duration-700">
-
-          <div className="bg-surface-container-low border border-outline-variant p-8 shadow-2xl relative backdrop-blur-sm">
-
-            {/* Decorative Corner Accents */}
-            <div className="absolute top-0 left-0 w-2 h-2 border-t-2 border-l-2 border-primary"></div>
-            <div className="absolute top-0 right-0 w-2 h-2 border-t-2 border-r-2 border-primary"></div>
-            <div className="absolute bottom-0 left-0 w-2 h-2 border-b-2 border-l-2 border-primary"></div>
-            <div className="absolute bottom-0 right-0 w-2 h-2 border-b-2 border-r-2 border-primary"></div>
-
+      {/* Main Content */}
+      <main className="flex-grow flex items-center justify-center px-4 py-12">
+        <div className="w-full max-w-md">
+          <div className="bg-surface rounded-2xl shadow-lg border border-border p-8">
             {success ? (
               <>
-                <div className="mb-6">
-                  <h1 className="text-2xl font-bold tracking-tight text-on-surface mb-1">
-                    Password Updated
-                  </h1>
-                  <p className="text-sm text-on-surface-variant">
+                <div className="text-center mb-6">
+                  <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-primary/10 mb-4">
+                    <CheckCircle className="h-7 w-7 text-primary" />
+                  </div>
+                  <h1 className="text-2xl font-bold text-foreground mb-1">Password updated</h1>
+                  <p className="text-sm text-muted-foreground">
                     Your password has been reset successfully. Redirecting to sign in...
                   </p>
                 </div>
-
-                <div className="pt-2">
-                  <Link
-                    to="/login"
-                    className="group w-full bg-primary-container text-on-primary-container font-bold text-xs py-3.5 flex justify-center items-center gap-2 hover:bg-opacity-90 transition-all active:scale-[0.98] uppercase tracking-widest"
-                  >
-                    <ArrowLeft className="h-4 w-4 group-hover:-translate-x-1 transition-transform" />
-                    <span>Sign In Now</span>
-                  </Link>
-                </div>
+                <Link
+                  to="/login"
+                  className="group w-full bg-primary text-primary-foreground font-semibold text-sm py-2.5 rounded-lg flex justify-center items-center gap-2 hover:opacity-90 transition-all active:scale-[0.98]"
+                >
+                  <ArrowLeft className="h-4 w-4 group-hover:-translate-x-0.5 transition-transform" />
+                  <span>Sign in now</span>
+                </Link>
               </>
             ) : (
               <>
-                <div className="mb-6">
-                  <h1 className="text-2xl font-bold tracking-tight text-on-surface mb-1">
-                    Set New Password
-                  </h1>
-                  <p className="text-sm text-on-surface-variant">
+                <div className="text-center mb-8">
+                  <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-primary/10 mb-4">
+                    <MessageSquare className="h-7 w-7 text-primary" />
+                  </div>
+                  <h1 className="text-2xl font-bold text-foreground mb-1">Set new password</h1>
+                  <p className="text-sm text-muted-foreground">
                     Choose a strong password for your account.
                   </p>
                 </div>
 
-                <form onSubmit={handleSubmit} className="space-y-6">
-
-                  {/* New Password Field */}
-                  <div className="space-y-2">
-                    <label className="text-xs font-bold text-on-surface-variant uppercase tracking-wider block" htmlFor="password">
-                      New Password
-                    </label>
+                <form onSubmit={handleSubmit} className="space-y-5">
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-medium text-foreground block" htmlFor="password">New password</label>
                     <div className="relative">
-                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <Lock className="h-4.5 w-4.5 text-outline" />
+                      <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                        <Lock className="h-4 w-4 text-muted-foreground" />
                       </div>
                       <input
                         id="password"
@@ -150,20 +109,17 @@ export function ResetPasswordPage() {
                         onChange={(e) => setPassword(e.target.value)}
                         required
                         minLength={6}
-                        className="w-full bg-surface-container-lowest border border-outline-variant text-on-surface text-sm rounded-none py-3 pl-11 pr-4 outline-none focus:border-primary transition-all duration-200"
-                        placeholder="••••••••"
+                        className="w-full bg-surface border border-border text-foreground text-sm rounded-lg py-2.5 pl-10 pr-4 outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+                        placeholder="Enter new password"
                       />
                     </div>
                   </div>
 
-                  {/* Confirm Password Field */}
-                  <div className="space-y-2">
-                    <label className="text-xs font-bold text-on-surface-variant uppercase tracking-wider block" htmlFor="confirm-password">
-                      Confirm Password
-                    </label>
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-medium text-foreground block" htmlFor="confirm-password">Confirm password</label>
                     <div className="relative">
-                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <Lock className="h-4.5 w-4.5 text-outline" />
+                      <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                        <Lock className="h-4 w-4 text-muted-foreground" />
                       </div>
                       <input
                         id="confirm-password"
@@ -172,61 +128,49 @@ export function ResetPasswordPage() {
                         onChange={(e) => setConfirmPassword(e.target.value)}
                         required
                         minLength={6}
-                        className="w-full bg-surface-container-lowest border border-outline-variant text-on-surface text-sm rounded-none py-3 pl-11 pr-4 outline-none focus:border-primary transition-all duration-200"
-                        placeholder="••••••••"
+                        className="w-full bg-surface border border-border text-foreground text-sm rounded-lg py-2.5 pl-10 pr-4 outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
+                        placeholder="Confirm new password"
                       />
                     </div>
                   </div>
 
-                  {/* Error Message */}
                   {error && (
-                    <div className="p-3 bg-error-container/20 border border-error/30 text-error text-xs">
+                    <div className="p-3 bg-destructive/10 border border-destructive/30 text-destructive text-sm rounded-lg">
                       {error}
                     </div>
                   )}
 
-                  {/* Action Buttons */}
-                  <div className="pt-2 space-y-4">
-                    <button
-                      type="submit"
-                      disabled={loading}
-                      className="group w-full bg-primary-container text-on-primary-container font-bold text-xs py-3.5 flex justify-center items-center gap-2 hover:bg-opacity-90 transition-all active:scale-[0.98] uppercase tracking-widest cursor-pointer disabled:opacity-50"
-                    >
-                      {loading ? (
-                        'Updating...'
-                      ) : (
-                        <>
-                          <span>Update Password</span>
-                          <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
-                        </>
-                      )}
-                    </button>
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="group w-full bg-primary text-primary-foreground font-semibold text-sm py-2.5 rounded-lg flex justify-center items-center gap-2 hover:opacity-90 transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
+                  >
+                    {loading ? (
+                      'Updating...'
+                    ) : (
+                      <>
+                        <span>Update password</span>
+                        <ArrowRight className="h-4 w-4 group-hover:translate-x-0.5 transition-transform" />
+                      </>
+                    )}
+                  </button>
 
-                    <div className="text-center">
-                      <Link
-                        to="/login"
-                        className="text-on-surface-variant font-medium hover:text-primary transition-colors text-xs flex items-center justify-center gap-1 group mx-auto"
-                      >
-                        <ArrowLeft className="h-3.5 w-3.5 group-hover:-translate-x-0.5 transition-transform" />
-                        <span>Back to Sign In</span>
-                      </Link>
-                    </div>
+                  <div className="text-center">
+                    <Link to="/login" className="text-sm text-muted-foreground hover:text-foreground transition-colors inline-flex items-center gap-1">
+                      <ArrowLeft className="h-3.5 w-3.5" />
+                      <span>Back to sign in</span>
+                    </Link>
                   </div>
                 </form>
               </>
             )}
           </div>
+
+          <p className="text-center text-xs text-muted-foreground mt-8">
+            &copy; 2026 Web RAG. All rights reserved.
+          </p>
         </div>
       </main>
-
-      {/* Footer */}
-      <footer className="w-full mt-auto bg-surface-container border-t border-outline-variant z-10">
-        <div className="flex justify-center items-center w-full px-6 py-6 max-w-[1440px] mx-auto">
-          <span className="text-xs text-on-surface-variant">
-            &copy; 2026 IE Industrial Electronics. All rights reserved.
-          </span>
-        </div>
-      </footer>
     </div>
   )
 }

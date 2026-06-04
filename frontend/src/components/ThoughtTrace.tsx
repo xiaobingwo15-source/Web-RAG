@@ -56,7 +56,7 @@ export function ThoughtTrace({ thoughts, actions }: ThoughtTraceProps) {
   return (
     <div className="mb-4 space-y-3 font-sans select-none max-w-full">
       {/* 1. Checklist Timeline Panel */}
-      <div className="rounded-xl bg-muted/20 border border-border/40 p-3.5 space-y-2.5 select-text font-sans shadow-sm">
+      <div className="rounded-lg bg-white border border-[#E9EDEF] p-3 space-y-2 select-text font-sans shadow-sm">
         {useStructured ? (
           checklistSteps.map((action, idx) => {
             const isCompleted = action.status === 'completed'

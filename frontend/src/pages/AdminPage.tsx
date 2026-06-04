@@ -495,37 +495,42 @@ export function AdminPage() {
 
   return (
     <div className="flex h-screen bg-background">
-      {/* ── Left sidebar: Admin Controls & Knowledge Base ── */}
-      <aside className="flex w-80 flex-col border-r border-border bg-card">
-        <div className="flex items-center gap-2 border-b border-border px-4 py-3 bg-muted/10">
-          <Shield className="h-5 w-5 text-primary" />
-          <h2 className="text-sm font-bold text-foreground">Admin Workspace</h2>
+      {/* ── Left sidebar: WhatsApp-style admin controls ── */}
+      <aside className="flex w-80 lg:w-96 flex-col border-r border-border bg-surface shrink-0">
+        {/* Sidebar header — WhatsApp teal */}
+        <div className="flex items-center justify-between px-4 py-3 bg-primary text-primary-foreground">
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 rounded-full bg-white/20 flex items-center justify-center">
+              <Shield className="h-5 w-5 text-white" />
+            </div>
+            <span className="text-sm font-medium">Admin</span>
+          </div>
         </div>
 
-        {/* Workspace Tab Selector */}
-        <div className="flex border-b border-border bg-muted/5 p-1.5 gap-1.5">
+        {/* Tab Selector */}
+        <div className="flex border-b border-border bg-surface p-1.5 gap-1">
           <button
             onClick={() => switchTab('conversations')}
-            className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold transition-all ${
+            className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium transition-all cursor-pointer ${
               activeTab === 'conversations'
-                ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                ? 'bg-primary/10 text-primary'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
             }`}
           >
             <Users className="h-3.5 w-3.5" />
             Chats
             {flaggedCount > 0 && (
-              <span className="ml-1 flex h-4 w-4 items-center justify-center rounded-full bg-destructive text-[9px] font-bold text-destructive-foreground">
+              <span className="ml-1 flex h-4 w-4 items-center justify-center rounded-full bg-[#25D366] text-[9px] font-bold text-white">
                 {flaggedCount > 9 ? '9+' : flaggedCount}
               </span>
             )}
           </button>
           <button
             onClick={() => switchTab('users')}
-            className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold transition-all ${
+            className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium transition-all cursor-pointer ${
               activeTab === 'users'
-                ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                ? 'bg-primary/10 text-primary'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
             }`}
           >
             <Users className="h-3.5 w-3.5" />
@@ -533,10 +538,10 @@ export function AdminPage() {
           </button>
           <button
             onClick={() => switchTab('settings')}
-            className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold transition-all ${
+            className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium transition-all cursor-pointer ${
               activeTab === 'settings'
-                ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                ? 'bg-primary/10 text-primary'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
             }`}
           >
             <Settings className="h-3.5 w-3.5" />
@@ -544,10 +549,10 @@ export function AdminPage() {
           </button>
           <button
             onClick={() => switchTab('evals')}
-            className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-semibold transition-all ${
+            className={`flex-1 flex items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium transition-all cursor-pointer ${
               activeTab === 'evals'
-                ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+                ? 'bg-primary/10 text-primary'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted'
             }`}
           >
             <ClipboardCheck className="h-3.5 w-3.5" />
@@ -555,45 +560,57 @@ export function AdminPage() {
           </button>
         </div>
 
-
-
-        {/* Shared Knowledge Base documents section */}
-        <div className="flex items-center gap-2 border-b border-border px-4 py-2.5 bg-muted/5">
-          <Database className="h-4 w-4 text-primary" />
-          <h3 className="text-xs font-bold text-foreground">Shared Knowledge Base</h3>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-4">
-          <DocumentUpload
-            documents={documents}
-            isUploading={isUploading}
-            onUpload={uploadDocument}
-            onDelete={deleteDocument}
-            duplicateWarning={duplicateWarning}
-            onDismissWarning={clearDuplicateWarning}
-            uploadFailure={uploadFailure}
-            onDismissFailure={clearUploadFailure}
-            loadError={loadError}
-            token={session?.access_token}
-          />
-        </div>
-
-        {/* User info */}
-        <div className="border-t border-border p-4 bg-muted/40">
-          <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/20 ring-2 ring-primary/30">
-              <Shield className="h-4 w-4 text-primary" />
+        {/* Collapsible Knowledge Base */}
+        <div className="border-b border-border">
+          <button
+            onClick={() => {
+              const el = document.getElementById('kb-section')
+              if (el) el.classList.toggle('hidden')
+            }}
+            className="flex items-center justify-between w-full px-4 py-3 text-sm font-medium text-foreground hover:bg-[#F5F6F6] transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-2">
+              <Database className="h-4 w-4 text-primary" />
+              <span>Knowledge Base</span>
             </div>
-            <div className="flex-1 truncate">
-              <p className="truncate text-xs font-semibold text-primary">Admin</p>
-              <p className="truncate text-[10px] text-muted-foreground">
-                {user?.email ?? 'Unknown'}
-              </p>
+            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+          </button>
+          <div id="kb-section" className="hidden">
+            <div className="px-4 pb-4 max-h-64 overflow-y-auto">
+              <DocumentUpload
+                documents={documents}
+                isUploading={isUploading}
+                onUpload={uploadDocument}
+                onDelete={deleteDocument}
+                duplicateWarning={duplicateWarning}
+                onDismissWarning={clearDuplicateWarning}
+                uploadFailure={uploadFailure}
+                onDismissFailure={clearUploadFailure}
+                loadError={loadError}
+                token={session?.access_token}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex-1" />
+
+        {/* User footer */}
+        <div className="mt-auto border-t border-border px-4 py-3 bg-surface">
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center">
+              <span className="text-sm font-semibold text-primary">
+                {user?.email?.[0].toUpperCase() ?? 'A'}
+              </span>
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-foreground truncate">{user?.email ?? 'Admin'}</p>
+              <p className="text-xs text-muted-foreground">Administrator</p>
             </div>
             <button
               onClick={handleLogout}
-              className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-              title="Logout"
+              className="p-2 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground transition-colors cursor-pointer"
+              title="Sign out"
             >
               <LogOut className="h-4 w-4" />
             </button>
@@ -601,18 +618,18 @@ export function AdminPage() {
         </div>
       </aside>
 
-      {/* ── Right Panel: Toggle between Chats and Users ── */}
+      {/* ── Right Panel: Content area ── */}
       {activeTab === 'conversations' ? (
         <main className="flex flex-1 flex-col overflow-hidden">
-          {/* Top bar */}
-          <div className="flex items-center justify-between border-b border-border px-6 py-3 bg-card/50">
+          {/* Top bar — WhatsApp header style */}
+          <div className="flex items-center justify-between border-b border-border px-6 py-2.5 bg-surface">
             <div className="flex items-center gap-3">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+              <div className="h-9 w-9 rounded-full bg-primary/10 flex items-center justify-center">
                 <Users className="h-4 w-4 text-primary" />
               </div>
               <div>
-                <h1 className="text-sm font-semibold text-foreground">Client Conversation Records</h1>
-                <p className="text-[10px] text-muted-foreground">
+                <h1 className="text-sm font-medium text-foreground">Client Conversations</h1>
+                <p className="text-xs text-muted-foreground">
                   {clients.length} client{clients.length !== 1 ? 's' : ''} · {totalThreads} thread{totalThreads !== 1 ? 's' : ''} · {totalMessages} message{totalMessages !== 1 ? 's' : ''}
                 </p>
               </div>
