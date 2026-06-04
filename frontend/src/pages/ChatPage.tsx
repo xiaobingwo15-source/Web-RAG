@@ -10,15 +10,12 @@ import { ChatSidebar } from '@/components/ChatSidebar'
 import { ChatMessage } from '@/components/ChatMessage'
 import { ChatInput } from '@/components/ChatInput'
 import { ChatThreadList } from '@/components/ChatThreadList'
-import { ChatHistoryPanel } from '@/components/ChatHistoryPanel'
 import { markInteraction, markRouteReady } from '@/lib/performance'
 import {
   MessageSquare,
   LogOut,
   Clock,
   AlertTriangle,
-  PanelRightOpen,
-  PanelRightClose,
   Download,
   Copy,
   FileText
@@ -40,7 +37,6 @@ export function ChatPage() {
   const { user, session, role, status, signOut } = useAuth()
   const navigate = useNavigate()
   const admin = isAdmin(role || user?.email)
-  const [showPanel, setShowPanel] = useState(true)
   const [feedbackMap, setFeedbackMap] = useState<Record<string, 1 | -1>>({})
   const [replyTo, setReplyTo] = useState<{ id: string; content: string } | null>(null)
   const [showExportMenu, setShowExportMenu] = useState(false)
@@ -315,14 +311,6 @@ export function ChatPage() {
                 </div>
               )}
             </div>
-            {/* History panel toggle */}
-            <button
-              onClick={() => setShowPanel((prev) => !prev)}
-              className="p-2 rounded-full hover:bg-white/10 transition-colors cursor-pointer"
-              title={showPanel ? 'Hide history' : 'Show history'}
-            >
-              {showPanel ? <PanelRightClose className="h-5 w-5" /> : <PanelRightOpen className="h-5 w-5" />}
-            </button>
           </div>
         </div>
 
@@ -374,17 +362,6 @@ export function ChatPage() {
             )}
           </div>
 
-          {/* History Panel */}
-          {showPanel && (
-            <ChatHistoryPanel
-              threads={threads}
-              selectedThreadId={selectedThreadId}
-              onSelectThread={handleSelectThread}
-              onDeleteThread={handleDeleteThread}
-              onNewChat={handleNewChat}
-              messages={messages}
-            />
-          )}
         </div>
 
         {/* Chat Input */}

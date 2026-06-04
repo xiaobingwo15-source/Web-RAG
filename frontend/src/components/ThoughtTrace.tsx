@@ -1,9 +1,6 @@
-import { useState } from 'react'
 import {
   Check,
   X,
-  ChevronDown,
-  ChevronUp,
   Loader2,
   FileText,
   Search,
@@ -12,13 +9,11 @@ import {
 } from 'lucide-react'
 import type { AgentAction } from '@/lib/agent-types'
 
-/** Minimal cleanup — preserve real details, just normalize formatting. */
 function cleanThoughtText(text: string): string {
   if (!text) return ''
   return text.replace(/\.{3,}$/, '...').trim()
 }
 
-/** Get an icon for the action source */
 function sourceIcon(source: string) {
   switch (source) {
     case 'doc_rag':
@@ -37,167 +32,138 @@ interface ThoughtTraceProps {
   actions?: AgentAction[]
 }
 
-export function ThoughtTrace({ thoughts, actions }: ThoughtTraceProps) {
-  const [expanded, setExpanded] = useState(false)
+const NOISY_ACTION_TYPES = new Set(['analyzing', 'routing'])
 
+function isNoisyStatus(text: string, type?: string): boolean {
+  const normalized = cleanThoughtText(text).toLowerCase()
+  return (
+    (type ? NOISY_ACTION_TYPES.has(type) : false) ||
+    normalized.startsWith('analyzing query') ||
+    normalized.startsWith('routing to:')
+  )
+}
+
+function dedupeActions(actions: AgentAction[]): AgentAction[] {
+  return actions.filter((action, idx, self) =>
+    self.findIndex(a => cleanThoughtText(a.content) === cleanThoughtText(action.content)) === idx
+  )
+}
+
+function pickPrimaryAction(actions: AgentAction[]): AgentAction | undefined {
+  const deduped = dedupeActions(actions)
+  const active = [...deduped].reverse().find(action => action.status === 'active')
+  if (active) return active
+
+  return (
+    [...deduped].reverse().find(action => !isNoisyStatus(action.content, action.type)) ||
+    deduped[deduped.length - 1]
+  )
+}
+
+function pickPrimaryThought(thoughts: string[]): string | undefined {
+  return (
+    [...thoughts].reverse().find(thought => !isNoisyStatus(thought)) ||
+    thoughts[thoughts.length - 1]
+  )
+}
+
+function latestEvidenceAction(actions: AgentAction[]): AgentAction | undefined {
+  return [...actions].reverse().find((action) => {
+    const previews = action.data?.content_previews as string[] | undefined
+    const sources = action.data?.sources as { title: string; url: string }[] | undefined
+    return Boolean(action.data?.sql || previews?.length || sources?.length)
+  })
+}
+
+export function ThoughtTrace({ thoughts, actions }: ThoughtTraceProps) {
   const hasActions = actions && actions.length > 0
   const hasThoughts = thoughts && thoughts.length > 0
   if (!hasActions && !hasThoughts) return null
 
-  // Deduplicate checklist steps to keep list clean and precise
-  const checklistSteps = hasActions
-    ? actions.filter((action, idx, self) =>
-        self.findIndex(a => cleanThoughtText(a.content) === cleanThoughtText(action.content)) === idx
-      )
-    : []
+  const primaryAction = hasActions ? pickPrimaryAction(actions!) : undefined
+  const primaryThought = primaryAction ? undefined : pickPrimaryThought(thoughts || [])
+  const evidenceAction = hasActions ? latestEvidenceAction(actions!) : undefined
+  const evidence = evidenceAction || primaryAction
+  const contentPreviews = evidence?.data?.content_previews as string[] | undefined
+  const sql = evidence?.data?.sql as string | undefined
+  const sources = evidence?.data?.sources as { title: string; url: string }[] | undefined
+  const statusText = cleanThoughtText(primaryAction?.content || primaryThought || '')
+  if (!statusText) return null
 
-  const useStructured = hasActions && actions.some(a => !!a.type)
+  const isActive = primaryAction?.status === 'active'
+  const isError =
+    primaryAction?.type === 'no_results' ||
+    statusText.toLowerCase().includes('not found') ||
+    statusText.toLowerCase().includes('error')
 
   return (
-    <div className="mb-4 space-y-3 font-sans select-none max-w-full">
-      {/* 1. Checklist Timeline Panel */}
-      <div className="rounded-lg bg-white border border-[#E9EDEF] p-3 space-y-2 select-text font-sans shadow-sm">
-        {useStructured ? (
-          checklistSteps.map((action, idx) => {
-            const isCompleted = action.status === 'completed'
-            const isError = action.type === 'no_results' || action.content.toLowerCase().includes('not found') || action.content.toLowerCase().includes('error')
-            const isActive = action.status === 'active'
-            const contentPreviews = action.data?.content_previews as string[] | undefined
-
-            return (
-              <div key={action.id || idx} className="animate-in fade-in duration-200">
-                <div className="flex items-start gap-2.5 text-xs text-foreground/80 leading-normal">
-                  {/* Visual Status Circle Indicator */}
-                  {isError ? (
-                    <div className="flex-shrink-0 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-rose-500/10 border border-rose-500/30 text-rose-500 animate-in zoom-in-75 duration-200 mt-0.5">
-                      <X className="h-3 w-3" />
-                    </div>
-                  ) : isCompleted ? (
-                    <div className="flex-shrink-0 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-500 animate-in zoom-in-75 duration-200 mt-0.5">
-                      <Check className="h-3 w-3" />
-                    </div>
-                  ) : (
-                    <div className="flex-shrink-0 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-primary/10 border border-primary/30 text-primary mt-0.5">
-                      {isActive ? (
-                        <Loader2 className="h-3 w-3 animate-spin text-primary" />
-                      ) : (
-                        <div className="h-1.5 w-1.5 rounded-full bg-muted-foreground/45" />
-                      )}
-                    </div>
-                  )}
-
-                  {/* Thought content */}
-                  <div className="flex-1 min-w-0">
-                    <span className={`font-medium ${isActive ? 'text-primary font-semibold' : 'text-foreground/80'}`}>
-                      {cleanThoughtText(action.content)}
-                    </span>
-
-                    {/* Content previews — what the agent actually found */}
-                    {contentPreviews && contentPreviews.length > 0 && (
-                      <div className="mt-1.5 space-y-1">
-                        {contentPreviews.slice(0, 3).map((preview, pi) => (
-                          <div key={pi} className="flex items-start gap-1.5 text-[11px] text-foreground/55 pl-0.5">
-                            <span className="flex-shrink-0 mt-0.5 text-foreground/30">#{pi + 1}</span>
-                            <span className="italic leading-snug">"{preview}"</span>
-                          </div>
-                        ))}
-                        {contentPreviews.length > 3 && (
-                          <div className="text-[11px] text-foreground/40 pl-5">
-                            +{contentPreviews.length - 3} more section{contentPreviews.length - 3 !== 1 ? 's' : ''}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )
-          })
-        ) : (
-          thoughts!.map((thought, i) => (
-            <div key={i} className="flex items-center gap-2.5 text-xs text-foreground/80 leading-normal">
-              <div className="flex-shrink-0 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-500">
-                <Check className="h-3 w-3" />
-              </div>
-              <span className="font-medium">{cleanThoughtText(thought)}</span>
-            </div>
-          ))
-        )}
+    <div className="mb-3 max-w-full rounded-lg border border-[#E9EDEF] bg-white p-3 shadow-sm select-text font-sans">
+      <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-[#667781]">
+        <span>Thought process</span>
       </div>
 
-      {/* 2. Unified Collapsible "Thought process" Card */}
-      <div className="rounded-xl border border-border/40 bg-card p-3 shadow-sm select-none">
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="flex w-full items-center justify-between text-xs font-semibold text-foreground/85 hover:text-foreground transition-colors select-none cursor-pointer"
+      <div className="flex items-start gap-2.5 text-xs leading-normal text-foreground/80">
+        <div
+          className={`mt-0.5 flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border ${
+            isError
+              ? 'border-rose-500/30 bg-rose-500/10 text-rose-500'
+              : isActive
+                ? 'border-primary/30 bg-primary/10 text-primary'
+                : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-500'
+          }`}
         >
-          <span>Thought process</span>
-          {expanded ? (
-            <ChevronUp className="h-4 w-4 text-muted-foreground" />
+          {isError ? (
+            <X className="h-3 w-3" />
+          ) : isActive ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
           ) : (
-            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            <Check className="h-3 w-3" />
           )}
-        </button>
+        </div>
 
-        {expanded && (
-          <div className="mt-3 border-t border-border/40 pt-3 space-y-3 text-xs text-foreground/80 leading-relaxed font-sans select-text">
-            {useStructured ? (
-              actions!.map((action, idx) => {
-                const contentPreviews = action.data?.content_previews as string[] | undefined
-                const sql = action.data?.sql as string | undefined
-                const sources = action.data?.sources as { title: string; url: string }[] | undefined
-
-                return (
-                  <div key={action.id || idx} className="animate-in fade-in duration-200 space-y-1">
-                    <p className="pr-1">
-                      <span className="inline-flex items-center gap-1 mr-1 text-foreground/50">
-                        {sourceIcon(action.source)}
-                      </span>
-                      {cleanThoughtText(action.content)}
-                    </p>
-
-                    {/* Show SQL query if available */}
-                    {sql && (
-                      <pre className="ml-5 mt-1 p-2 rounded bg-muted/30 border border-border/30 text-[11px] font-mono text-foreground/60 overflow-x-auto whitespace-pre-wrap break-all">
-                        {sql}
-                      </pre>
-                    )}
-
-                    {/* Show content previews — what was found */}
-                    {contentPreviews && contentPreviews.length > 0 && (
-                      <div className="ml-5 mt-1.5 space-y-1.5">
-                        {contentPreviews.map((preview, pi) => (
-                          <div key={pi} className="flex items-start gap-1.5 text-[11px] text-foreground/55">
-                            <span className="flex-shrink-0 mt-0.5 text-foreground/30">#{pi + 1}</span>
-                            <span className="italic leading-snug">"{preview}"</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Show web sources */}
-                    {sources && sources.length > 0 && (
-                      <div className="ml-5 mt-1 space-y-0.5">
-                        {sources.slice(0, 5).map((src, si) => (
-                          <div key={si} className="flex items-center gap-1.5 text-[11px] text-foreground/60">
-                            <Globe className="h-3 w-3 flex-shrink-0 text-foreground/40" />
-                            <span className="font-medium text-foreground/70 truncate">{src.title}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )
-              })
-            ) : (
-              thoughts!.map((thought, i) => (
-                <p key={i} className="pr-1">
-                  • {cleanThoughtText(thought)}
-                </p>
-              ))
+        <div className="min-w-0 flex-1">
+          <p className={`font-medium ${isActive ? 'font-semibold text-primary' : 'text-foreground/80'}`}>
+            {primaryAction && (
+              <span className="mr-1 inline-flex align-[-2px] text-foreground/45">
+                {sourceIcon(primaryAction.source)}
+              </span>
             )}
-          </div>
-        )}
+            {statusText}
+          </p>
+
+          {sql && (
+            <pre className="mt-2 rounded border border-border/30 bg-muted/30 p-2 font-mono text-[11px] text-foreground/60 overflow-x-auto whitespace-pre-wrap break-all">
+              {sql}
+            </pre>
+          )}
+
+          {contentPreviews && contentPreviews.length > 0 && (
+            <div className="mt-2 space-y-1.5">
+              {contentPreviews.slice(0, 3).map((preview, idx) => (
+                <div key={idx} className="flex items-start gap-1.5 text-[11px] text-foreground/55">
+                  <span className="mt-0.5 shrink-0 text-foreground/30">#{idx + 1}</span>
+                  <span className="line-clamp-2 italic leading-snug">"{preview}"</span>
+                </div>
+              ))}
+              {contentPreviews.length > 3 && (
+                <div className="pl-5 text-[11px] text-foreground/40">
+                  +{contentPreviews.length - 3} more section{contentPreviews.length - 3 !== 1 ? 's' : ''}
+                </div>
+              )}
+            </div>
+          )}
+
+          {sources && sources.length > 0 && (
+            <div className="mt-2 space-y-0.5">
+              {sources.slice(0, 3).map((src, idx) => (
+                <div key={idx} className="flex items-center gap-1.5 text-[11px] text-foreground/60">
+                  <Globe className="h-3 w-3 shrink-0 text-foreground/40" />
+                  <span className="truncate font-medium text-foreground/70">{src.title}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
