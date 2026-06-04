@@ -31,7 +31,7 @@ def _resolve_target_user_id(token: str, user_id: str, tenant_id: str | None = No
         from app.services.database import get_db, get_tenant_admin_user_id
 
         db = get_db()  # service-role client - bypasses RLS
-        profile = db.table("profiles").select("role").eq("id", user_id).single().execute()
+        profile = db.table("profiles").select("role").eq("id", user_id).maybe_single().execute()
         if profile.data and profile.data.get("role") == "client":
             admin_id = get_tenant_admin_user_id(tenant_id) if tenant_id else None
             if admin_id:
@@ -119,17 +119,19 @@ async def execute(
     enable_sql: bool = True,
     images: list[str] | None = None,
     tenant_id: str | None = None,
+    target_user_id: str | None = None,
 ) -> AsyncGenerator[dict, None]:
     client = get_llm_client()
 
     # Resolve target_user_id for client users - always, even when use_documents=True
     # (frontend may cache use_documents=True from a previous request, but we still
     # need to redirect to the admin's knowledge base for client users)
-    target_user_id = user_id
-    auto_enabled, resolved_id = _resolve_target_user_id(token, user_id, tenant_id)
-    if auto_enabled:
-        target_user_id = resolved_id
-        use_documents = True  # Always use RAG for clients with shared docs
+    effective_target_user_id = target_user_id or user_id
+    if target_user_id is None:
+        auto_enabled, resolved_id = _resolve_target_user_id(token, user_id, tenant_id)
+        if auto_enabled:
+            effective_target_user_id = resolved_id or effective_target_user_id
+            use_documents = True  # Always use RAG for clients with shared docs
 
     yield {
         "type": "thought",
@@ -170,7 +172,7 @@ async def execute(
             async for event in web_search_agent.execute(message, history, images=images):
                 yield event
         elif route == "doc_rag" and use_documents:
-            async for event in doc_rag_agent.execute(token, user_id, message, history, retrieval_mode, target_user_id=target_user_id, images=images, tenant_id=tenant_id, thread_id=thread_id):
+            async for event in doc_rag_agent.execute(token, user_id, message, history, retrieval_mode, target_user_id=effective_target_user_id, images=images, tenant_id=tenant_id, thread_id=thread_id):
                 yield event
         else:
             from app.services.gemini import generate_chat_response_stream

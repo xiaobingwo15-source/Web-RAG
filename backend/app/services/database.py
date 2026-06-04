@@ -1317,6 +1317,36 @@ def save_message_feedback(
         return None
 
 
+def save_widget_feedback(
+    client_session_id: str,
+    thread_id: str,
+    message_id: str,
+    rating: int,
+    comment: str | None = None,
+    tenant_id: str | None = None,
+) -> dict | None:
+    """Save feedback for an anonymous widget message. Uses service-role (bypasses RLS)."""
+    try:
+        db = get_db()
+        row = {
+            "client_session_id": client_session_id,
+            "thread_id": thread_id,
+            "message_id": message_id,
+            "rating": rating,
+            **({"comment": comment} if comment else {}),
+            **({"tenant_id": tenant_id} if tenant_id else {}),
+        }
+        result = (
+            db.table("message_feedback")
+            .upsert(row, on_conflict="client_session_id,thread_id,message_id")
+            .execute()
+        )
+        return result.data[0] if result.data else None
+    except Exception as e:
+        logger.warning("Failed to save widget feedback: %s", e)
+        return None
+
+
 def get_message_feedback(
     user_id: str,
     thread_id: str,

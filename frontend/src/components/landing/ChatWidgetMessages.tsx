@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { ThumbsUp, ThumbsDown } from 'lucide-react'
 import type { AnonymousMessage } from '@/hooks/useAnonymousChat'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -6,9 +7,13 @@ import remarkGfm from 'remark-gfm'
 export function ChatWidgetMessages({
   messages,
   isStreaming,
+  feedbackMap,
+  onFeedback,
 }: {
   messages: AnonymousMessage[]
   isStreaming: boolean
+  feedbackMap?: Record<string, 1 | -1>
+  onFeedback?: (messageId: string, rating: 1 | -1) => void
 }) {
   const endRef = useRef<HTMLDivElement>(null)
 
@@ -55,9 +60,37 @@ export function ChatWidgetMessages({
                 <div className="h-2 w-2 rounded-full bg-[#8696A0] animate-bounce" style={{ animationDelay: '300ms' }} />
               </div>
             )}
-            <span className="block text-right text-[11px] text-[#667781] mt-0.5">
-              {new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
-            </span>
+            <div className="flex items-center justify-between mt-0.5">
+              <span className="text-[11px] text-[#667781]">
+                {new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+              </span>
+              {msg.role === 'assistant' && msg.messageId && onFeedback && (
+                <div className="flex items-center gap-0.5 ml-2">
+                  <button
+                    onClick={() => onFeedback(msg.messageId!, 1)}
+                    className={`rounded p-0.5 transition-colors cursor-pointer ${
+                      feedbackMap?.[msg.messageId] === 1
+                        ? 'text-[#00A884] bg-[#00A884]/10'
+                        : 'text-[#8696A0] hover:text-[#00A884] hover:bg-[#00A884]/5'
+                    }`}
+                    title="Good response"
+                  >
+                    <ThumbsUp className="h-3 w-3" />
+                  </button>
+                  <button
+                    onClick={() => onFeedback(msg.messageId!, -1)}
+                    className={`rounded p-0.5 transition-colors cursor-pointer ${
+                      feedbackMap?.[msg.messageId] === -1
+                        ? 'text-[#EF4444] bg-[#EF4444]/10'
+                        : 'text-[#8696A0] hover:text-[#EF4444] hover:bg-[#EF4444]/5'
+                    }`}
+                    title="Poor response"
+                  >
+                    <ThumbsDown className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       ))}

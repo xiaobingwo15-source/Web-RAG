@@ -67,7 +67,6 @@ async def rerank_with_cohere(
             query=query,
             documents=documents,
             top_n=top_n,
-            return_documents=False,
         )
     except Exception as e:
         logger.warning(f"Cohere rerank failed, using keyword-overlap fallback: {e}")

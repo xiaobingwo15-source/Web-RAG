@@ -228,7 +228,7 @@ async def retrieve_context(
             if not token or not user_id:
                 raise ValueError("anonymous retrieval uses tenant scope")
             db = get_supabase_client_with_token(token)
-            profile = db.table("profiles").select("role").eq("id", user_id).single().execute()
+            profile = db.table("profiles").select("role").eq("id", user_id).maybe_single().execute()
             if profile.data and profile.data.get("role") == "client":
                 admin_id = get_tenant_admin_user_id(tenant_id) if tenant_id else None
                 if admin_id:

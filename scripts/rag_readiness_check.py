@@ -45,6 +45,28 @@ class StreamResult:
     thread_id: str | None
     first_token_ms: int | None
     full_answer_ms: int
+    completed: bool
+
+
+@dataclass
+class CaseResult:
+    channel: str
+    question: str
+    thread_id: str | None
+    first_token_ms: int | None
+    full_answer_ms: int | None
+    source_ids: list[str | None]
+    passed: bool
+    reason: str | None = None
+
+
+FALLBACK_MARKERS = [
+    "no matching content found",
+    "no documents matched",
+    "didn't find relevant documents",
+    "don't have the specific details",
+    "searched the web",
+]
 
 
 def percentile(values: list[int], p: float) -> int | None:
@@ -85,6 +107,8 @@ async def wait_for_document(client: httpx.AsyncClient, token: str, document_id: 
         )
         response.raise_for_status()
         data = response.json()
+        if data.get("status") == "not_found":
+            raise RuntimeError(f"Document {document_id} was not found")
         if data.get("status") == "processed":
             return data
         if data.get("status") == "failed":
@@ -103,6 +127,10 @@ async def check_qdrant(client: httpx.AsyncClient, token: str, document_id: str) 
     data = response.json()
     if int(data.get("chunk_count") or 0) <= 0:
         raise AssertionError(f"Qdrant returned no chunks for document {document_id}")
+    sample_text = "\n".join(str(sample.get("content") or "") for sample in data.get("samples") or [])
+    sample_lower = sample_text.lower()
+    if "web-rag readiness verification fixture" not in sample_lower and "cobalt blue" not in sample_lower:
+        raise AssertionError(f"Qdrant samples did not include readiness fixture text for document {document_id}")
     return data
 
 
@@ -126,6 +154,7 @@ async def stream_chat(
     answer_parts: list[str] = []
     sources: list[dict[str, Any]] = []
     thread_id: str | None = None
+    completed = False
 
     async with client.stream("POST", path, headers=headers, json=payload) as response:
         response.raise_for_status()
@@ -143,6 +172,7 @@ async def stream_chat(
             if event.get("type") == "error":
                 raise RuntimeError(f"Stream error: {event.get('content')}")
             if event.get("done") or event.get("type") == "done":
+                completed = True
                 break
 
     return StreamResult(
@@ -151,17 +181,32 @@ async def stream_chat(
         thread_id=thread_id,
         first_token_ms=first_token_ms,
         full_answer_ms=int((time.perf_counter() - started) * 1000),
+        completed=completed,
     )
 
 
 def assert_answer(result: StreamResult, expected_fact: str, expected_document_id: str | None) -> None:
+    if not result.completed:
+        raise AssertionError("Stream ended without a done event")
+    if not result.answer.strip():
+        raise AssertionError("Stream returned an empty answer")
     answer_lower = result.answer.lower()
+    for marker in FALLBACK_MARKERS:
+        if marker in answer_lower:
+            raise AssertionError(f"Answer contained fallback marker '{marker}'. Answer: {result.answer[:300]}")
     if expected_fact.lower() not in answer_lower:
         raise AssertionError(f"Answer did not include expected fact '{expected_fact}'. Answer: {result.answer[:300]}")
+    document_source_ids = [
+        source.get("document_id")
+        for source in result.sources
+        if source.get("document_id") and source.get("document_id") != "web_search"
+    ]
+    if not document_source_ids:
+        raise AssertionError(f"Expected at least one document source, got {[source.get('document_id') for source in result.sources]}")
     if expected_document_id:
-        source_ids = [source.get("document_id") for source in result.sources[:3]]
+        source_ids = [source.get("document_id") for source in result.sources]
         if expected_document_id not in source_ids:
-            raise AssertionError(f"Expected document {expected_document_id} in top sources, got {source_ids}")
+            raise AssertionError(f"Expected document {expected_document_id} in sources, got {source_ids}")
 
 
 async def create_widget_session(client: httpx.AsyncClient, tenant_slug: str, origin: str) -> str:
@@ -174,13 +219,50 @@ async def create_widget_session(client: httpx.AsyncClient, tenant_slug: str, ori
     return response.json()["token"]
 
 
+async def run_case(
+    client: httpx.AsyncClient,
+    channel: str,
+    path: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    question: str,
+    expected_fact: str,
+    expected_document_id: str | None,
+) -> CaseResult:
+    try:
+        result = await stream_chat(client, path, headers, payload)
+        assert_answer(result, expected_fact, expected_document_id)
+        return CaseResult(
+            channel=channel,
+            question=question,
+            thread_id=result.thread_id,
+            first_token_ms=result.first_token_ms,
+            full_answer_ms=result.full_answer_ms,
+            source_ids=[source.get("document_id") for source in result.sources],
+            passed=True,
+        )
+    except Exception as exc:
+        return CaseResult(
+            channel=channel,
+            question=question,
+            thread_id=None,
+            first_token_ms=None,
+            full_answer_ms=None,
+            source_ids=[],
+            passed=False,
+            reason=str(exc),
+        )
+
+
 async def main() -> int:
     parser = argparse.ArgumentParser(description="Verify Web-RAG retrieval correctness and latency.")
     parser.add_argument("--base-url", default=os.getenv("WEB_RAG_BASE_URL", "http://127.0.0.1:8000"))
     parser.add_argument("--admin-token", default=os.getenv("WEB_RAG_ADMIN_TOKEN"))
+    parser.add_argument("--chat-token", default=os.getenv("WEB_RAG_CHAT_TOKEN"))
     parser.add_argument("--document-id", default=os.getenv("WEB_RAG_DOCUMENT_ID"))
     parser.add_argument("--widget-tenant-slug", default=os.getenv("WEB_RAG_WIDGET_TENANT_SLUG"))
     parser.add_argument("--widget-origin", default=os.getenv("WEB_RAG_WIDGET_ORIGIN", "http://127.0.0.1:4173"))
+    parser.add_argument("--skip-widget", action="store_true", help="Explicitly skip widget chat readiness checks.")
     parser.add_argument("--first-token-ms", type=int, default=int(os.getenv("WEB_RAG_FIRST_TOKEN_MS", "3000")))
     parser.add_argument("--full-answer-ms", type=int, default=int(os.getenv("WEB_RAG_FULL_ANSWER_MS", "15000")))
     args = parser.parse_args()
@@ -188,57 +270,71 @@ async def main() -> int:
     if not args.admin_token:
         print("WEB_RAG_ADMIN_TOKEN or --admin-token is required.", file=sys.stderr)
         return 2
+    if not args.chat_token:
+        print("WEB_RAG_CHAT_TOKEN or --chat-token is required.", file=sys.stderr)
+        return 2
+    if not args.skip_widget and not args.widget_tenant_slug:
+        print("WEB_RAG_WIDGET_TENANT_SLUG or --widget-tenant-slug is required unless --skip-widget is set.", file=sys.stderr)
+        return 2
 
     async with httpx.AsyncClient(base_url=args.base_url, timeout=180) as client:
         document_id = args.document_id or await upload_fixture(client, args.admin_token)
         await wait_for_document(client, args.admin_token, document_id)
         qdrant = await check_qdrant(client, args.admin_token, document_id)
 
-        auth_results: list[StreamResult] = []
+        case_results: list[CaseResult] = []
         for question, expected_fact in QUESTIONS:
-            result = await stream_chat(
-                client,
-                "/api/chat/stream",
-                {"Authorization": f"Bearer {args.admin_token}"},
-                {
-                    "message": question,
-                    "thread_id": None,
-                    "use_documents": True,
-                    "retrieval_mode": "hybrid",
-                    "enable_web_search": False,
-                    "enable_sql": False,
-                },
+            case_results.append(
+                await run_case(
+                    client,
+                    "authenticated",
+                    "/api/chat/stream",
+                    {"Authorization": f"Bearer {args.chat_token}"},
+                    {
+                        "message": question,
+                        "thread_id": None,
+                        "use_documents": True,
+                        "retrieval_mode": "hybrid",
+                        "enable_web_search": False,
+                        "enable_sql": False,
+                    },
+                    question,
+                    expected_fact,
+                    document_id,
+                )
             )
-            assert_answer(result, expected_fact, document_id)
-            auth_results.append(result)
 
-        widget_results: list[StreamResult] = []
-        if args.widget_tenant_slug:
+        if not args.skip_widget:
             widget_token = await create_widget_session(client, args.widget_tenant_slug, args.widget_origin)
             for question, expected_fact in QUESTIONS:
-                result = await stream_chat(
-                    client,
-                    "/api/widget/chat/stream",
-                    {
-                        "Authorization": f"Bearer {widget_token}",
-                        "Origin": args.widget_origin,
-                    },
-                    {"message": question, "thread_id": None},
+                case_results.append(
+                    await run_case(
+                        client,
+                        "widget",
+                        "/api/widget/chat/stream",
+                        {
+                            "Authorization": f"Bearer {widget_token}",
+                            "Origin": args.widget_origin,
+                        },
+                        {"message": question, "thread_id": None},
+                        question,
+                        expected_fact,
+                        document_id,
+                    )
                 )
-                assert_answer(result, expected_fact, document_id)
-                widget_results.append(result)
 
-        all_results = auth_results + widget_results
-        first_token_values = [r.first_token_ms for r in all_results if r.first_token_ms is not None]
-        full_answer_values = [r.full_answer_ms for r in all_results]
+        first_token_values = [r.first_token_ms for r in case_results if r.first_token_ms is not None]
+        full_answer_values = [r.full_answer_ms for r in case_results if r.full_answer_ms is not None]
         first_token_p95 = percentile(first_token_values, 0.95)
         full_answer_p95 = percentile(full_answer_values, 0.95)
+        failed_cases = [case for case in case_results if not case.passed]
 
         summary = {
             "document_id": document_id,
             "qdrant_chunk_count": qdrant.get("chunk_count"),
-            "authenticated_cases": len(auth_results),
-            "widget_cases": len(widget_results),
+            "authenticated_cases": sum(1 for case in case_results if case.channel == "authenticated"),
+            "widget_cases": sum(1 for case in case_results if case.channel == "widget"),
+            "case_results": [case.__dict__ for case in case_results],
             "first_token_ms": {
                 "p50": int(statistics.median(first_token_values)) if first_token_values else None,
                 "p95": first_token_p95,
@@ -250,6 +346,8 @@ async def main() -> int:
         }
         print(json.dumps(summary, indent=2))
 
+        if failed_cases:
+            raise AssertionError(f"{len(failed_cases)} readiness case(s) failed")
         if first_token_p95 is not None and first_token_p95 > args.first_token_ms:
             raise AssertionError(f"First-token p95 {first_token_p95}ms exceeds {args.first_token_ms}ms")
         if full_answer_p95 is not None and full_answer_p95 > args.full_answer_ms:

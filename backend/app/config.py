@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     rate_limit_widget_requests: int = 20
     rate_limit_widget_window: int = 60
 
+    # Free tier: max questions anonymous visitors can ask before sign-up
+    widget_free_tier_limit: int = 5
+
     # Chunking
     chunk_size: int = 800
     chunk_overlap: int = 50
