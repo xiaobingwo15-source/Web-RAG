@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { createWidgetSession, resolveTenant, streamWidgetChat, submitWidgetFeedback, type StreamError } from '@/lib/api'
 
 const FREE_TIER_LIMIT = 5
@@ -18,6 +18,27 @@ export function useAnonymousChat() {
   const threadId = useRef<string | null>(null)
   const sessionRef = useRef<string | null>(null)
   const userMessageCount = useRef(0)
+  const tokenBuffer = useRef('')
+  const rafId = useRef<number | null>(null)
+
+  const flushTokens = useCallback(() => {
+    rafId.current = null
+    const buffered = tokenBuffer.current
+    if (!buffered) return
+    tokenBuffer.current = ''
+    setMessages((prev) => {
+      const updated = [...prev]
+      const last = updated[updated.length - 1]
+      updated[updated.length - 1] = { ...last, content: last.content + buffered }
+      return updated
+    })
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (rafId.current !== null) cancelAnimationFrame(rafId.current)
+    }
+  }, [])
 
   const ensureSession = useCallback(async (): Promise<string | null> => {
     if (sessionRef.current) return sessionRef.current
@@ -50,26 +71,34 @@ export function useAnonymousChat() {
         threadId.current,
         token,
         (chunk) => {
-          setMessages((prev) => {
-            const updated = [...prev]
-            const last = updated[updated.length - 1]
-            updated[updated.length - 1] = {
-              ...last,
-              content: last.content + chunk,
-            }
-            return updated
-          })
+          tokenBuffer.current += chunk
+          if (rafId.current === null) {
+            rafId.current = requestAnimationFrame(flushTokens)
+          }
         },
         (msgId?: string) => {
+          if (rafId.current !== null) {
+            cancelAnimationFrame(rafId.current)
+            rafId.current = null
+          }
+          const buffered = tokenBuffer.current
+          tokenBuffer.current = ''
           if (msgId) {
             setMessages((prev) => {
               const updated = [...prev]
               for (let i = updated.length - 1; i >= 0; i--) {
                 if (updated[i].role === 'assistant' && updated[i].messageId === undefined) {
-                  updated[i] = { ...updated[i], messageId: msgId }
+                  updated[i] = { ...updated[i], messageId: msgId, content: updated[i].content + buffered }
                   break
                 }
               }
+              return updated
+            })
+          } else if (buffered) {
+            setMessages((prev) => {
+              const updated = [...prev]
+              const last = updated[updated.length - 1]
+              updated[updated.length - 1] = { ...last, content: last.content + buffered }
               return updated
             })
           }

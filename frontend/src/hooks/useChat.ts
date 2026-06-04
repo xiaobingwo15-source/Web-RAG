@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { useAuth } from './useAuth'
 import { streamChat, getThreadMessages, type RetrievalSource, type StreamError } from '@/lib/api'
 import type { AgentAction, ActionType, ActionSource } from '@/lib/agent-types'
@@ -23,7 +23,31 @@ export function useChat() {
   const currentThoughts = useRef<string[]>([])
   const currentActionRef = useRef<AgentAction | null>(null)
   const actionIdCounter = useRef(0)
+  const tokenBuffer = useRef<string>('')
+  const rafId = useRef<number | null>(null)
   const { session } = useAuth()
+
+  const flushTokens = useCallback(() => {
+    rafId.current = null
+    const buffered = tokenBuffer.current
+    if (!buffered) return
+    tokenBuffer.current = ''
+    setMessages((prev) => {
+      const updated = [...prev]
+      const last = updated[updated.length - 1]
+      updated[updated.length - 1] = {
+        ...last,
+        content: last.content + buffered,
+      }
+      return updated
+    })
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (rafId.current !== null) cancelAnimationFrame(rafId.current)
+    }
+  }, [])
 
   const loadThread = useCallback(async (id: string) => {
     if (!session?.access_token) return
@@ -103,17 +127,19 @@ export function useChat() {
       threadId,
       session.access_token,
       (chunk) => {
-        setMessages((prev) => {
-          const updated = [...prev]
-          const last = updated[updated.length - 1]
-          updated[updated.length - 1] = {
-            ...last,
-            content: last.content + chunk,
-          }
-          return updated
-        })
+        tokenBuffer.current += chunk
+        if (rafId.current === null) {
+          rafId.current = requestAnimationFrame(flushTokens)
+        }
       },
       (messageId) => {
+        // Flush any buffered tokens before marking done
+        if (rafId.current !== null) {
+          cancelAnimationFrame(rafId.current)
+          rafId.current = null
+        }
+        const buffered = tokenBuffer.current
+        tokenBuffer.current = ''
         setIsStreaming(false)
         setMessages((prev) => {
           const updated = [...prev]
@@ -124,7 +150,12 @@ export function useChat() {
             actions = [...actions]
             actions[actions.length - 1] = { ...actions[actions.length - 1], status: "completed" }
           }
-          updated[updated.length - 1] = { ...last, ...(messageId ? { id: messageId } : {}), actions }
+          updated[updated.length - 1] = {
+            ...last,
+            content: last.content + buffered,
+            ...(messageId ? { id: messageId } : {}),
+            actions,
+          }
           return updated
         })
         currentActionRef.current = null
