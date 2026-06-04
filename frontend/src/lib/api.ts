@@ -8,6 +8,10 @@ export interface ActionMeta {
   data: Record<string, unknown>
 }
 
+export interface StreamHandle {
+  abort: () => void
+}
+
 export interface RetrievalSource {
   document_id: string
   filename?: string | null
@@ -31,7 +35,7 @@ export async function streamChat(
   onThought?: (thought: string, action?: ActionMeta) => void,
   onSources?: (sources: RetrievalSource[]) => void,
   replyTo?: string,
-) {
+): Promise<StreamHandle> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 120_000)
 
@@ -57,13 +61,13 @@ export async function streamChat(
     clearTimeout(timeout)
     const isAbort = (err as Error).name === 'AbortError'
     onError(new Error(isAbort ? 'Request timed out' : (err as Error).message))
-    return
+    return { abort: () => {} }
   }
 
   if (!response.ok) {
     clearTimeout(timeout)
     onError(new Error(`HTTP ${response.status}`))
-    return
+    return { abort: () => {} }
   }
 
   const reader = response.body?.getReader()
@@ -71,7 +75,7 @@ export async function streamChat(
 
   if (!reader) {
     onDone()
-    return
+    return { abort: () => {} }
   }
 
   try {
@@ -122,6 +126,7 @@ export async function streamChat(
     clearTimeout(timeout)
     onError(err as Error)
   }
+  return { abort: () => controller.abort() }
 }
 
 export interface WidgetSessionResponse {
@@ -147,11 +152,11 @@ export async function streamWidgetChat(
   threadId: string | null,
   token: string,
   onChunk: (text: string) => void,
-  onDone: () => void,
+  onDone: (messageId?: string) => void,
   onError: (err: StreamError) => void,
   onThreadId?: (threadId: string) => void,
   images?: string[],
-) {
+): Promise<StreamHandle> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 120_000)
 
@@ -174,13 +179,13 @@ export async function streamWidgetChat(
     clearTimeout(timeout)
     const isAbort = (err as Error).name === 'AbortError'
     onError(new Error(isAbort ? 'Request timed out' : (err as Error).message))
-    return
+    return { abort: () => {} }
   }
 
   if (!response.ok) {
     clearTimeout(timeout)
     onError(new Error(`HTTP ${response.status}`))
-    return
+    return { abort: () => {} }
   }
 
   const reader = response.body?.getReader()
@@ -189,7 +194,7 @@ export async function streamWidgetChat(
   if (!reader) {
     clearTimeout(timeout)
     onDone()
-    return
+    return { abort: () => {} }
   }
 
   try {
@@ -211,7 +216,7 @@ export async function streamWidgetChat(
               return
             } else if (data.done || data.type === 'done') {
               clearTimeout(timeout)
-              onDone()
+              onDone(data.message_id)
               return
             } else if (data.type === 'token' && data.content) {
               onChunk(data.content)
@@ -228,6 +233,7 @@ export async function streamWidgetChat(
     clearTimeout(timeout)
     onError(err as Error)
   }
+  return { abort: () => controller.abort() }
 }
 
 export interface ThreadSummary {
@@ -957,6 +963,24 @@ export async function submitFeedback(
     body: JSON.stringify({ thread_id: threadId, message_id: messageId, rating, comment }),
   })
   if (!response.ok) throw new Error(`Submit feedback failed: ${response.status}`)
+}
+
+export async function submitWidgetFeedback(
+  threadId: string,
+  messageId: string,
+  rating: 1 | -1,
+  token: string,
+  comment?: string,
+): Promise<void> {
+  const response = await fetch('/api/widget/feedback', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ thread_id: threadId, message_id: messageId, rating, comment }),
+  })
+  if (!response.ok) throw new Error(`Submit widget feedback failed: ${response.status}`)
 }
 
 export async function getThreadFeedback(
