@@ -4,17 +4,38 @@ import { streamChat, getThreadMessages, type RetrievalSource, type StreamError, 
 import type { AgentAction, ActionType, ActionSource } from '@/lib/agent-types'
 import { LatencyTimer } from '@/lib/performance'
 
+export type ChatMessageRole = 'user' | 'assistant'
+
+export interface ChatReplyTarget {
+  id: string
+  content: string
+  role: ChatMessageRole
+}
+
 export interface ChatMessage {
   id?: string
-  role: 'user' | 'assistant'
+  role: ChatMessageRole
   content: string
   images?: string[]
   replyTo?: string  // ID of the message being replied to
   replyToContent?: string  // preview of the quoted message content
+  replyToRole?: ChatMessageRole
   thoughts?: string[]
   actions?: AgentAction[]
   sources?: RetrievalSource[]
   adminResponse?: string
+}
+
+function parseStoredMessageContent(content: string): { text: string; images?: string[] } {
+  try {
+    const json = JSON.parse(content)
+    if (json && typeof json.text === 'string') {
+      return { text: json.text, images: Array.isArray(json.images) ? json.images : [] }
+    }
+  } catch {
+    return { text: content }
+  }
+  return { text: content }
 }
 
 export function useChat() {
@@ -29,6 +50,7 @@ export function useChat() {
   const latencyTimer = useRef<LatencyTimer | null>(null)
   const abortRef = useRef<(() => void) | null>(null)
   const { session } = useAuth()
+  const accessToken = session?.access_token
 
   const flushTokens = useCallback(() => {
     rafId.current = null
@@ -53,20 +75,17 @@ export function useChat() {
   }, [])
 
   const loadThread = useCallback(async (id: string) => {
-    if (!session?.access_token) return
+    if (!accessToken) return
     try {
-      const msgs = await getThreadMessages(id, session.access_token)
+      const msgs = await getThreadMessages(id, accessToken)
       // Build a lookup map of message ID → content for reply previews
       const contentMap: Record<string, string> = {}
+      const roleMap: Record<string, ChatMessageRole> = {}
       for (const m of msgs) {
-        try {
-          const json = JSON.parse(m.content)
-          if (json && typeof json.text === 'string') {
-            contentMap[m.id] = json.text
-            continue
-          }
-        } catch {}
-        contentMap[m.id] = m.content
+        const role = m.role === 'user' || m.role === 'assistant' ? m.role : null
+        const parsedContent = parseStoredMessageContent(m.content)
+        contentMap[m.id] = parsedContent.text
+        if (role) roleMap[m.id] = role
       }
       const parsed: ChatMessage[] = []
       for (const m of msgs) {
@@ -78,26 +97,15 @@ export function useChat() {
           }
           continue
         }
-        try {
-          const json = JSON.parse(m.content)
-          if (json && typeof json.text === 'string') {
-            parsed.push({
-              id: m.id,
-              role: m.role as 'user' | 'assistant',
-              content: json.text,
-              images: json.images || [],
-              replyTo: m.reply_to || undefined,
-              replyToContent: m.reply_to ? contentMap[m.reply_to] : undefined,
-            })
-            continue
-          }
-        } catch {}
+        const parsedContent = parseStoredMessageContent(m.content)
         parsed.push({
           id: m.id,
-          role: m.role as 'user' | 'assistant',
-          content: m.content,
+          role: m.role as ChatMessageRole,
+          content: parsedContent.text,
+          images: parsedContent.images,
           replyTo: m.reply_to || undefined,
           replyToContent: m.reply_to ? contentMap[m.reply_to] : undefined,
+          replyToRole: m.reply_to ? roleMap[m.reply_to] : undefined,
         })
       }
       setMessages(parsed)
@@ -105,7 +113,7 @@ export function useChat() {
     } catch (err) {
       console.error('Failed to load thread:', err)
     }
-  }, [session?.access_token])
+  }, [accessToken])
 
   const sendMessage = async (
     content: string,
@@ -114,10 +122,19 @@ export function useChat() {
     images?: string[],
     replyTo?: string,
     replyToContent?: string,
+    replyToRole?: ChatMessageRole,
   ) => {
-    if (!session?.access_token) return
+    if (!accessToken) return
 
-    const userMsg: ChatMessage = { id: crypto.randomUUID(), role: 'user', content, images, replyTo, replyToContent }
+    const userMsg: ChatMessage = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content,
+      images,
+      replyTo,
+      replyToContent,
+      replyToRole,
+    }
     setMessages((prev) => [...prev, userMsg])
     setIsStreaming(true)
     currentThoughts.current = []
@@ -129,7 +146,7 @@ export function useChat() {
     await streamChat(
       content,
       threadId,
-      session.access_token,
+      accessToken,
       (chunk) => {
         if (latencyTimer.current && latencyTimer.current.firstTokenLatency === null) {
           latencyTimer.current.markFirstToken()

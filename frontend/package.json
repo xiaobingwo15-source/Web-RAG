@@ -8,7 +8,9 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "perf:e2e": "playwright test"
+    "browsers:install": "playwright install chromium",
+    "preperf:e2e": "npm run browsers:install",
+    "perf:e2e": "npm run build && playwright test"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.106.2",

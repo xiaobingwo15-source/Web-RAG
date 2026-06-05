@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { ChatMessage as ChatMessageType } from '@/hooks/useChat'
+import type { ChatMessage as ChatMessageType, ChatReplyTarget } from '@/hooks/useChat'
 import { ThoughtTrace } from '@/components/ThoughtTrace'
 import { BookOpen, Shield, ThumbsUp, ThumbsDown, Reply } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -8,15 +8,21 @@ import remarkGfm from 'remark-gfm'
 interface ChatMessageProps {
   message: ChatMessageType
   messageId?: string
-  threadId?: string | null
   feedback?: 1 | -1 | null
   onFeedback?: (messageId: string, rating: 1 | -1) => void
-  onReply?: (messageId: string, content: string) => void
+  onReply?: (target: ChatReplyTarget) => void
 }
 
-export function ChatMessage({ message, messageId, threadId: _threadId, feedback, onFeedback, onReply }: ChatMessageProps) {
+function replyAuthor(role: ChatMessageType['replyToRole']) {
+  if (role === 'user') return 'You'
+  if (role === 'assistant') return 'Assistant'
+  return 'Message'
+}
+
+export function ChatMessage({ message, messageId, feedback, onFeedback, onReply }: ChatMessageProps) {
   const isUser = message.role === 'user'
   const [localFeedback, setLocalFeedback] = useState<1 | -1 | null>(feedback ?? null)
+  const canReply = Boolean(message.content && messageId && onReply)
 
   const handleFeedback = (rating: 1 | -1) => {
     const newRating = localFeedback === rating ? null : rating
@@ -31,9 +37,15 @@ export function ChatMessage({ message, messageId, threadId: _threadId, feedback,
     minute: '2-digit',
   })
 
+  const handleReply = () => {
+    if (!messageId || !message.content || !onReply) return
+    onReply({ id: messageId, content: message.content, role: message.role })
+  }
+
   return (
-    <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-1`}>
-      <div className={isUser ? 'max-w-[65%]' : 'max-w-[65%]'}>
+    <div className={`group flex ${isUser ? 'justify-end' : 'justify-start'} mb-1`}>
+      <div className={`flex max-w-[86%] items-center gap-1.5 sm:max-w-[72%] ${isUser ? 'flex-row-reverse' : ''}`}>
+        <div className="min-w-0">
         {/* Thought trace (assistant only) */}
         {!isUser && ((message.thoughts && message.thoughts.length > 0) || (message.actions && message.actions.length > 0)) && (
           <ThoughtTrace thoughts={message.thoughts} actions={message.actions} />
@@ -49,8 +61,15 @@ export function ChatMessage({ message, messageId, threadId: _threadId, feedback,
         >
           {/* Reply-to preview */}
           {message.replyToContent && (
-            <div className="mb-1.5 rounded border-l-4 border-[#00A884] bg-[#F0F2F5] px-2.5 py-1.5">
-              <p className="line-clamp-2 text-xs text-[#667781]">
+            <div
+              className={`mb-1.5 overflow-hidden rounded-md border-l-4 border-[#00A884] px-2.5 py-1.5 ${
+                isUser ? 'bg-white/65' : 'bg-[#F0F2F5]'
+              }`}
+            >
+              <p className="text-[11px] font-semibold leading-tight text-[#008069]">
+                Replying to {replyAuthor(message.replyToRole)}
+              </p>
+              <p className="mt-0.5 line-clamp-2 break-words text-xs leading-snug text-[#54656F]">
                 {message.replyToContent}
               </p>
             </div>
@@ -127,7 +146,7 @@ export function ChatMessage({ message, messageId, threadId: _threadId, feedback,
           </div>
         )}
 
-        {/* Feedback & Reply buttons (assistant only) */}
+        {/* Feedback buttons (assistant only) */}
         {!isUser && message.content && messageId && (
           <div className="mt-0.5 flex items-center gap-0.5">
             <button
@@ -138,6 +157,7 @@ export function ChatMessage({ message, messageId, threadId: _threadId, feedback,
                   : 'text-[#8696A0] hover:text-[#00A884] hover:bg-[#00A884]/5'
               }`}
               title="Good response"
+              aria-label="Good response"
             >
               <ThumbsUp className="h-3.5 w-3.5" />
             </button>
@@ -149,32 +169,23 @@ export function ChatMessage({ message, messageId, threadId: _threadId, feedback,
                   : 'text-[#8696A0] hover:text-[#EF4444] hover:bg-[#EF4444]/5'
               }`}
               title="Poor response"
+              aria-label="Poor response"
             >
               <ThumbsDown className="h-3.5 w-3.5" />
             </button>
-            {onReply && (
-              <button
-                onClick={() => onReply(messageId, message.content)}
-                className="rounded p-1 text-[#8696A0] hover:text-[#00A884] hover:bg-[#00A884]/5 transition-colors cursor-pointer"
-                title="Reply"
-              >
-                <Reply className="h-3.5 w-3.5" />
-              </button>
-            )}
           </div>
         )}
+        </div>
 
-        {/* Reply button (user only) */}
-        {isUser && message.content && messageId && onReply && (
-          <div className="mt-0.5 flex justify-end">
-            <button
-              onClick={() => onReply(messageId, message.content)}
-              className="rounded p-1 text-[#8696A0] hover:text-[#00A884] hover:bg-[#00A884]/5 transition-colors cursor-pointer"
-              title="Reply"
-            >
-              <Reply className="h-3.5 w-3.5" />
-            </button>
-          </div>
+        {canReply && (
+          <button
+            onClick={handleReply}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/90 text-[#54656F] shadow-sm transition hover:bg-white hover:text-[#00A884] focus:outline-none focus:ring-2 focus:ring-[#00A884]/30 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100 cursor-pointer"
+            title="Reply"
+            aria-label="Reply to this message"
+          >
+            <Reply className="h-4 w-4" />
+          </button>
         )}
       </div>
     </div>
