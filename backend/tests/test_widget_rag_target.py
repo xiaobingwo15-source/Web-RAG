@@ -75,6 +75,7 @@ class WidgetRagTargetTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(widget, "verify_widget_token", return_value={"tenant_id": "tenant-a", "session_id": "session-a", "origin": "http://example.test"}),
             patch.object(widget, "check_rate_limit"),
+            patch.object(widget, "get_db", return_value=Mock(table=Mock(return_value=_Query([])))),
             patch.object(widget, "_resolve_widget_rag_target_user_id", return_value="admin-a"),
             patch.object(widget, "create_widget_thread", return_value={"id": "thread-a"}),
             patch.object(widget, "save_widget_message", return_value={"id": "message-a"}),

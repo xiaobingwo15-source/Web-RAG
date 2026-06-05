@@ -1,6 +1,6 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useChat } from '@/hooks/useChat'
+import { useChat, type ChatReplyTarget } from '@/hooks/useChat'
 import { useDocuments } from '@/hooks/useDocuments'
 import { useThreads } from '@/hooks/useThreads'
 import { useAuth } from '@/hooks/useAuth'
@@ -37,58 +37,65 @@ export function ChatPage() {
   const { user, session, role, status, signOut } = useAuth()
   const navigate = useNavigate()
   const admin = isAdmin(role || user?.email)
+  const accessToken = session?.access_token
   const [feedbackMap, setFeedbackMap] = useState<Record<string, 1 | -1>>({})
-  const [replyTo, setReplyTo] = useState<{ id: string; content: string } | null>(null)
+  const [replyTo, setReplyTo] = useState<ChatReplyTarget | null>(null)
   const [showExportMenu, setShowExportMenu] = useState(false)
   const [showDocUpload, setShowDocUpload] = useState(false)
+  const messageViewportRef = useRef<HTMLDivElement>(null)
+  const latestMessageRef = useRef<HTMLDivElement>(null)
+  const shouldFollowScrollRef = useRef(true)
+  const pendingJumpToBottomRef = useRef(false)
+  const previousMessageCountRef = useRef(0)
 
   useEffect(() => {
     markRouteReady('/chat')
   }, [])
 
+  const isNearBottom = useCallback(() => {
+    const viewport = messageViewportRef.current
+    if (!viewport) return true
+    const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+    return distanceFromBottom < 96
+  }, [])
+
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    requestAnimationFrame(() => {
+      latestMessageRef.current?.scrollIntoView({ behavior, block: 'end' })
+    })
+  }, [])
+
+  const handleMessageScroll = useCallback(() => {
+    shouldFollowScrollRef.current = isNearBottom()
+  }, [isNearBottom])
+
+  useEffect(() => {
+    const messageCountChanged = messages.length !== previousMessageCountRef.current
+    previousMessageCountRef.current = messages.length
+
+    if (pendingJumpToBottomRef.current) {
+      pendingJumpToBottomRef.current = false
+      shouldFollowScrollRef.current = true
+      scrollToLatest('auto')
+      return
+    }
+
+    if (messages.length === 0) return
+
+    if (messageCountChanged) {
+      shouldFollowScrollRef.current = true
+      scrollToLatest('smooth')
+      return
+    }
+
+    if (isStreaming && shouldFollowScrollRef.current) {
+      scrollToLatest('auto')
+    }
+  }, [messages, isStreaming, scrollToLatest])
+
   const handleLogout = async () => {
     await signOut()
     navigate('/login')
-  }
-
-  // Pending approval screen
-  if (status === 'pending') {
-    return (
-      <div className="flex h-screen bg-background items-center justify-center">
-        <div className="text-center max-w-md p-8">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
-            <Clock className="h-7 w-7 text-primary" />
-          </div>
-          <h2 className="text-xl font-semibold text-foreground mb-2">Account Pending Approval</h2>
-          <p className="text-sm text-muted-foreground mb-6">
-            Your account has been created successfully. An administrator will review and approve your access shortly.
-          </p>
-          <button onClick={handleLogout} className="text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
-            Sign out
-          </button>
-        </div>
-      </div>
-    )
-  }
-
-  // Suspended screen
-  if (status === 'suspended') {
-    return (
-      <div className="flex h-screen bg-background items-center justify-center">
-        <div className="text-center max-w-md p-8">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10">
-            <AlertTriangle className="h-7 w-7 text-destructive" />
-          </div>
-          <h2 className="text-xl font-semibold text-foreground mb-2">Account Suspended</h2>
-          <p className="text-sm text-muted-foreground mb-6">
-            Your account has been suspended. Please contact your administrator for more information.
-          </p>
-          <button onClick={handleLogout} className="text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
-            Sign out
-          </button>
-        </div>
-      </div>
-    )
   }
 
   const handleNewChat = () => {
@@ -96,15 +103,19 @@ export function ChatPage() {
     setSelectedThreadId(null)
     setFeedbackMap({})
     setReplyTo(null)
+    shouldFollowScrollRef.current = true
+    previousMessageCountRef.current = 0
   }
 
   const handleSelectThread = async (tid: string) => {
     setSelectedThreadId(tid)
     setReplyTo(null)
+    shouldFollowScrollRef.current = true
+    pendingJumpToBottomRef.current = true
     await loadThread(tid)
-    if (session?.access_token) {
+    if (accessToken) {
       try {
-        const feedback = await getThreadFeedback(tid, session!.access_token)
+        const feedback = await getThreadFeedback(tid, accessToken)
         setFeedbackMap(feedback)
       } catch {
         setFeedbackMap({})
@@ -114,28 +125,30 @@ export function ChatPage() {
 
   const handleFeedback = useCallback(async (messageId: string, rating: 1 | -1) => {
     const feedbackThreadId = selectedThreadId || threadId
-    if (!session?.access_token || !feedbackThreadId) return
+    if (!accessToken || !feedbackThreadId) return
     setFeedbackMap((prev) => ({ ...prev, [messageId]: rating }))
     try {
-      await submitFeedback(feedbackThreadId, messageId, rating, session!.access_token)
+      await submitFeedback(feedbackThreadId, messageId, rating, accessToken)
     } catch (err) {
       console.error('Failed to submit feedback:', err)
     }
-  }, [session?.access_token, selectedThreadId, threadId])
+  }, [accessToken, selectedThreadId, threadId])
 
   const handleDeleteThread = async (tid: string) => {
     await removeThread(tid)
     if (selectedThreadId === tid) handleNewChat()
   }
 
-  const handleReply = useCallback((messageId: string, content: string) => {
-    setReplyTo({ id: messageId, content })
+  const handleReply = useCallback((target: ChatReplyTarget) => {
+    setReplyTo(target)
   }, [])
 
   const handleSendMessage = async (content: string, useDocuments: boolean = false, retrievalMode: string = 'hybrid', images?: string[]) => {
+    const activeReply = replyTo
+    shouldFollowScrollRef.current = true
     markInteraction('chat.send', { use_documents: useDocuments, retrieval_mode: retrievalMode })
-    await sendMessage(content, useDocuments, retrievalMode, images, replyTo?.id, replyTo?.content)
     setReplyTo(null)
+    await sendMessage(content, useDocuments, retrievalMode, images, activeReply?.id, activeReply?.content, activeReply?.role)
     refreshThreads()
   }
 
@@ -178,6 +191,44 @@ export function ChatPage() {
   }
 
   const selectedThread = threads.find((t) => t.id === selectedThreadId)
+
+  if (status === 'pending') {
+    return (
+      <div className="flex h-screen bg-background items-center justify-center">
+        <div className="text-center max-w-md p-8">
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
+            <Clock className="h-7 w-7 text-primary" />
+          </div>
+          <h2 className="text-xl font-semibold text-foreground mb-2">Account Pending Approval</h2>
+          <p className="text-sm text-muted-foreground mb-6">
+            Your account has been created successfully. An administrator will review and approve your access shortly.
+          </p>
+          <button onClick={handleLogout} className="text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
+            Sign out
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (status === 'suspended') {
+    return (
+      <div className="flex h-screen bg-background items-center justify-center">
+        <div className="text-center max-w-md p-8">
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10">
+            <AlertTriangle className="h-7 w-7 text-destructive" />
+          </div>
+          <h2 className="text-xl font-semibold text-foreground mb-2">Account Suspended</h2>
+          <p className="text-sm text-muted-foreground mb-6">
+            Your account has been suspended. Please contact your administrator for more information.
+          </p>
+          <button onClick={handleLogout} className="text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
+            Sign out
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex h-screen bg-background">
@@ -316,7 +367,12 @@ export function ChatPage() {
 
         {/* Messages Area */}
         <div className="flex flex-1 overflow-hidden">
-          <div className="flex-1 overflow-y-auto" style={{ backgroundColor: '#EFEAE2' }}>
+          <div
+            ref={messageViewportRef}
+            onScroll={handleMessageScroll}
+            className="flex-1 overflow-y-auto"
+            style={{ backgroundColor: '#EFEAE2' }}
+          >
             {messages.length === 0 ? (
               <div className="flex h-full items-center justify-center">
                 <div className="text-center px-6">
@@ -340,7 +396,6 @@ export function ChatPage() {
                     key={i}
                     message={msg}
                     messageId={msg.id}
-                    threadId={selectedThreadId}
                     feedback={msg.id && msg.role === 'assistant' ? feedbackMap[msg.id] ?? null : null}
                     onFeedback={msg.id && msg.role === 'assistant' ? handleFeedback : undefined}
                     onReply={handleReply}
@@ -358,6 +413,8 @@ export function ChatPage() {
                     </div>
                   </div>
                 )}
+
+                <div ref={latestMessageRef} className="h-px" />
               </div>
             )}
           </div>

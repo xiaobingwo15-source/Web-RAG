@@ -1,5 +1,10 @@
-import { useState, type KeyboardEvent, type ClipboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type ClipboardEvent } from 'react'
+import type { ChatReplyTarget } from '@/hooks/useChat'
 import { Send, FileSearch, X } from 'lucide-react'
+
+function replyAuthor(role: ChatReplyTarget['role']) {
+  return role === 'user' ? 'You' : 'Assistant'
+}
 
 export function ChatInput({
   onSend,
@@ -11,12 +16,19 @@ export function ChatInput({
   onSend: (msg: string, useDocuments: boolean, retrievalMode: string, images?: string[]) => void
   disabled: boolean
   hasDocuments: boolean
-  replyTo?: { id: string; content: string } | null
+  replyTo?: ChatReplyTarget | null
   onCancelReply?: () => void
 }) {
   const [value, setValue] = useState('')
   const [useDocuments, setUseDocuments] = useState(true)
   const [images, setImages] = useState<string[]>([])
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    if (replyTo) {
+      textareaRef.current?.focus()
+    }
+  }, [replyTo])
 
   const handleSend = () => {
     const trimmed = value.trim()
@@ -91,16 +103,21 @@ export function ChatInput({
 
       {/* Reply preview */}
       {replyTo && (
-        <div className="flex items-center gap-2 rounded-t-lg border border-b-0 border-[#00A884]/30 bg-white px-3 py-2 mb-0">
-          <div className="w-0.5 h-8 bg-[#00A884] rounded-full shrink-0" />
+        <div className="mb-2 flex items-center gap-3 rounded-lg border border-[#D8E8E4] bg-white px-3 py-2 shadow-sm">
+          <div className="h-11 w-1 rounded-full bg-[#00A884] shrink-0" />
           <div className="flex-1 min-w-0">
-            <p className="text-xs font-medium text-[#00A884]">Reply</p>
-            <p className="truncate text-xs text-[#667781]">
-              {replyTo.content.length > 100 ? replyTo.content.slice(0, 97) + '...' : replyTo.content}
+            <p className="text-xs font-semibold text-[#008069]">Replying to {replyAuthor(replyTo.role)}</p>
+            <p className="mt-0.5 line-clamp-2 break-words text-xs leading-snug text-[#54656F]">
+              {replyTo.content}
             </p>
           </div>
           {onCancelReply && (
-            <button onClick={onCancelReply} className="shrink-0 p-1 text-[#8696A0] hover:text-[#111B21] cursor-pointer">
+            <button
+              onClick={onCancelReply}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[#54656F] hover:bg-[#F0F2F5] hover:text-[#111B21] cursor-pointer"
+              title="Cancel reply"
+              aria-label="Cancel reply"
+            >
               <X className="h-4 w-4" />
             </button>
           )}
@@ -127,6 +144,7 @@ export function ChatInput({
         {/* Text input */}
         <div className="flex-1 flex items-end bg-white rounded-lg border-none overflow-hidden">
           <textarea
+            ref={textareaRef}
             value={value}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={handleKeyDown}

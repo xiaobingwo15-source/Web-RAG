@@ -1,8 +1,10 @@
 import { defineConfig, devices } from '@playwright/test'
+import os from 'node:os'
+import path from 'node:path'
 
 export default defineConfig({
   testDir: './tests',
-  outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR || 'C:/Users/User/AppData/Local/Temp/web-rag-playwright-results',
+  outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR || path.join(os.tmpdir(), 'web-rag-playwright-results'),
   timeout: 30_000,
   expect: {
     timeout: 5_000,

@@ -2,6 +2,16 @@
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
+## Latency E2E Checks
+
+Run the frontend latency checks with:
+
+```sh
+npm run perf:e2e
+```
+
+The `perf:e2e` lifecycle installs the Playwright-managed Chromium browser before building the app and running `frontend/tests/web-rag-latency.spec.ts`. CI installs Chromium with `--with-deps` first so the Linux system packages required by Playwright are present before the same npm script runs.
+
 Currently, two official plugins are available:
 
 - [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
