@@ -21,13 +21,23 @@ Commit staged changes, push to origin, and create a PR from Staging to master. H
 
 ## Steps
 
-### 1. Check State
+### 1. Check State & Verify
 
 ```bash
 git status
-git diff --staged --stat
+git diff --stat
 git log --oneline -3   # check recent commit style
 ```
+
+**Before staging, verify each file's diff:**
+```bash
+git diff <file>   # review actual changes per file
+```
+
+- Confirm changes are intentional and correct
+- Check for accidental deletions, debug code, or sensitive data
+- If pre-existing unrelated changes exist (e.g., settings, workflows), note them in the commit or ask user
+- Only proceed to staging after verification passes
 
 If nothing is staged, ask user what to commit.
 

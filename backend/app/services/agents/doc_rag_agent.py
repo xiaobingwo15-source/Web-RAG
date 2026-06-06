@@ -46,6 +46,13 @@ CORRECTIVE_RAG_SYSTEM_PROMPT = (
     "Prioritize internal document information when it is relevant and sufficient. "
     "Use web search results to fill gaps or provide additional context. "
     "If sources conflict, note the discrepancy honestly.\n\n"
+    "IMPORTANT — Language handling:\n"
+    "- Match the user's language. If they write in Chinese, respond in Chinese. If in English, respond in English.\n"
+    "- If the user asks for content in a language that is NOT present in the reference material, "
+    "answer using the available source language and clearly note that the knowledge base does not contain "
+    "content in the requested language.\n"
+    "- Do NOT fabricate or hallucinate translations as if they were sourced from documents.\n"
+    "- If you provide a translation for convenience, clearly label it as \"(translated for reference)\".\n\n"
     "Structure your answer:\n"
     "1. A brief direct answer (1-2 sentences)\n"
     "2. Supporting details with source references\n"
@@ -65,6 +72,13 @@ HYBRID_SYSTEM_PROMPT = (
     "\"I don't have that information in my knowledge base\" — do not guess or fabricate.\n\n"
     "When using web search information, naturally mention the source (e.g., 'According to [Source]...'). "
     "Be conversational, warm, and direct.\n\n"
+    "IMPORTANT — Language handling:\n"
+    "- Match the user's language. If they write in Chinese, respond in Chinese. If in English, respond in English.\n"
+    "- If the user asks for content in a language that is NOT present in the reference material, "
+    "answer using the available source language and clearly note that the knowledge base does not contain "
+    "content in the requested language.\n"
+    "- Do NOT fabricate or hallucinate translations as if they were sourced from documents.\n"
+    "- If you provide a translation for convenience, clearly label it as \"(translated for reference)\".\n\n"
     "Structure your answer:\n"
     "1. A brief direct answer (1-2 sentences)\n"
     "2. Supporting details with source references\n"
@@ -523,9 +537,12 @@ async def execute(
     ]
     retrieval_results = await asyncio.gather(*retrieval_tasks, return_exceptions=True)
 
-    # Merge results, deduplicating by chunk content
-    seen_contents: set[str] = set()
+    # Merge results, deduplicating by chunk content.
+    # Use separate tracking sets for chunks and sources to avoid cross-dedup drops.
+    seen_chunk_keys: set[str] = set()
+    seen_source_keys: set[str] = set()
     context_chunks: list[str] = []
+    context_sources: list[dict] = []  # Aligned 1:1 with context_chunks for LLM source attribution
     sources: list[dict] = []
     retrieval_log_ids: list[str] = []
 
@@ -534,18 +551,23 @@ async def execute(
             logger.warning(f"Multi-query retrieval failed for one variant: {result}")
             continue
         retrieval_log_ids.extend(result.get("retrieval_log_ids", []))
-        for chunk in result.get("chunks", []):
+        result_chunks = result.get("chunks", [])
+        result_sources = result.get("sources", [])
+        for i, chunk in enumerate(result_chunks):
             key = chunk[:200].strip().lower()
-            if key not in seen_contents:
-                seen_contents.add(key)
+            if key not in seen_chunk_keys:
+                seen_chunk_keys.add(key)
                 context_chunks.append(chunk)
-        for src in result.get("sources", []):
+                # Align source with chunk by index — each retrieval returns sources in the same order as chunks
+                if i < len(result_sources):
+                    context_sources.append(result_sources[i])
+                else:
+                    context_sources.append({})
+        for src in result_sources:
             key = src.get("content", "")[:200].strip().lower()
-            if key not in seen_contents:
-                seen_contents.add(key)
+            if key not in seen_source_keys:
+                seen_source_keys.add(key)
                 sources.append(src)
-        if not sources and result.get("sources"):
-            sources = result["sources"]
 
     public_sources = _public_sources(sources)
     print(f"[DOC_RAG] Retrieved {len(context_chunks)} context chunks (multi-query: {len(all_queries)} variants) for user_id={user_id}")
@@ -553,12 +575,17 @@ async def execute(
     # ── Merge delegated SQL results into context ──
     if delegated_sql_result and delegated_sql_result.get("chunks"):
         sql_chunks = delegated_sql_result["chunks"]
-        for chunk in sql_chunks:
+        sql_sources = delegated_sql_result.get("sources", [])
+        for i, chunk in enumerate(sql_chunks):
             key = chunk[:200].strip().lower()
-            if key not in seen_contents:
-                seen_contents.add(key)
+            if key not in seen_chunk_keys:
+                seen_chunk_keys.add(key)
                 context_chunks.insert(0, chunk)  # Prepend SQL results (high priority)
-        sources = delegated_sql_result.get("sources", []) + sources
+                if i < len(sql_sources):
+                    context_sources.insert(0, sql_sources[i])
+                else:
+                    context_sources.insert(0, {})
+        sources = sql_sources + sources
         public_sources = _public_sources(sources)
         print(f"[DOC_RAG] Merged {len(sql_chunks)} SQL delegation chunks, total now {len(context_chunks)}")
         yield {
@@ -588,21 +615,24 @@ async def execute(
                     similarity_threshold=0.5, tenant_id=tenant_id,
                 )
                 if hyde_chunks:
-                    existing_contents = set(seen_contents)
+                    existing_contents = set(seen_chunk_keys)
                     added = 0
                     for chunk in hyde_chunks:
                         content = chunk["content"]
                         key = content[:200].strip().lower()
                         if key not in existing_contents:
                             context_chunks.append(content)
-                            sources.append({
+                            hyde_src = {
                                 "id": chunk.get("id", ""),
                                 "document_id": chunk.get("document_id", ""),
                                 "content": content,
                                 "score": chunk.get("similarity", 0),
                                 "retrieval_method": "hyde",
-                            })
+                            }
+                            sources.append(hyde_src)
+                            context_sources.append(hyde_src)
                             existing_contents.add(key)
+                            seen_chunk_keys.add(key)
                             added += 1
                     if added:
                         print(f"[DOC_RAG] HyDE added {added} new chunks (total now {len(context_chunks)})")
@@ -650,7 +680,7 @@ async def execute(
 
             yield {"type": "token", "content": "> I didn't find relevant documents for your question, so I searched the web for you.\n\n"}
 
-            async for chunk in generate_chat_response_stream(client, message, history, web_chunks, images=images, system_prompt=CORRECTIVE_RAG_SYSTEM_PROMPT):
+            async for chunk in generate_chat_response_stream(client, message, history, web_chunks, images=images, system_prompt=CORRECTIVE_RAG_SYSTEM_PROMPT, context_sources=web_sources):
                 yield {"type": "token", "content": chunk}
             yield {
                 "type": "rag_quality",
@@ -779,6 +809,7 @@ async def execute(
                     web_context.append(f"[Web] {r['title']}: {snippet}")
                     web_sources.append({"title": r["title"], "url": r["url"]})
                 context_chunks = context_chunks + web_context
+                context_sources = context_sources + web_sources
                 public_sources = public_sources + web_sources
                 use_hybrid = True
                 yield {
@@ -824,7 +855,7 @@ async def execute(
         full_answer = ""
         llm_start = monotonic_ms()
         first_token_logged = False
-        async for chunk in generate_chat_response_stream(client, message, history, context_chunks, images=images, system_prompt=system_prompt):
+        async for chunk in generate_chat_response_stream(client, message, history, context_chunks, images=images, system_prompt=system_prompt, context_sources=context_sources):
             if not first_token_logged:
                 log_latency(
                     "llm.first_token",
@@ -888,11 +919,17 @@ async def execute(
         if retry_result.get("chunks"):
             # Merge retry chunks with existing, deduplicating
             seen_keys = {c[:200].strip().lower() for c in context_chunks}
+            retry_chunks = retry_result["chunks"]
+            retry_sources = retry_result.get("sources", [])
             added = 0
-            for chunk in retry_result["chunks"]:
+            for i, chunk in enumerate(retry_chunks):
                 key = chunk[:200].strip().lower()
                 if key not in seen_keys:
                     context_chunks.append(chunk)
+                    if i < len(retry_sources):
+                        context_sources.append(retry_sources[i])
+                    else:
+                        context_sources.append({})
                     seen_keys.add(key)
                     added += 1
             if added:
