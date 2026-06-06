@@ -12,6 +12,11 @@ export interface StreamHandle {
   abort: () => void
 }
 
+export interface StreamMessageMeta {
+  messageId?: string
+  createdAt?: string
+}
+
 export interface RetrievalSource {
   document_id: string
   filename?: string | null
@@ -26,7 +31,7 @@ export async function streamChat(
   threadId: string | null,
   token: string,
   onChunk: (text: string) => void,
-  onDone: (messageId?: string) => void,
+  onDone: (meta?: StreamMessageMeta) => void,
   onError: (err: StreamError) => void,
   onThreadId?: (threadId: string) => void,
   useDocuments: boolean = false,
@@ -36,6 +41,7 @@ export async function streamChat(
   onSources?: (sources: RetrievalSource[]) => void,
   replyTo?: string,
   onHandle?: (handle: StreamHandle) => void,
+  onUserMessage?: (meta: StreamMessageMeta) => void,
 ): Promise<StreamHandle> {
   const controller = new AbortController()
   const handle: StreamHandle = { abort: () => controller.abort() }
@@ -98,6 +104,8 @@ export async function streamChat(
               clearTimeout(timeout)
               onError(err)
               return { abort: () => {} }
+            } else if (data.type === 'user_message') {
+              onUserMessage?.({ messageId: data.message_id, createdAt: data.created_at })
             } else if (data.type === 'thought' && onThought) {
               if (data.action_type) {
                 onThought(data.content, {
@@ -112,7 +120,7 @@ export async function streamChat(
               onSources(data.sources || [])
             } else if (data.done || data.type === 'done') {
               clearTimeout(timeout)
-              onDone(data.message_id)
+              onDone({ messageId: data.message_id, createdAt: data.created_at })
               return { abort: () => {} }
             } else if (data.content) {
               onChunk(data.content)

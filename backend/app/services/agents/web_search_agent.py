@@ -5,6 +5,21 @@ from app.services.web_search import search_web
 
 logger = logging.getLogger(__name__)
 
+WEB_SEARCH_SYSTEM_PROMPT = (
+    "You are a knowledgeable assistant answering questions using web search results. "
+    "Be conversational, warm, and direct.\n\n"
+    "When citing information, naturally mention the source by title "
+    "(e.g., 'According to [Source Title]...'). "
+    "If the search results don't fully answer the question, say so honestly. "
+    "Do not make up information.\n\n"
+    "Structure your answer:\n"
+    "1. A brief direct answer (1-2 sentences)\n"
+    "2. Supporting details with source references\n"
+    "3. Sources section\n\n"
+    "Use natural Markdown formatting (headings, bullet points, bold). "
+    "At the end, include a 'Sources' section with URLs."
+)
+
 
 async def execute(
     message: str,
@@ -53,5 +68,5 @@ async def execute(
     prompt = f"Based on the following web search results, answer the user's question.\n\nResults:\n{context}\n\nQuestion: {message}"
 
     client = get_llm_client()
-    async for chunk in generate_chat_response_stream(client, prompt, history, images=images):
+    async for chunk in generate_chat_response_stream(client, prompt, history, images=images, system_prompt=WEB_SEARCH_SYSTEM_PROMPT):
         yield {"type": "token", "content": chunk}

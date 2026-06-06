@@ -35,6 +35,21 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Fail fast on missing frontend secrets
+        shell: bash
+        run: |
+          missing=()
+          for name in VITE_SUPABASE_URL VITE_SUPABASE_ANON_KEY; do
+            if [ -z "${!name}" ]; then
+              missing+=("$name")
+            fi
+          done
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf 'Missing required frontend secret(s): %s\n' "${missing[*]}" >&2
+            exit 2
+          fi
+
       - name: Install Playwright Chromium and Linux dependencies
         run: npx playwright install --with-deps chromium
 

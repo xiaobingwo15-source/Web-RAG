@@ -3,11 +3,11 @@ import logging
 from collections.abc import AsyncGenerator
 from openai import APIError, RateLimitError
 from app.services.gemini import get_llm_client, get_primary_model, _extract_retry_delay
-from app.services.agents import doc_rag_agent, sql_sub_agent, web_search_agent
+from app.services.agents import doc_rag_agent, sql_sub_agent, web_search_agent, plan_executor, react_agent
 
 logger = logging.getLogger(__name__)
 
-VALID_ROUTES = {"doc_rag", "sql", "web_search", "general"}
+VALID_ROUTES = {"doc_rag", "sql", "web_search", "general", "plan_execute", "react"}
 
 CLASSIFICATION_SYSTEM_PROMPT = (
     "Classify the user query into exactly one category: "
@@ -53,6 +53,10 @@ async def route_query(
 ) -> str:
     lower = message.lower()
     if use_documents:
+        # Detect complex multi-part queries for plan-and-execute
+        multi_part_indicators = ["compare", "and also", "as well as", "both", "difference between"]
+        if any(ind in lower for ind in multi_part_indicators):
+            return "plan_execute"
         return "doc_rag"
     if enable_sql and any(w in lower for w in ["sales", "revenue", "sql", "query database", "total sales", "revenue report"]):
         return "sql"
@@ -154,6 +158,8 @@ async def execute(
         "sql": "Database query",
         "web_search": "Web search",
         "general": "General assistant",
+        "plan_execute": "Multi-step planning",
+        "react": "Dynamic reasoning",
     }
     route_label = route_labels.get(route, route)
     yield {
@@ -170,6 +176,12 @@ async def execute(
                 yield event
         elif route == "web_search" and enable_web_search:
             async for event in web_search_agent.execute(message, history, images=images):
+                yield event
+        elif route == "plan_execute" and use_documents:
+            async for event in plan_executor.execute(token, user_id, message, history, target_user_id=effective_target_user_id, images=images, tenant_id=tenant_id, thread_id=thread_id):
+                yield event
+        elif route == "react" and use_documents:
+            async for event in react_agent.execute(token, user_id, message, history, target_user_id=effective_target_user_id, images=images, tenant_id=tenant_id, thread_id=thread_id):
                 yield event
         elif route == "doc_rag" and use_documents:
             async for event in doc_rag_agent.execute(token, user_id, message, history, retrieval_mode, target_user_id=effective_target_user_id, images=images, tenant_id=tenant_id, thread_id=thread_id):
