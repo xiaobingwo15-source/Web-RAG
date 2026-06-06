@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ChatMessage as ChatMessageType, ChatReplyTarget } from '@/hooks/useChat'
 import { ThoughtTrace } from '@/components/ThoughtTrace'
 import { BookOpen, Shield, ThumbsUp, ThumbsDown, Reply } from 'lucide-react'
@@ -19,10 +19,25 @@ function replyAuthor(role: ChatMessageType['replyToRole']) {
   return 'Message'
 }
 
+function formatMessageTime(createdAt?: string) {
+  if (!createdAt) return '--:--'
+  const date = new Date(createdAt)
+  if (Number.isNaN(date.getTime())) return '--:--'
+  return date.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 export function ChatMessage({ message, messageId, feedback, onFeedback, onReply }: ChatMessageProps) {
   const isUser = message.role === 'user'
-  const [localFeedback, setLocalFeedback] = useState<1 | -1 | null>(feedback ?? null)
+  const normalizedFeedback = feedback ?? null
+  const [localFeedback, setLocalFeedback] = useState<1 | -1 | null>(normalizedFeedback)
   const canReply = Boolean(message.content && messageId && onReply)
+
+  useEffect(() => {
+    setLocalFeedback(normalizedFeedback)
+  }, [messageId, normalizedFeedback])
 
   const handleFeedback = (rating: 1 | -1) => {
     const newRating = localFeedback === rating ? null : rating
@@ -32,10 +47,7 @@ export function ChatMessage({ message, messageId, feedback, onFeedback, onReply 
     }
   }
 
-  const timestamp = new Date().toLocaleTimeString(undefined, {
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  const timestamp = formatMessageTime(message.created_at)
 
   const handleReply = () => {
     if (!messageId || !message.content || !onReply) return

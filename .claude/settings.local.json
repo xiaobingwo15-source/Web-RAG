@@ -3,6 +3,9 @@
     "allow": [
       "mcp__supabase__execute_sql",
       "mcp__supabase__apply_migration"
+    ],
+    "ask": [
+      "WebFetch"
     ]
   },
   "enableAllProjectMcpServers": true,

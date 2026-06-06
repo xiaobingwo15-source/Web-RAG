@@ -6,6 +6,18 @@ from app.services.sql_engine import get_schema_description, execute_readonly_sql
 
 logger = logging.getLogger(__name__)
 
+SQL_SUMMARY_SYSTEM_PROMPT = (
+    "You are a data analyst assistant. Summarize database query results "
+    "in clear, natural language.\n\n"
+    "Be conversational and direct. Highlight key numbers and trends. "
+    "If the data is empty or inconclusive, say so honestly.\n\n"
+    "Structure your answer:\n"
+    "1. A brief direct answer (1-2 sentences)\n"
+    "2. Key details and trends from the data\n"
+    "3. A summary table if appropriate\n\n"
+    "Use natural Markdown formatting. Include a brief data table if appropriate."
+)
+
 
 async def execute(
     message: str,
@@ -60,6 +72,7 @@ async def execute(
             },
         }
     except Exception as e:
+        logger.error(f"SQL execution failed: {e}", exc_info=True)
         yield {
             "type": "thought",
             "content": f"SQL execution failed: {e}",
@@ -67,7 +80,7 @@ async def execute(
             "action_source": "sql",
             "action_data": {"error": str(e)},
         }
-        yield {"type": "token", "content": f"I encountered an error querying the database: {e}"}
+        yield {"type": "token", "content": "I encountered an issue retrieving that data. Please try rephrasing your question or ask something else."}
         return
 
     result_text = f"SQL Query: {sql}\n\nResults ({len(result['rows'])} rows):\n"
@@ -83,5 +96,5 @@ async def execute(
     }
     summary_prompt = f"Based on the following database query results, answer the user's question.\n\nQuestion: {message}\n\n{result_text}"
 
-    async for chunk in generate_chat_response_stream(client, summary_prompt, history, images=images):
+    async for chunk in generate_chat_response_stream(client, summary_prompt, history, images=images, system_prompt=SQL_SUMMARY_SYSTEM_PROMPT):
         yield {"type": "token", "content": chunk}

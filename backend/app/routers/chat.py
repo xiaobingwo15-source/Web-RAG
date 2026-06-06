@@ -181,7 +181,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
             create_thread(token, user.id, thread_id, title=title, tenant_id=user.tenant_id)
 
         stored_content = json_lib.dumps({"text": request.message, "images": request.images}) if request.images else request.message
-        save_message(token, user.id, thread_id, "user", stored_content, tenant_id=user.tenant_id, reply_to=request.reply_to)
+        user_message = save_message(token, user.id, thread_id, "user", stored_content, tenant_id=user.tenant_id, reply_to=request.reply_to)
 
         thread_messages = get_thread_messages(token, thread_id, tenant_id=user.tenant_id)
         active_message = build_active_message(request.message, thread_messages, request.reply_to)
@@ -195,6 +195,14 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
             groundedness_flag = False
             retrieval_quality: str | None = None
             try:
+                yield {
+                    "data": json_lib.dumps({
+                        "type": "user_message",
+                        "thread_id": thread_id,
+                        "message_id": user_message["id"],
+                        "created_at": user_message["created_at"],
+                    })
+                }
                 async for event in agent_execute(
                     token=token,
                     user_id=user.id,
@@ -275,6 +283,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                         "content": "",
                         "thread_id": thread_id,
                         "message_id": assistant_message["id"],
+                        "created_at": assistant_message["created_at"],
                         "done": True,
                     })
                 }

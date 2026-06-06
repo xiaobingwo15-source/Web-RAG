@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     embedding_model: str = "gemini-embedding-001"
     embedding_dimension: int = 768
 
+    # Context budget
+    max_context_tokens: int = 6000
+
+    # History window
+    max_history_messages: int = 10
+
     @property
     def cors_origins(self) -> list[str]:
         """Parse comma-separated FRONTEND_URL into a list of allowed origins."""

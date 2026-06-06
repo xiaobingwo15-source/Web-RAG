@@ -16,6 +16,7 @@ export interface ChatMessage {
   id?: string
   role: ChatMessageRole
   content: string
+  created_at?: string
   images?: string[]
   replyTo?: string  // ID of the message being replied to
   replyToContent?: string  // preview of the quoted message content
@@ -102,6 +103,7 @@ export function useChat() {
           id: m.id,
           role: m.role as ChatMessageRole,
           content: parsedContent.text,
+          created_at: m.created_at,
           images: parsedContent.images,
           replyTo: m.reply_to || undefined,
           replyToContent: m.reply_to ? contentMap[m.reply_to] : undefined,
@@ -126,10 +128,13 @@ export function useChat() {
   ) => {
     if (!accessToken) return
 
+    const now = new Date().toISOString()
+    const userClientId = crypto.randomUUID()
     const userMsg: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: userClientId,
       role: 'user',
       content,
+      created_at: now,
       images,
       replyTo,
       replyToContent,
@@ -140,7 +145,7 @@ export function useChat() {
     currentThoughts.current = []
     currentActionRef.current = null
 
-    setMessages((prev) => [...prev, { role: 'assistant', content: '', thoughts: [], actions: [] }])
+    setMessages((prev) => [...prev, { role: 'assistant', content: '', created_at: new Date().toISOString(), thoughts: [], actions: [] }])
 
     latencyTimer.current = new LatencyTimer('chat.send')
     await streamChat(
@@ -156,7 +161,7 @@ export function useChat() {
           rafId.current = requestAnimationFrame(flushTokens)
         }
       },
-      (messageId) => {
+      (meta) => {
         // Flush any buffered tokens before marking done
         if (rafId.current !== null) {
           cancelAnimationFrame(rafId.current)
@@ -177,7 +182,8 @@ export function useChat() {
           updated[updated.length - 1] = {
             ...last,
             content: last.content + buffered,
-            ...(messageId ? { id: messageId } : {}),
+            ...(meta?.messageId ? { id: meta.messageId } : {}),
+            ...(meta?.createdAt ? { created_at: meta.createdAt } : {}),
             actions,
           }
           return updated
@@ -276,6 +282,16 @@ export function useChat() {
       },
       replyTo,
       (h: StreamHandle) => { abortRef.current = h.abort },
+      (meta) => {
+        setMessages((prev) => prev.map((message) => {
+          if (message.id !== userClientId) return message
+          return {
+            ...message,
+            ...(meta.messageId ? { id: meta.messageId } : {}),
+            ...(meta.createdAt ? { created_at: meta.createdAt } : {}),
+          }
+        }))
+      },
     )
   }
 

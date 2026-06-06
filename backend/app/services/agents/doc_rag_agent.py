@@ -5,7 +5,7 @@ from app.services.retrieval import retrieve_context
 from app.services.embeddings import get_embedding_client, get_embedding
 from app.services.qdrant_db import search_similar_chunks
 from app.services.gemini import get_llm_client, generate_chat_response_stream, RAG_SYSTEM_PROMPT, get_primary_model
-from app.services.groundedness import GROUNDEDNESS_THRESHOLD, check_groundedness
+from app.services.groundedness import GROUNDEDNESS_THRESHOLD, check_groundedness, check_groundedness_with_llm
 from app.services.performance import elapsed_ms, log_latency, monotonic_ms
 from app.services.web_search import search_web
 
@@ -38,12 +38,20 @@ CORRECTIVE_RAG_SYSTEM_PROMPT = (
     "and supplementary web search results. "
     "Answer questions using the reference information provided below. "
     "Be conversational, warm, and direct — like a knowledgeable friend, not a corporate FAQ.\n\n"
+    "If the reference information does not contain the answer, say "
+    "\"I don't have that information in my knowledge base\" — do not guess or fabricate.\n\n"
     "The reference material comes from two sources:\n"
     "1. INTERNAL DOCUMENTS — the user's own knowledge base (marked as [Document])\n"
     "2. WEB SEARCH RESULTS — supplementary information from the web (marked as [Web])\n\n"
     "Prioritize internal document information when it is relevant and sufficient. "
     "Use web search results to fill gaps or provide additional context. "
     "If sources conflict, note the discrepancy honestly.\n\n"
+    "Structure your answer:\n"
+    "1. A brief direct answer (1-2 sentences)\n"
+    "2. Supporting details with source references\n"
+    "3. Sources section\n\n"
+    "When making claims, reference which source supports them using [1], [2], etc. "
+    "At the end of your answer, include a 'Sources' section listing each reference you used.\n\n"
     "Do not mention \"uploaded files\", \"retrieval\", or \"vector search\" — speak naturally. "
     "When citing web results, you may reference them by title.\n\n"
     "Use natural Markdown formatting as appropriate (headings, bullet points, bold for emphasis). "
@@ -53,8 +61,16 @@ CORRECTIVE_RAG_SYSTEM_PROMPT = (
 HYBRID_SYSTEM_PROMPT = (
     "You are a knowledgeable assistant. Answer using the reference information below. "
     "Some information comes from a curated knowledge base, some from web search results.\n\n"
+    "If the reference information does not contain the answer, say "
+    "\"I don't have that information in my knowledge base\" — do not guess or fabricate.\n\n"
     "When using web search information, naturally mention the source (e.g., 'According to [Source]...'). "
     "Be conversational, warm, and direct.\n\n"
+    "Structure your answer:\n"
+    "1. A brief direct answer (1-2 sentences)\n"
+    "2. Supporting details with source references\n"
+    "3. Sources section\n\n"
+    "When making claims, reference which source supports them using [1], [2], etc. "
+    "At the end of your answer, include a 'Sources' section listing each reference you used.\n\n"
     "If neither source fully covers the question, acknowledge what you do know and be honest about the gaps. "
     "Do not make up information.\n\n"
     "Use natural Markdown formatting as appropriate (headings, bullet points, bold for emphasis). "
@@ -63,6 +79,14 @@ HYBRID_SYSTEM_PROMPT = (
 
 VECTOR_SCORE_LOW_THRESHOLD = 0.5
 VECTOR_SCORE_MIN_THRESHOLD = 0.4
+
+# Inter-Agent Delegation constants
+DELEGATION_PROMPT = (
+    "Given a user query, does any part of it require database/data queries "
+    "(e.g., sales numbers, counts, metrics, revenue, reports) that can't be "
+    "answered from documents alone? "
+    "Reply with 'sql' if yes, 'none' if no."
+)
 
 
 def _public_sources(sources: list[dict]) -> list[dict]:
@@ -74,16 +98,17 @@ async def rewrite_query(message: str, history: list, client) -> str:
     if not history:
         return message
 
-    recent_user_msgs = [
-        msg["content"] if isinstance(msg["content"], str)
-        else next((p["text"] for p in msg["content"] if p.get("type") == "text"), "")
-        for msg in history[-6:]
-        if msg["role"] == "user"
-    ]
-    if not recent_user_msgs:
+    recent_context = []
+    for msg in history[-6:]:
+        content = msg["content"] if isinstance(msg["content"], str) else next((p["text"] for p in msg["content"] if p.get("type") == "text"), "")
+        if msg["role"] == "user":
+            recent_context.append(f"User: {content}")
+        elif msg["role"] == "assistant":
+            recent_context.append(f"Assistant: {content[:200]}")  # Truncate long answers
+    if not recent_context:
         return message
 
-    context_block = "\n".join(f"- {m}" for m in recent_user_msgs)
+    context_block = "\n".join(f"- {m}" for m in recent_context)
     user_prompt = (
         f"Conversation history:\n{context_block}\n\n"
         f"Follow-up question: {message}\n\n"
@@ -311,6 +336,104 @@ async def _extract_search_query(query: str, context_chunks: list[str], client) -
     return query
 
 
+# Groundedness retry constants
+GROUNDEDNESS_RETRY_PROMPT = (
+    "You are a search query optimizer. Given a user question and an answer that was "
+    "NOT well-supported by the retrieved documents, generate a more specific search query "
+    "that would find the missing information. Focus on the key claims that need support. "
+    "Return ONLY the refined search query, nothing else."
+)
+
+
+async def _refine_query_for_retry(original_query: str, weak_answer: str, client) -> str:
+    """Generate a refined search query based on the weak answer's unsupported claims."""
+    try:
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=get_primary_model(),
+                messages=[
+                    {"role": "system", "content": GROUNDEDNESS_RETRY_PROMPT},
+                    {"role": "user", "content": f"Original question: {original_query}\n\nWeak answer: {weak_answer[:500]}"},
+                ],
+                max_tokens=50,
+                temperature=0.2,
+            ),
+            timeout=5.0,
+        )
+        refined = response.choices[0].message.content.strip()
+        if refined:
+            logger.info(f"Retry query refinement: '{original_query[:50]}' -> '{refined[:50]}'")
+            return refined
+    except Exception as e:
+        logger.warning(f"Retry query refinement failed: {e}")
+    return original_query
+
+
+# ---------------------------------------------------------------------------
+# Inter-Agent Delegation
+# ---------------------------------------------------------------------------
+
+async def _check_delegation(query: str, client) -> str:
+    """Check if the query needs delegation to another agent (e.g., SQL)."""
+    try:
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=get_primary_model(),
+                messages=[
+                    {"role": "system", "content": DELEGATION_PROMPT},
+                    {"role": "user", "content": f"Query: {query}"},
+                ],
+                max_tokens=5,
+                temperature=0,
+            ),
+            timeout=3.0,
+        )
+        answer = (response.choices[0].message.content or "").strip().lower()
+        if "sql" in answer:
+            logger.info(f"Delegation check: query needs SQL agent")
+            print(f"[DOC_RAG] Delegation: query needs SQL data")
+            return "sql"
+    except Exception as e:
+        logger.warning(f"Delegation check failed: {e}")
+    return "none"
+
+
+async def _execute_sql_delegation(message: str, history: list) -> dict:
+    """Delegate to SQL sub-agent and collect results."""
+    from app.services.agents import sql_sub_agent
+
+    chunks = []
+    sources = []
+    full_answer = ""
+
+    try:
+        async for event in sql_sub_agent.execute(message, history):
+            if event.get("type") == "token":
+                full_answer += event.get("content", "")
+            elif event.get("type") == "thought":
+                action_data = event.get("action_data", {})
+                if "rows" in action_data:
+                    # Format SQL results as context chunks
+                    rows = action_data.get("rows", [])
+                    sql = action_data.get("sql", "")
+                    if rows:
+                        result_text = f"SQL Query: {sql}\nResults:\n"
+                        for row in rows[:10]:
+                            result_text += str(row) + "\n"
+                        chunks.append(f"[Database] {result_text}")
+                        sources.append({
+                            "id": "sql_delegation",
+                            "document_id": "sql_query",
+                            "content": result_text,
+                            "score": 1.0,
+                            "title": "Database Query Results",
+                        })
+    except Exception as e:
+        logger.warning(f"SQL delegation failed: {e}")
+
+    return {"chunks": chunks, "sources": sources, "answer": full_answer}
+
+
 # ---------------------------------------------------------------------------
 # Main execution pipeline
 # ---------------------------------------------------------------------------
@@ -336,6 +459,40 @@ async def execute(
     }
 
     client = get_llm_client()
+
+    # ── Inter-Agent Delegation: keyword pre-filter then LLM check ──
+    SQL_KEYWORDS = {"sales", "revenue", "total", "count", "average", "sum", "how many",
+                    "query", "database", "report", "metrics", "kpi", "quarterly", "monthly"}
+    message_words = set(message.lower().split())
+    delegated_sql_result = None
+    delegation_target = "none"
+    if message_words & SQL_KEYWORDS:
+        delegation_target = await _check_delegation(message, client)
+    if delegation_target == "sql":
+        yield {
+            "type": "thought",
+            "content": "Query involves database data. Delegating to SQL agent...",
+            "action_type": "delegating",
+            "action_source": "doc_rag",
+            "action_data": {"target": "sql"},
+        }
+        delegated_sql_result = await _execute_sql_delegation(message, history)
+        if delegated_sql_result.get("answer"):
+            yield {
+                "type": "thought",
+                "content": "SQL agent retrieved database results. Merging with document context...",
+                "action_type": "merging",
+                "action_source": "doc_rag",
+                "action_data": {"sql_chunks": len(delegated_sql_result.get("chunks", []))},
+            }
+        elif not delegated_sql_result.get("chunks"):
+            yield {
+                "type": "thought",
+                "content": "SQL delegation returned no results. Proceeding with document search only.",
+                "action_type": "merging",
+                "action_source": "doc_rag",
+            }
+
     augmented_query = await rewrite_query(message, history, client)
     if augmented_query != message:
         yield {
@@ -385,12 +542,32 @@ async def execute(
         for src in result.get("sources", []):
             key = src.get("content", "")[:200].strip().lower()
             if key not in seen_contents:
-                pass
+                seen_contents.add(key)
+                sources.append(src)
         if not sources and result.get("sources"):
             sources = result["sources"]
 
     public_sources = _public_sources(sources)
     print(f"[DOC_RAG] Retrieved {len(context_chunks)} context chunks (multi-query: {len(all_queries)} variants) for user_id={user_id}")
+
+    # ── Merge delegated SQL results into context ──
+    if delegated_sql_result and delegated_sql_result.get("chunks"):
+        sql_chunks = delegated_sql_result["chunks"]
+        for chunk in sql_chunks:
+            key = chunk[:200].strip().lower()
+            if key not in seen_contents:
+                seen_contents.add(key)
+                context_chunks.insert(0, chunk)  # Prepend SQL results (high priority)
+        sources = delegated_sql_result.get("sources", []) + sources
+        public_sources = _public_sources(sources)
+        print(f"[DOC_RAG] Merged {len(sql_chunks)} SQL delegation chunks, total now {len(context_chunks)}")
+        yield {
+            "type": "thought",
+            "content": f"Merged {len(sql_chunks)} database results with {len(context_chunks) - len(sql_chunks)} document sections.",
+            "action_type": "merging",
+            "action_source": "doc_rag",
+            "action_data": {"sql_chunks": len(sql_chunks), "total_chunks": len(context_chunks)},
+        }
 
     # HyDE: generate a hypothetical answer, embed it, and search for similar chunks
     if enable_hyde and _is_hyde_eligible(augmented_query):
@@ -636,48 +813,122 @@ async def execute(
     if used_web_fallback:
         yield {"type": "token", "content": "> I found limited relevant documents, so I also searched the web to give you a better answer.\n\n"}
 
-    # Collect streamed response for groundedness check
-    full_answer = ""
-    llm_start = monotonic_ms()
-    first_token_logged = False
-    async for chunk in generate_chat_response_stream(client, message, history, context_chunks, images=images, system_prompt=system_prompt):
-        if not first_token_logged:
-            log_latency(
-                "llm.first_token",
-                elapsed_ms(llm_start),
-                mode=retrieval_mode,
-                user_id=user_id,
-                target_user_id=target_user_id,
-                tenant_id=tenant_id,
-                thread_id=thread_id,
-                context_chunk_count=len(context_chunks),
-            )
-            first_token_logged = True
-        full_answer += chunk
-        yield {"type": "token", "content": chunk}
-    log_latency(
-        "llm.completion",
-        elapsed_ms(llm_start),
-        mode=retrieval_mode,
-        user_id=user_id,
-        target_user_id=target_user_id,
-        tenant_id=tenant_id,
-        thread_id=thread_id,
-        context_chunk_count=len(context_chunks),
-        answer_chars=len(full_answer),
-    )
+    # ── Generate answer with optional groundedness retry ──
+    max_retries = 1
+    attempt = 0
+    is_grounded = True
+    groundedness = 1.0
+    retry_retrieval_log_ids = []
 
-    # Post-generation groundedness check
-    groundedness = check_groundedness(full_answer, context_chunks)
-    logger.info(f"Groundedness score: {groundedness:.3f} (threshold={GROUNDEDNESS_THRESHOLD})")
+    while attempt <= max_retries:
+        full_answer = ""
+        llm_start = monotonic_ms()
+        first_token_logged = False
+        async for chunk in generate_chat_response_stream(client, message, history, context_chunks, images=images, system_prompt=system_prompt):
+            if not first_token_logged:
+                log_latency(
+                    "llm.first_token",
+                    elapsed_ms(llm_start),
+                    mode=retrieval_mode,
+                    user_id=user_id,
+                    target_user_id=target_user_id,
+                    tenant_id=tenant_id,
+                    thread_id=thread_id,
+                    context_chunk_count=len(context_chunks),
+                )
+                first_token_logged = True
+            full_answer += chunk
+            yield {"type": "token", "content": chunk}
+        log_latency(
+            "llm.completion",
+            elapsed_ms(llm_start),
+            mode=retrieval_mode,
+            user_id=user_id,
+            target_user_id=target_user_id,
+            tenant_id=tenant_id,
+            thread_id=thread_id,
+            context_chunk_count=len(context_chunks),
+            answer_chars=len(full_answer),
+        )
 
-    if groundedness < GROUNDEDNESS_THRESHOLD and context_chunks:
+        # Groundedness check (two-stage: token-overlap + LLM)
+        groundedness, is_grounded = await check_groundedness_with_llm(
+            full_answer, context_chunks, client, get_primary_model()
+        )
+        logger.info(f"Groundedness attempt {attempt+1}: score={groundedness:.3f}, is_grounded={is_grounded}")
+
+        if is_grounded or attempt >= max_retries:
+            break
+
+        # ── Retry: refine query and re-retrieve ──
+        attempt += 1
         yield {
             "type": "thought",
-            "content": f"Low groundedness detected ({groundedness:.0%}). Answer may contain information not found in your documents.",
+            "content": f"Answer may not be fully grounded ({groundedness:.0%}). Refining search and trying again...",
+            "action_type": "retrying",
+            "action_source": "doc_rag",
+            "action_data": {"attempt": attempt, "groundedness": round(groundedness, 3)},
+        }
+
+        refined_query = await _refine_query_for_retry(augmented_query, full_answer, client)
+        yield {
+            "type": "thought",
+            "content": f"Refined search: “{refined_query[:80]}”",
+            "action_type": "searching",
+            "action_source": "doc_rag",
+            "action_data": {"refined_query": refined_query},
+        }
+
+        retry_result = await retrieve_context(
+            token, user_id, refined_query, mode=retrieval_mode,
+            target_user_id=target_user_id, tenant_id=tenant_id, thread_id=thread_id,
+        )
+        retry_retrieval_log_ids.extend(retry_result.get("retrieval_log_ids", []))
+
+        if retry_result.get("chunks"):
+            # Merge retry chunks with existing, deduplicating
+            seen_keys = {c[:200].strip().lower() for c in context_chunks}
+            added = 0
+            for chunk in retry_result["chunks"]:
+                key = chunk[:200].strip().lower()
+                if key not in seen_keys:
+                    context_chunks.append(chunk)
+                    seen_keys.add(key)
+                    added += 1
+            if added:
+                yield {
+                    "type": "thought",
+                    "content": f"Retry retrieval found {added} additional relevant section{'s' if added != 1 else ''}.",
+                    "action_type": "searching",
+                    "action_source": "doc_rag",
+                    "action_data": {"added": added},
+                }
+                # Update sources for the sources event
+                sources = sources + retry_result.get("sources", [])
+                yield {"type": "sources", "sources": _public_sources(sources)}
+            else:
+                yield {
+                    "type": "thought",
+                    "content": "Retry retrieval found no new information.",
+                    "action_type": "searching",
+                    "action_source": "doc_rag",
+                }
+        else:
+            yield {
+                "type": "thought",
+                "content": "Retry retrieval found no additional results.",
+                "action_type": "searching",
+                "action_source": "doc_rag",
+            }
+
+    # ── Post-retry groundedness handling ──
+    if not is_grounded and context_chunks:
+        yield {
+            "type": "thought",
+            "content": f"Groundedness still low after retry ({groundedness:.0%}). Adding disclaimer.",
             "action_type": "guardrail",
             "action_source": "doc_rag",
-            "action_data": {"groundedness": round(groundedness, 3), "threshold": GROUNDEDNESS_THRESHOLD},
+            "action_data": {"groundedness": round(groundedness, 3), "retried": attempt > 0},
         }
         disclaimer = (
             "\n\n---\n⚠️ *Note: Parts of this answer may not be directly sourced from your documents. "
@@ -685,10 +936,12 @@ async def execute(
         )
         yield {"type": "token", "content": disclaimer}
 
+    all_retrieval_log_ids = retrieval_log_ids + retry_retrieval_log_ids
     yield {
         "type": "rag_quality",
-        "retrieval_log_ids": retrieval_log_ids,
+        "retrieval_log_ids": all_retrieval_log_ids,
         "groundedness": round(groundedness, 3),
-        "groundedness_flag": groundedness < GROUNDEDNESS_THRESHOLD,
+        "groundedness_flag": not is_grounded,
         "retrieval_quality": quality,
+        "retried": attempt > 0,
     }

@@ -24,9 +24,17 @@ RAG_SYSTEM_PROMPT = (
     "You are a knowledgeable assistant with access to a curated knowledge base. "
     "Answer questions using the reference information provided below. "
     "Be conversational, warm, and direct — like a knowledgeable friend, not a corporate FAQ.\n\n"
+    "If the reference information does not contain the answer, say "
+    "\"I don't have that information in my knowledge base\" — do not guess or fabricate.\n\n"
     "If the reference information doesn't fully cover the question, acknowledge what you do know "
     "and be honest about the gaps. Do not make up information.\n\n"
+    "Structure your answer:\n"
+    "1. A brief direct answer (1-2 sentences)\n"
+    "2. Supporting details with source references\n"
+    "3. Sources section\n\n"
     "Do not mention \"documents\", \"uploaded files\", or \"retrieval\" — speak naturally.\n\n"
+    "When making claims, reference which source supports them using [1], [2], etc. "
+    "At the end of your answer, include a 'Sources' section listing each reference you used.\n\n"
     "Use natural Markdown formatting as appropriate (headings, bullet points, bold for emphasis). "
     "Keep answers well-structured but not overly rigid."
 )
@@ -101,6 +109,60 @@ def get_llm_client() -> AsyncOpenAI:
     return _llm_clients[cache_key]
 
 
+MAX_CONTEXT_TOKENS_DEFAULT = 6000
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate: ~4 chars per token for English."""
+    return len(text) // 4
+
+
+def _truncate_context(chunks: list[str], max_tokens: int = MAX_CONTEXT_TOKENS_DEFAULT) -> list[str]:
+    """Truncate context chunks to fit within token budget.
+
+    Chunks are assumed to be ordered by relevance (highest first).
+    Keeps as many top-ranked chunks as possible, truncating or dropping the rest.
+    """
+    if not chunks:
+        return chunks
+
+    total = sum(_estimate_tokens(c) for c in chunks)
+    if total <= max_tokens:
+        return chunks
+
+    logger.info(f"Context truncation: {total} estimated tokens > {max_tokens} budget, {len(chunks)} chunks")
+
+    kept = []
+    used = 0
+    for chunk in chunks:
+        chunk_tokens = _estimate_tokens(chunk)
+        if used + chunk_tokens <= max_tokens:
+            kept.append(chunk)
+            used += chunk_tokens
+        else:
+            # Try to fit a truncated version of this chunk
+            remaining = max_tokens - used
+            if remaining > 100:  # Only include if we can fit at least 100 tokens
+                char_budget = remaining * 4
+                kept.append(chunk[:char_budget].rstrip() + "...")
+                logger.info(f"Truncated last chunk to {char_budget} chars")
+            break
+
+    logger.info(f"Context after truncation: {len(kept)} chunks, ~{used} tokens")
+    return kept
+
+
+def _trim_history(history: list[dict], max_messages: int = 10) -> list[dict]:
+    """Keep the last N messages to prevent context window overflow.
+
+    If the history exceeds max_messages, keep the most recent messages.
+    """
+    if not history or len(history) <= max_messages:
+        return history
+
+    return history[-max_messages:]
+
+
 def _build_messages(
     message: str,
     history: list[dict] | None = None,
@@ -113,14 +175,19 @@ def _build_messages(
         messages.append({"role": "system", "content": system_prompt})
 
     if history:
+        max_hist = _settings.max_history_messages
+        history = _trim_history(history, max_hist)
         messages.extend(history)
 
     use_rag = bool(context_chunks)
     if use_rag:
-        context = "\n---\n".join(context_chunks)
+        max_tok = _settings.max_context_tokens
+        bounded_chunks = _truncate_context(context_chunks, max_tok)
+        numbered_chunks = [f"[{i+1}] {chunk}" for i, chunk in enumerate(bounded_chunks)]
+        context = "\n\n".join(numbered_chunks)
         prompt_text = (
             f"Use the following reference information to answer the question:\n\n"
-            f"---\n{context}\n---\n\n"
+            f"{context}\n\n"
             f"Question: {message}"
         )
     else:
