@@ -10,6 +10,9 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react(), tailwindcss()],
+    experimental: {
+      bundledDev: false,
+    },
     define: {
       'import.meta.env.VITE_SUPABASE_URL': JSON.stringify(
         readEnv('VITE_SUPABASE_URL') ?? readEnv('SUPABASE_URL') ?? ''

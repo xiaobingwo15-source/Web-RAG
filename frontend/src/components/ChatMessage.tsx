@@ -143,10 +143,10 @@ export function ChatMessage({ message, messageId, feedback, onFeedback, onReply 
                 <div key={`${source.chunk_id}-${index}`} className="rounded bg-[#F5F6F6] px-2.5 py-1.5">
                   <div className="flex items-center justify-between gap-2 text-[11px]">
                     <span className="truncate font-medium text-[#111B21]">
-                      {source.filename || `Document ${source.document_id.slice(0, 8)}`}
+                      {source.filename || `Document ${(source.document_id ?? '').slice(0, 8) || 'Unknown'}`}
                     </span>
                     <span className="shrink-0 text-[#667781]">
-                      {source.retrieval_mode} · {source.score.toFixed(3)}
+                      {source.retrieval_mode} · {(source.score ?? 0).toFixed(3)}
                     </span>
                   </div>
                   <p className="mt-0.5 line-clamp-2 text-[12px] text-[#667781]">
