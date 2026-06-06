@@ -17,23 +17,34 @@ Fully-managed Agentic RAG application. Features a clean client-facing chat layou
 1. Upload (PDF/Excel/CSV/TXT/MD) → `backend/app/services/text_extractor.py`
 2. Optional OCR via Gemini multimodal → `backend/app/services/ocr_service.py`
 3. Metadata extraction (title, summary, tags, language) → `backend/app/services/metadata_extractor.py`
-4. Chunking (1000 chars, 200 overlap) → `backend/app/services/chunker.py`
-5. Embedding (`gemini-embedding-001`, 768-dim) → `backend/app/services/embeddings.py`
+4. Chunking (parent-child: 1500/500 chars, 50 overlap) → `backend/app/services/chunker.py`
+5. Embedding (`gemini-embedding-001`, 768-dim, configurable via env) → `backend/app/services/embeddings.py`
 6. Store vectors in Qdrant → `backend/app/services/qdrant_db.py` (`insert_chunks`)
 7. Store text in Supabase for FTS → `backend/app/services/database.py` (`insert_chunks_for_fts`)
 
 ### Query Retrieval Flow (default: hybrid mode)
-1. User message → embedded via `gemini-embedding-001`
-2. Parallel search: Qdrant vector search + Supabase FTS (`search_chunks_fts` RPC)
-3. Merge via Reciprocal Rank Fusion (RRF, k=60)
-4. LLM-based reranking → `backend/app/services/reranker.py`
-5. Top chunks injected into prompt with `RAG_SYSTEM_PROMPT`
+1. User message → query rewriting (follow-up context) → multi-query expansion (3 variants)
+2. Optional HyDE: generate hypothetical answer, embed it, search for similar chunks
+3. Parallel search: Qdrant vector search + Supabase FTS (`search_chunks_fts` RPC, single version with `match_tenant_id`)
+4. Merge via Reciprocal Rank Fusion (RRF, k=60), dedup by chunk content prefix (first 200 chars)
+5. Cohere reranker (`rerank-v3.5`) → `backend/app/services/reranker.py` (fallback: keyword overlap scorer)
+6. Parent resolution: child chunks replaced by their parent for broader context
+7. Chunks injected into prompt with filename metadata: `[N] (Source: filename) content...`
 
 ### Agent Routing
 - `backend/app/services/agent_supervisor.py` — Routes queries to doc_rag, sql, web_search, or general agent
 - When `use_documents=True`, always routes to `doc_rag` first
-- `backend/app/services/agents/doc_rag_agent.py` — Calls `retrieve_context()` then streams LLM response
+- `backend/app/services/agents/doc_rag_agent.py` — Full RAG pipeline:
+  - Multi-query expansion + HyDE + corrective RAG (web fallback when docs insufficient)
+  - Groundedness check (token-overlap + LLM) with retry on low scores
+  - Source dedup uses separate tracking sets for chunks vs sources (aligned 1:1 via `context_sources`)
 - Hardcoded refusal when 0 chunks found (LLM cannot be trusted to refuse on its own)
+
+### System Prompts (all language-aware)
+- `RAG_SYSTEM_PROMPT` — Standard doc RAG (in `gemini.py`)
+- `CORRECTIVE_RAG_SYSTEM_PROMPT` — When web search supplements documents (in `doc_rag_agent.py`)
+- `HYBRID_SYSTEM_PROMPT` — When external context needed mid-answer (in `doc_rag_agent.py`)
+- All prompts instruct: match user's language, don't fabricate translations, label translated content
 
 ## Rules
 - Backend runs on Python + FastAPI with Uvicorn servers.
@@ -43,6 +54,9 @@ Fully-managed Agentic RAG application. Features a clean client-facing chat layou
 - Deliver streaming conversations over fast Server-Sent Events (SSE).
 - Rely on Gemini's native long-running operations polling to update client file indexing states.
 - Manage context states using Gemini's native persistent conversation parameters.
+- LLM context chunks always include source filename metadata for proper citation attribution.
+- Source dedup must use separate tracking sets for chunks and sources — never share a single `seen` set.
+- System prompts must be language-aware: match user language, never fabricate translations from monolingual source docs.
 
 ## Planning
 - Save all structural execution plans into the `.agent/plans/` folder.
@@ -87,3 +101,8 @@ Before planning, implementing, debugging, reviewing, or executing any task — *
 
 ## Progress
 Reference `PROGRESS.md` to see exactly which module layers are locked in or currently under active development.
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+<!-- SPECKIT END -->

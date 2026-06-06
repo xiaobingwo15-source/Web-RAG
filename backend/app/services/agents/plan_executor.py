@@ -132,25 +132,37 @@ async def _execute_subtask(
     return {"query": query, "source": source, "chunks": chunks, "sources": sources}
 
 
-def _merge_results(results: list[dict]) -> tuple[list[str], list[dict]]:
-    """Merge sub-task results, deduplicating by content."""
-    seen: set[str] = set()
+def _merge_results(results: list[dict]) -> tuple[list[str], list[dict], list[dict]]:
+    """Merge sub-task results, deduplicating by content.
+
+    Returns:
+        (all_chunks, all_sources, context_sources) — context_sources is aligned 1:1 with all_chunks
+    """
+    seen_chunk_keys: set[str] = set()
+    seen_source_keys: set[str] = set()
     all_chunks: list[str] = []
     all_sources: list[dict] = []
+    context_sources: list[dict] = []  # Aligned with all_chunks for LLM source attribution
 
     for result in results:
-        for chunk in result.get("chunks", []):
+        result_chunks = result.get("chunks", [])
+        result_sources = result.get("sources", [])
+        for i, chunk in enumerate(result_chunks):
             key = chunk[:200].strip().lower()
-            if key not in seen:
-                seen.add(key)
+            if key not in seen_chunk_keys:
+                seen_chunk_keys.add(key)
                 all_chunks.append(chunk)
-        for src in result.get("sources", []):
+                if i < len(result_sources):
+                    context_sources.append(result_sources[i])
+                else:
+                    context_sources.append({})
+        for src in result_sources:
             key = src.get("content", "")[:200].strip().lower()
-            if key not in seen:
-                seen.add(key)
+            if key not in seen_source_keys:
+                seen_source_keys.add(key)
                 all_sources.append(src)
 
-    return all_chunks, all_sources
+    return all_chunks, all_sources, context_sources
 
 
 def _public_sources(sources: list[dict]) -> list[dict]:
@@ -213,7 +225,7 @@ async def execute(
 
     # Filter out exceptions
     valid_results = [r for r in results if isinstance(r, dict)]
-    all_chunks, all_sources = _merge_results(valid_results)
+    all_chunks, all_sources, context_sources = _merge_results(valid_results)
 
     yield {
         "type": "thought",
@@ -245,5 +257,5 @@ async def execute(
         "action_source": "plan_executor",
     }
 
-    async for chunk in generate_chat_response_stream(client, message, history, all_chunks, images=images, system_prompt=system_prompt):
+    async for chunk in generate_chat_response_stream(client, message, history, all_chunks, images=images, system_prompt=system_prompt, context_sources=context_sources):
         yield {"type": "token", "content": chunk}

@@ -2,10 +2,16 @@
   "permissions": {
     "allow": [
       "mcp__supabase__execute_sql",
-      "mcp__supabase__apply_migration"
+      "mcp__supabase__apply_migration",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:github.github.io)",
+      "WebFetch"
     ],
     "ask": [
-      "WebFetch"
+      "Remove",
+      "Create PR"
     ]
   },
   "enableAllProjectMcpServers": true,

@@ -28,6 +28,14 @@ RAG_SYSTEM_PROMPT = (
     "\"I don't have that information in my knowledge base\" — do not guess or fabricate.\n\n"
     "If the reference information doesn't fully cover the question, acknowledge what you do know "
     "and be honest about the gaps. Do not make up information.\n\n"
+    "IMPORTANT — Language handling:\n"
+    "- Match the user's language. If they write in Chinese, respond in Chinese. If in English, respond in English.\n"
+    "- If the user asks for content in a language that is NOT present in the reference material, "
+    "answer using the available source language and clearly note: \"The knowledge base currently only contains "
+    "[language] content, so I cannot provide an official [requested language] version from the documents.\"\n"
+    "- Do NOT fabricate or hallucinate translations as if they were sourced from documents.\n"
+    "- If you provide a translation for convenience, clearly label it as \"(translated for reference)\" "
+    "and do NOT cite document sources for the translated portions.\n\n"
     "Structure your answer:\n"
     "1. A brief direct answer (1-2 sentences)\n"
     "2. Supporting details with source references\n"
@@ -169,6 +177,7 @@ def _build_messages(
     context_chunks: list[str] | None = None,
     system_prompt: str | None = None,
     images: list[str] | None = None,
+    context_sources: list[dict] | None = None,
 ) -> list[dict]:
     messages = []
     if system_prompt:
@@ -183,7 +192,16 @@ def _build_messages(
     if use_rag:
         max_tok = _settings.max_context_tokens
         bounded_chunks = _truncate_context(context_chunks, max_tok)
-        numbered_chunks = [f"[{i+1}] {chunk}" for i, chunk in enumerate(bounded_chunks)]
+        # Build numbered context with optional filename tags for source attribution
+        numbered_chunks = []
+        for i, chunk in enumerate(bounded_chunks):
+            prefix = f"[{i+1}]"
+            # If we have source metadata, include the filename so the LLM can cite by document name
+            if context_sources and i < len(context_sources):
+                filename = context_sources[i].get("filename") or context_sources[i].get("title") or ""
+                if filename:
+                    prefix = f"[{i+1}] (Source: {filename})"
+            numbered_chunks.append(f"{prefix} {chunk}")
         context = "\n\n".join(numbered_chunks)
         prompt_text = (
             f"Use the following reference information to answer the question:\n\n"
@@ -245,6 +263,7 @@ async def generate_chat_response(
     history: list[dict] | None = None,
     context_chunks: list[str] | None = None,
     images: list[str] | None = None,
+    context_sources: list[dict] | None = None,
 ) -> str:
     langfuse = get_client()
     langfuse.update_current_generation(
@@ -252,7 +271,7 @@ async def generate_chat_response(
         input={"message": message},
     )
 
-    messages = _build_messages(message, history, context_chunks, RAG_SYSTEM_PROMPT if context_chunks else None, images=images)
+    messages = _build_messages(message, history, context_chunks, RAG_SYSTEM_PROMPT if context_chunks else None, images=images, context_sources=context_sources)
     logger.info(f"Generating chat response with {len(context_chunks or [])} context chunks")
 
     last_error = None
@@ -297,6 +316,7 @@ async def generate_chat_response_stream(  # noqa: C901
     context_chunks: list[str] | None = None,
     images: list[str] | None = None,
     system_prompt: str | None = None,
+    context_sources: list[dict] | None = None,
 ):
     langfuse = get_client()
     langfuse.update_current_generation(
@@ -305,7 +325,7 @@ async def generate_chat_response_stream(  # noqa: C901
     )
 
     effective_system_prompt = system_prompt if system_prompt else (RAG_SYSTEM_PROMPT if context_chunks else None)
-    messages = _build_messages(message, history, context_chunks, effective_system_prompt, images=images)
+    messages = _build_messages(message, history, context_chunks, effective_system_prompt, images=images, context_sources=context_sources)
     logger.info(f"Generating streaming chat response with {len(context_chunks or [])} context chunks")
 
     # Check circuit breaker state before attempting the call

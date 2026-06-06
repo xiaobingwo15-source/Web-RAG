@@ -4,7 +4,8 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - main
+      - Staging
+      - master
 
 jobs:
   frontend-latency:
@@ -39,7 +40,7 @@ jobs:
         shell: bash
         run: |
           missing=()
-          for name in VITE_SUPABASE_URL VITE_SUPABASE_ANON_KEY; do
+          for name in VITE_SUPABASE_URL VITE_SUPABASE_ANON_KEY E2E_ADMIN_EMAIL E2E_ADMIN_PASSWORD; do
             if [ -z "${!name}" ]; then
               missing+=("$name")
             fi
