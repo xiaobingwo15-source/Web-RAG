@@ -302,12 +302,25 @@ export interface DocumentUploadResponse {
   status: string
 }
 
+export type PdfParserMode = 'auto' | 'pypdfium' | 'unstructured' | 'mineru' | 'ocr'
+
+export interface DocumentParserMetadata {
+  pdf_parser?: string
+  pdf_parser_requested?: string
+  pdf_parser_planned?: string
+  pdf_page_count?: number
+  pdf_text_page_count?: number
+  extracted_char_count?: number
+  tables_detected?: number
+  extraction_quality_warning?: string
+}
+
 export interface DocumentStatus {
   id: string
   filename: string
   status: string
   error_message?: string
-  metadata?: {
+  metadata?: DocumentParserMetadata & {
     title?: string
     summary?: string
     tags?: string[]
@@ -323,10 +336,12 @@ export async function uploadDocument(
   file: File,
   token: string,
   useOcr: boolean = false,
+  pdfParserMode: PdfParserMode = 'auto',
 ): Promise<DocumentUploadResponse> {
   const formData = new FormData()
   formData.append('file', file)
   if (useOcr) formData.append('use_ocr', 'true')
+  formData.append('pdf_parser_mode', pdfParserMode)
 
   const response = await fetch('/api/documents/upload', {
     method: 'POST',
@@ -410,7 +425,7 @@ export async function deleteDocument(
 export interface DocumentChunksResponse {
   document_id: string
   filename: string
-  metadata?: {
+  metadata?: DocumentParserMetadata & {
     title?: string
     summary?: string
     tags?: string[]

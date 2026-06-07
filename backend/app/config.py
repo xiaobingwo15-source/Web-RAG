@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     owner_api_key: str = ""
     widget_token_secret: str = ""
 
+    # Optional MinerU agent parser for complex PDF layout/table/formula extraction.
+    mineru_agent_enabled: bool = False
+    mineru_agent_base_url: str = "https://mineru.net/api/v1/agent"
+    mineru_agent_max_bytes: int = 10 * 1024 * 1024
+    mineru_poll_timeout_seconds: int = 300
+    mineru_poll_interval_seconds: int = 3
+    mineru_language: str = "ch"
+
     # Rate limiting
     rate_limit_chat_requests: int = 30
     rate_limit_chat_window: int = 60

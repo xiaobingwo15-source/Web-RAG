@@ -200,7 +200,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                         "type": "user_message",
                         "thread_id": thread_id,
                         "message_id": user_message["id"],
-                        "created_at": user_message["created_at"],
+                        "created_at": user_message.get("created_at"),
                     })
                 }
                 async for event in agent_execute(
@@ -283,7 +283,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                         "content": "",
                         "thread_id": thread_id,
                         "message_id": assistant_message["id"],
-                        "created_at": assistant_message["created_at"],
+                        "created_at": assistant_message.get("created_at"),
                         "done": True,
                     })
                 }

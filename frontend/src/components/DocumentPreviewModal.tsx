@@ -1,5 +1,5 @@
 import { useState, useEffect, type ReactNode } from 'react'
-import { X, FileText, Loader2, Copy, Check, Maximize2, Minimize2 } from 'lucide-react'
+import { X, FileText, Loader2, Copy, Check, Maximize2, Minimize2, AlertTriangle } from 'lucide-react'
 import { fetchDocumentChunks, type DocumentChunksResponse } from '@/lib/api'
 
 /** Escape HTML special chars. */
@@ -317,6 +317,21 @@ function textToDocumentHtml(text: string): string {
   }
 
   return parts.join('')
+}
+
+function parserLabel(value?: string): string {
+  switch (value) {
+    case 'pypdfium':
+      return 'Fast text'
+    case 'unstructured':
+      return 'Layout tables'
+    case 'mineru':
+      return 'MinerU'
+    case 'ocr':
+      return 'OCR'
+    default:
+      return 'Auto'
+  }
 }
 
 export function DocumentPreviewModal({
@@ -679,9 +694,41 @@ export function DocumentPreviewModal({
                       {data.metadata.language}
                     </span>
                   )}
+                </div>
+              )}
+
+              {(data.metadata?.pdf_parser || data.metadata?.extracted_char_count || data.metadata?.pdf_page_count) && (
+                <div className="flex flex-wrap gap-1.5 shrink-0">
+                  {data.metadata?.pdf_parser && (
+                    <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs text-muted-foreground">
+                      Parser: {parserLabel(data.metadata.pdf_parser)}
+                    </span>
+                  )}
+                  {typeof data.metadata?.extracted_char_count === 'number' && (
+                    <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs text-muted-foreground">
+                      {data.metadata.extracted_char_count.toLocaleString()} chars
+                    </span>
+                  )}
+                  {typeof data.metadata?.pdf_page_count === 'number' && (
+                    <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs text-muted-foreground">
+                      {data.metadata.pdf_page_count} pages
+                    </span>
+                  )}
+                  {typeof data.metadata?.tables_detected === 'number' && data.metadata.tables_detected > 0 && (
+                    <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-xs text-primary">
+                      {data.metadata.tables_detected} tables
+                    </span>
+                  )}
                   <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs text-muted-foreground">
                     {data.chunk_count} chunks
                   </span>
+                </div>
+              )}
+
+              {data.metadata?.extraction_quality_warning && (
+                <div className="flex items-start gap-2 rounded-lg border border-yellow-300 bg-yellow-50 px-3 py-2 text-yellow-800">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <p className="text-xs leading-relaxed">{data.metadata.extraction_quality_warning}</p>
                 </div>
               )}
 

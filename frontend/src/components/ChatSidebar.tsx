@@ -1,10 +1,10 @@
 import { DocumentUpload } from './DocumentUpload'
-import type { DocumentStatus } from '@/lib/api'
+import type { DocumentStatus, PdfParserMode } from '@/lib/api'
 
 interface ChatSidebarProps {
   documents: DocumentStatus[]
   isUploading: boolean
-  onUpload: (files: File[], useOcr?: boolean) => void
+  onUpload: (files: File[], useOcr?: boolean, pdfParserMode?: PdfParserMode) => void
   duplicateWarning?: string | null
   onDismissWarning?: () => void
   uploadFailure?: { filename: string; error: string } | null

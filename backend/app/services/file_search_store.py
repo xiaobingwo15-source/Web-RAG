@@ -1,7 +1,7 @@
 import asyncio
 import hashlib
 import logging
-from app.services.text_extractor import extract_text, extract_text_with_ocr
+from app.services.text_extractor import extract_text_with_metadata
 from app.services.chunker import chunk_text, create_parent_child_chunks
 from app.services.embeddings import get_embedding_client, get_embeddings
 from app.config import Settings
@@ -28,14 +28,28 @@ async def process_document(
     file_bytes: bytes,
     mime_type: str,
     use_ocr: bool = False,
+    pdf_parser_mode: str = "auto",
+    filename: str | None = None,
     tenant_id: str | None = None,
 ) -> dict:
     try:
         content_hash = compute_content_hash(file_bytes)
         update_document_hash(access_token, document_id, content_hash)
 
-        logger.info(f"Processing document {document_id}: extracting text (ocr={use_ocr})")
-        text = await extract_text_with_ocr(file_bytes, mime_type, use_ocr)
+        logger.info(
+            "Processing document %s: extracting text (ocr=%s, pdf_parser_mode=%s)",
+            document_id,
+            use_ocr,
+            pdf_parser_mode,
+        )
+        extraction = await extract_text_with_metadata(
+            file_bytes,
+            mime_type,
+            use_ocr=use_ocr,
+            pdf_parser_mode=pdf_parser_mode,
+            filename=filename,
+        )
+        text = extraction.text
 
         if not text.strip():
             raise ValueError("No text content extracted from file")
@@ -43,6 +57,7 @@ async def process_document(
         logger.info(f"Document {document_id}: extracting metadata")
         gemini_client = get_llm_client()
         metadata = await extract_metadata(gemini_client, text[:2000])
+        metadata = {**metadata, **extraction.metadata}
         update_document_metadata(access_token, document_id, metadata)
         logger.info(f"Document {document_id}: metadata extracted — {metadata}")
 
@@ -82,6 +97,7 @@ async def process_document(
                 "chunk_index": i,
                 "parent_id": child["parent_id"],
                 "chunk_type": "child",
+                "metadata": metadata,
             })
 
         # Build parent chunk data with zero-vector embeddings
@@ -94,6 +110,7 @@ async def process_document(
                 "embedding": zero_vector,
                 "chunk_index": len(children) + i,
                 "chunk_type": "parent",
+                "metadata": metadata,
             })
 
         logger.info(f"Document {document_id}: storing {len(child_chunk_data)} child + {len(parent_chunk_data)} parent chunks")
