@@ -106,6 +106,8 @@ async def insert_chunks(
             payload["parent_id"] = chunk["parent_id"]
         if chunk.get("chunk_type"):
             payload["chunk_type"] = chunk["chunk_type"]
+        if chunk.get("metadata"):
+            payload["metadata"] = chunk["metadata"]
         points.append(
             models.PointStruct(id=point_ids[i], vector=chunk["embedding"], payload=payload)
         )
@@ -169,6 +171,7 @@ async def search_similar_chunks(
             "document_id": r.payload.get("document_id"),
             "content": r.payload.get("content"),
             "similarity": r.score,
+            "metadata": r.payload.get("metadata", {}),
             **({"parent_id": r.payload["parent_id"]} if r.payload.get("parent_id") else {}),
         }
         for r in results.points
@@ -187,7 +190,7 @@ async def get_parent_chunks_by_ids(parent_ids: list[str]) -> dict[str, dict]:
     """Batch-fetch parent chunks by their Qdrant point IDs.
 
     Returns:
-        Dict mapping parent_id -> {"content": str, "document_id": str}
+        Dict mapping parent_id -> {"content": str, "document_id": str, "metadata": dict}
     """
     if not parent_ids:
         return {}
@@ -202,6 +205,7 @@ async def get_parent_chunks_by_ids(parent_ids: list[str]) -> dict[str, dict]:
         str(point.id): {
             "content": point.payload.get("content", ""),
             "document_id": point.payload.get("document_id", ""),
+            "metadata": point.payload.get("metadata", {}),
         }
         for point in results
     }

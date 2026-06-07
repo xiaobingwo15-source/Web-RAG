@@ -7,7 +7,12 @@ import {
   deleteDocument as apiDeleteDocument,
   DuplicateError,
   type DocumentStatus,
+  type PdfParserMode,
 } from '@/lib/api'
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback
+}
 
 export function useDocuments() {
   const [documents, setDocuments] = useState<DocumentStatus[]>([])
@@ -17,26 +22,31 @@ export function useDocuments() {
   const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null)
   const [uploadFailure, setUploadFailure] = useState<{ filename: string; error: string } | null>(null)
   const { session } = useAuth()
+  const accessToken = session?.access_token
 
   const hasProcessed = documents.some((d) => d.status === 'processed')
 
   const fetchDocuments = useCallback(async () => {
-    if (!session?.access_token) return
+    if (!accessToken) return
     setIsLoading(true)
     setLoadError(null)
     try {
-      const res = await apiGetDocuments(session.access_token)
+      const res = await apiGetDocuments(accessToken)
       setDocuments(res.documents)
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Failed to fetch documents:', err)
-      setLoadError(err.message || 'Failed to load documents')
+      setLoadError(errorMessage(err, 'Failed to load documents'))
     } finally {
       setIsLoading(false)
     }
-  }, [session?.access_token])
+  }, [accessToken])
 
-  const uploadDocument = async (fileOrFiles: File | File[], useOcr: boolean = false) => {
-    if (!session?.access_token) return
+  const uploadDocument = async (
+    fileOrFiles: File | File[],
+    useOcr: boolean = false,
+    pdfParserMode: PdfParserMode = 'auto',
+  ) => {
+    if (!accessToken) return
     const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles]
     if (files.length === 0) return
 
@@ -48,7 +58,7 @@ export function useDocuments() {
 
     for (const file of files) {
       try {
-        const res = await apiUpload(file, session.access_token, useOcr)
+        const res = await apiUpload(file, accessToken, useOcr, pdfParserMode)
 
         // Upload returns immediately with "pending" status.
         // Add to list right away so user sees it processing.
@@ -65,7 +75,7 @@ export function useDocuments() {
         for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
           await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
 
-          const statusRes = await getDocumentStatus(res.id, session.access_token)
+          const statusRes = await getDocumentStatus(res.id, accessToken)
           lastStatus = statusRes.status
 
           // Update the document in the list with latest status
@@ -84,17 +94,17 @@ export function useDocuments() {
         }
 
         if (lastStatus === 'failed') {
-          const statusRes = await getDocumentStatus(res.id, session.access_token)
+          const statusRes = await getDocumentStatus(res.id, accessToken)
           failures.push({ filename: file.name, error: statusRes.error_message || 'Processing failed' })
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (err instanceof DuplicateError) {
           setDuplicateWarning(err.message)
         } else {
           console.error('Upload failed:', err)
           failures.push({
             filename: file.name,
-            error: err.message || 'Processing or network upload failed',
+            error: errorMessage(err, 'Processing or network upload failed'),
           })
         }
       }
@@ -112,14 +122,17 @@ export function useDocuments() {
   }
 
   const deleteDocument = async (documentId: string): Promise<{ message: string; filename: string }> => {
-    if (!session?.access_token) throw new Error('Not authenticated')
-    const result = await apiDeleteDocument(documentId, session.access_token)
+    if (!accessToken) throw new Error('Not authenticated')
+    const result = await apiDeleteDocument(documentId, accessToken)
     setDocuments((prev) => prev.filter((d) => d.id !== documentId))
     return result
   }
 
   useEffect(() => {
-    fetchDocuments()
+    const timer = window.setTimeout(() => {
+      void fetchDocuments()
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [fetchDocuments])
 
   return {

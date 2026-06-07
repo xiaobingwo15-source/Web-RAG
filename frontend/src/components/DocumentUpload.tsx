@@ -1,9 +1,20 @@
 import { useRef, useState, useEffect, type DragEvent } from 'react'
 import { Upload, FileText, CheckCircle, XCircle, Loader2, AlertTriangle, Trash2, Eye } from 'lucide-react'
-import type { DocumentStatus } from '@/lib/api'
+import type { DocumentStatus, PdfParserMode } from '@/lib/api'
 import { DocumentPreviewModal } from './DocumentPreviewModal'
 
 const ACCEPTED_TYPES = ['.pdf', '.md', '.txt', '.csv', '.xlsx', '.xls']
+const PDF_PARSER_OPTIONS: { value: PdfParserMode; label: string }[] = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'pypdfium', label: 'Fast text' },
+  { value: 'unstructured', label: 'Layout tables' },
+  { value: 'mineru', label: 'MinerU' },
+  { value: 'ocr', label: 'OCR' },
+]
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback
+}
 
 export function DocumentUpload({
   documents,
@@ -19,7 +30,7 @@ export function DocumentUpload({
 }: {
   documents: DocumentStatus[]
   isUploading: boolean
-  onUpload: (files: File[], useOcr?: boolean) => void
+  onUpload: (files: File[], useOcr?: boolean, pdfParserMode?: PdfParserMode) => void
   onDelete?: (documentId: string) => Promise<{ message: string; filename: string }>
   duplicateWarning?: string | null
   onDismissWarning?: () => void
@@ -30,6 +41,7 @@ export function DocumentUpload({
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [useOcr, setUseOcr] = useState(false)
+  const [pdfParserMode, setPdfParserMode] = useState<PdfParserMode>('auto')
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -51,8 +63,8 @@ export function DocumentUpload({
       setDeleteError(null)
       try {
         await onDelete(docId)
-      } catch (err: any) {
-        setDeleteError(err.message || 'Failed to delete document')
+      } catch (err: unknown) {
+        setDeleteError(errorMessage(err, 'Failed to delete document'))
       } finally {
         setDeletingId(null)
       }
@@ -68,7 +80,7 @@ export function DocumentUpload({
   const handleDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault()
     const files = Array.from(e.dataTransfer.files)
-    if (files.length > 0) onUpload(files, useOcr)
+    if (files.length > 0) onUpload(files, useOcr, pdfParserMode)
   }
 
   const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
@@ -77,7 +89,7 @@ export function DocumentUpload({
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || [])
-    if (files.length > 0) onUpload(files, useOcr)
+    if (files.length > 0) onUpload(files, useOcr, pdfParserMode)
     if (inputRef.current) inputRef.current.value = ''
   }
 
@@ -175,6 +187,23 @@ export function DocumentUpload({
             className="h-3 w-3 rounded border-border"
           />
           Use OCR (for complex PDFs)
+        </label>
+        <label
+          className="flex items-center gap-2 text-xs text-muted-foreground"
+          onClick={(e) => e.stopPropagation()}
+        >
+          PDF parser
+          <select
+            value={pdfParserMode}
+            onChange={(e) => setPdfParserMode(e.target.value as PdfParserMode)}
+            className="rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
+          >
+            {PDF_PARSER_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </label>
         <input
           ref={inputRef}

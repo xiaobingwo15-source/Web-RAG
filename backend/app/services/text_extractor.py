@@ -1,10 +1,17 @@
 import csv
 import io
 import logging
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
 HEADER_REPEAT_ROWS = 20
+
+
+@dataclass
+class TextExtractionResult:
+    text: str
+    metadata: dict = field(default_factory=dict)
 
 
 def extract_text(file_bytes: bytes, mime_type: str) -> str:
@@ -24,13 +31,39 @@ def extract_text(file_bytes: bytes, mime_type: str) -> str:
         return _extract_text(file_bytes)
 
 
-async def extract_text_with_ocr(file_bytes: bytes, mime_type: str, use_ocr: bool = False) -> str:
-    if use_ocr and mime_type == "application/pdf":
-        from app.services.ocr_service import ocr_with_llm
-        from app.services.gemini import get_llm_client
-        client = get_llm_client()
-        return await ocr_with_llm(client, file_bytes)
-    return extract_text(file_bytes, mime_type)
+async def extract_text_with_metadata(
+    file_bytes: bytes,
+    mime_type: str,
+    use_ocr: bool = False,
+    pdf_parser_mode: str = "auto",
+    filename: str | None = None,
+) -> TextExtractionResult:
+    if mime_type == "application/pdf":
+        from app.services.pdf_parser import extract_pdf
+
+        result = await extract_pdf(
+            file_bytes,
+            parser_mode=pdf_parser_mode,
+            use_ocr=use_ocr,
+            filename=filename,
+        )
+        return TextExtractionResult(text=result.text, metadata=result.metadata)
+    return TextExtractionResult(text=extract_text(file_bytes, mime_type), metadata={})
+
+
+async def extract_text_with_ocr(
+    file_bytes: bytes,
+    mime_type: str,
+    use_ocr: bool = False,
+    pdf_parser_mode: str = "auto",
+) -> str:
+    result = await extract_text_with_metadata(
+        file_bytes,
+        mime_type,
+        use_ocr=use_ocr,
+        pdf_parser_mode=pdf_parser_mode,
+    )
+    return result.text
 
 
 def _extract_text(file_bytes: bytes) -> str:
@@ -92,14 +125,16 @@ def _extract_excel(file_bytes: bytes) -> str:
 
 
 def _extract_pdf(file_bytes: bytes) -> str:
-    import pypdfium2 as pdfium
+    from app.services.pdf_parser import extract_pdf
 
-    doc = pdfium.PdfDocument(file_bytes)
-    pages = []
-    for page in doc:
-        textpage = page.get_textpage()
-        text = textpage.get_text_range()
-        if text.strip():
-            pages.append(text)
-    doc.close()
-    return "\n\n".join(pages)
+    import asyncio
+
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+
+    if running_loop and running_loop.is_running():
+        raise RuntimeError("_extract_pdf cannot be used inside a running event loop; use extract_text_with_metadata")
+
+    return asyncio.run(extract_pdf(file_bytes, parser_mode="pypdfium")).text

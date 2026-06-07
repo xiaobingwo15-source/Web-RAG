@@ -1,6 +1,6 @@
 import mimetypes
 import uuid
-from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, Form, HTTPException
 from app.middleware.auth import get_current_user
 from app.models.documents import DocumentUploadResponse, DocumentStatus, DocumentListResponse, DocumentMetadataResponse
 from app.services.file_search_store import compute_content_hash
@@ -11,6 +11,7 @@ from app.services.database import (
     get_document_chunks, mark_document_retrying,
 )
 from app.services.rate_limit import check_rate_limit
+from app.services.pdf_parser import normalize_pdf_parser_mode
 
 router = APIRouter()
 
@@ -35,12 +36,14 @@ def _verify_admin(user) -> None:
 async def upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    use_ocr: bool = False,
+    use_ocr: bool = Form(False),
+    pdf_parser_mode: str = Form("auto"),
     user=Depends(get_current_user),
 ):
     _verify_admin(user)
     check_rate_limit(f"upload:{user.id}", limit=10, window_seconds=60)
     token = user.access_token
+    parser_mode = normalize_pdf_parser_mode(pdf_parser_mode)
 
     filename_lower = (file.filename or "").lower()
     if filename_lower.endswith(".csv"):
@@ -96,7 +99,10 @@ async def upload(
     background_tasks.add_task(
         process_document_async,
         token, user.id, doc["id"], file_bytes, mime_type,
-        use_ocr=use_ocr, tenant_id=user.tenant_id,
+        use_ocr=use_ocr,
+        pdf_parser_mode=parser_mode,
+        filename=file.filename or "unnamed",
+        tenant_id=user.tenant_id,
     )
 
     return DocumentUploadResponse(id=doc["id"], filename=doc["filename"], status="pending")

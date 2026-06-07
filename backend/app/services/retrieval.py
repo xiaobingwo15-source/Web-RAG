@@ -149,6 +149,7 @@ async def _resolve_parents(sources: list[dict]) -> list[dict]:
                     "document_id": s.get("document_id") or parent_map[pid].get("document_id", ""),
                     "content": parent_map[pid]["content"],
                     "score": s.get("score", 0),
+                    "metadata": parent_map[pid].get("metadata", s.get("metadata", {})),
                 }
         else:
             # No parent_id or parent not found -- keep original child
@@ -187,6 +188,7 @@ def _finalize_sources(
             "snippet": _snippet(content),
             "retrieval_mode": mode,
             "content": content,
+            "metadata": source.get("metadata", {}),
         })
     return sources
 
@@ -299,7 +301,7 @@ async def retrieve_context(
         )
         if not chunks:
             return _empty()
-        raw_sources = [{"id": c.get("id", ""), "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("rank", 0), **({"parent_id": c["parent_id"]} if c.get("parent_id") else {})} for c in chunks]
+        raw_sources = [{"id": c.get("id", ""), "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("rank", 0), "metadata": c.get("metadata", {}), **({"parent_id": c["parent_id"]} if c.get("parent_id") else {})} for c in chunks]
         sources = _finalize_sources(token, raw_sources, mode, tenant_id)
         sources = await _resolve_parents(sources)
         logger.info(f"FTS retrieval: {len(sources)} chunks")
@@ -393,14 +395,14 @@ async def retrieve_context(
 
         for rank, chunk in enumerate(vector_results):
             cid = chunk["id"]
-            combined[cid] = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": 1.0 / (rrf_k + rank + 1), **({"parent_id": chunk["parent_id"]} if chunk.get("parent_id") else {})}
+            combined[cid] = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": 1.0 / (rrf_k + rank + 1), "metadata": chunk.get("metadata", {}), **({"parent_id": chunk["parent_id"]} if chunk.get("parent_id") else {})}
 
         for rank, chunk in enumerate(fts_results):
             cid = chunk.get("id", f"fts_{rank}")
             if cid in combined:
                 combined[cid]["score"] += 1.0 / (rrf_k + rank + 1)
             else:
-                combined[cid] = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": 1.0 / (rrf_k + rank + 1), **({"parent_id": chunk["parent_id"]} if chunk.get("parent_id") else {})}
+                combined[cid] = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": 1.0 / (rrf_k + rank + 1), "metadata": chunk.get("metadata", {}), **({"parent_id": chunk["parent_id"]} if chunk.get("parent_id") else {})}
 
         sorted_results = sorted(combined.values(), key=lambda x: x["score"], reverse=True)
 
@@ -434,6 +436,7 @@ async def retrieve_context(
                         "document_id": meta.get("document_id", ""),
                         "content": candidates[idx],
                         "score": s.get("score", meta["score"]),
+                        "metadata": meta.get("metadata", {}),
                         **({"parent_id": meta["parent_id"]} if meta.get("parent_id") else {}),
                     })
             sources = _finalize_sources(token, sources, mode, tenant_id)
@@ -466,7 +469,7 @@ async def retrieve_context(
         )
         if not chunks:
             return _empty()
-        raw_sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0), **({"parent_id": c["parent_id"]} if c.get("parent_id") else {})} for c in chunks]
+        raw_sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0), "metadata": c.get("metadata", {}), **({"parent_id": c["parent_id"]} if c.get("parent_id") else {})} for c in chunks]
         sources = _finalize_sources(token, raw_sources, mode, tenant_id)
         sources = await _resolve_parents(sources)
         return _log_and_return({"chunks": [s["content"] for s in sources], "sources": sources})
@@ -520,7 +523,7 @@ async def retrieve_context(
     )
     if not chunks:
         return _empty()
-    raw_sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0), **({"parent_id": c["parent_id"]} if c.get("parent_id") else {})} for c in chunks]
+    raw_sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0), "metadata": c.get("metadata", {}), **({"parent_id": c["parent_id"]} if c.get("parent_id") else {})} for c in chunks]
     sources = _finalize_sources(token, raw_sources, mode, tenant_id)
     sources = await _resolve_parents(sources)
     logger.info(f"Vector retrieval: {len(sources)} chunks")

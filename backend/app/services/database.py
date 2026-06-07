@@ -529,6 +529,8 @@ def insert_chunks_for_fts(access_token: str, user_id: str, document_id: str, chu
             row["parent_id"] = chunk["parent_id"]
         if chunk.get("chunk_type"):
             row["chunk_type"] = chunk["chunk_type"]
+        if chunk.get("metadata"):
+            row["metadata"] = chunk["metadata"]
         rows.append(row)
     result = db.table("document_chunks").insert(rows).execute()
     return result.data

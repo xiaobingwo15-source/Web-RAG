@@ -48,6 +48,8 @@ async def process_document_async(
     file_bytes: bytes,
     mime_type: str,
     use_ocr: bool = False,
+    pdf_parser_mode: str = "auto",
+    filename: str | None = None,
     tenant_id: str | None = None,
 ) -> None:
     """
@@ -67,7 +69,10 @@ async def process_document_async(
             result = await process_document(
                 access_token, user_id, document_id,
                 file_bytes, mime_type,
-                use_ocr=use_ocr, tenant_id=tenant_id,
+                use_ocr=use_ocr,
+                pdf_parser_mode=pdf_parser_mode,
+                filename=filename,
+                tenant_id=tenant_id,
             )
 
             if result["status"] == "processed":
