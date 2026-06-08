@@ -2,9 +2,16 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from app.services import retrieval
+from app.services.semantic_cache import get_semantic_cache
 
 
 class RetrievalQdrantThresholdTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        get_semantic_cache().clear()
+
+    def tearDown(self):
+        get_semantic_cache().clear()
+
     async def test_hybrid_retrieval_uses_low_vector_similarity_threshold(self):
         with (
             patch.object(retrieval, "get_embedding_client", return_value=Mock()),

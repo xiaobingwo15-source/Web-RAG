@@ -21,6 +21,31 @@ This architecture completely removes the burden of writing manual, complex backe
 | Hosted RAG Engine   | Gemini Native File Search (Context Grounding Tool) |
 | System Observability| LangSmith Telemetry Tracing |
 
+## Embedding Provider Configuration
+
+The backend supports two embedding providers:
+
+- `EMBEDDING_PROVIDER=gemini` keeps the production/default Gemini path using `EMBEDDING_MODEL=gemini-embedding-001`.
+- `EMBEDDING_PROVIDER=local_sentence_transformers` uses a local Hugging Face SentenceTransformers model for testing/offline ingestion with no hosted API quota.
+
+Recommended local settings:
+
+```env
+EMBEDDING_PROVIDER=local_sentence_transformers
+LOCAL_EMBEDDING_MODEL=intfloat/multilingual-e5-base
+LOCAL_EMBEDDING_DEVICE=cpu
+EMBEDDING_DIMENSION=768
+```
+
+`intfloat/multilingual-e5-base` is 768-dimensional, which matches the default Qdrant collection dimension. If you switch to a 384- or 1024-dimensional model, create or recreate the Qdrant collection with the same dimension before inserting chunks.
+
+For CPU-only local testing, install the backend requirements first. If PyTorch is not installed by your package resolver, install the CPU wheel from the official PyTorch index:
+
+```powershell
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -r backend/requirements.txt
+```
+
 ## The 8 Masterclass Modules
 
 1. **Application Shell** — User authentication blocks, unified workspace templates, and live initialization links directly targeting Google ai studio API key.
