@@ -57,8 +57,11 @@ class Settings(BaseSettings):
     semantic_similarity_threshold: float = 0.75
 
     # Embeddings
+    embedding_provider: str = "gemini"
     embedding_model: str = "gemini-embedding-001"
     embedding_dimension: int = 768
+    local_embedding_model: str = "intfloat/multilingual-e5-base"
+    local_embedding_device: str = "cpu"
 
     # Context budget
     max_context_tokens: int = 6000
@@ -128,6 +131,13 @@ class Settings(BaseSettings):
         return val if val else self.google_api_key
 
     @property
+    def get_embedding_provider(self) -> str:
+        val = self._get_db_setting("EMBEDDING_PROVIDER")
+        provider = (val if val else self.embedding_provider).strip().lower()
+        allowed = {"gemini", "local_sentence_transformers"}
+        return provider if provider in allowed else "gemini"
+
+    @property
     def get_embedding_model(self) -> str:
         val = self._get_db_setting("EMBEDDING_MODEL")
         return val if val else self.embedding_model
@@ -136,6 +146,17 @@ class Settings(BaseSettings):
     def get_embedding_dimension(self) -> int:
         val = self._get_db_setting("EMBEDDING_DIMENSION")
         return int(val) if val else self.embedding_dimension
+
+    @property
+    def get_local_embedding_model(self) -> str:
+        val = self._get_db_setting("LOCAL_EMBEDDING_MODEL")
+        return val if val else self.local_embedding_model
+
+    @property
+    def get_local_embedding_device(self) -> str:
+        val = self._get_db_setting("LOCAL_EMBEDDING_DEVICE")
+        device = (val if val else self.local_embedding_device).strip().lower()
+        return device if device in {"cpu", "cuda"} else "cpu"
 
     @property
     def get_tavly_api_key(self) -> str:

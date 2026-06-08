@@ -145,11 +145,15 @@ async def _resolve_parents(sources: list[dict]) -> list[dict]:
         if pid and pid in parent_map:
             if pid not in grouped or s.get("score", 0) > grouped[pid].get("score", 0):
                 grouped[pid] = {
-                    "id": pid,
+                    "chunk_id": pid,
                     "document_id": s.get("document_id") or parent_map[pid].get("document_id", ""),
+                    "filename": s.get("filename"),
                     "content": parent_map[pid]["content"],
                     "score": s.get("score", 0),
+                    "snippet": _snippet(parent_map[pid]["content"]),
+                    "retrieval_mode": s.get("retrieval_mode"),
                     "metadata": parent_map[pid].get("metadata", s.get("metadata", {})),
+                    "parent_id": pid,
                 }
         else:
             # No parent_id or parent not found -- keep original child
@@ -189,6 +193,7 @@ def _finalize_sources(
             "retrieval_mode": mode,
             "content": content,
             "metadata": source.get("metadata", {}),
+            **({"parent_id": source["parent_id"]} if source.get("parent_id") else {}),
         })
     return sources
 

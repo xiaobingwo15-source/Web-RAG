@@ -1,23 +1,186 @@
 import asyncio
 import logging
+import math
+import re
+from dataclasses import dataclass
+from typing import Any
+
 from google import genai
+
 from app.config import Settings
 
 logger = logging.getLogger(__name__)
 
-_embedding_client: genai.Client | None = None
+GEMINI_PROVIDER = "gemini"
+LOCAL_SENTENCE_TRANSFORMERS_PROVIDER = "local_sentence_transformers"
+GEMINI_EMBEDDING_MAX_BATCH_SIZE = 100
+
+_embedding_client: object | None = None
+_embedding_client_key: tuple[str, str, str | None] | None = None
 
 
-def get_embedding_client() -> genai.Client:
-    global _embedding_client
-    if _embedding_client is None:
-        settings = Settings()
+@dataclass
+class LocalSentenceTransformersClient:
+    model_name: str
+    device: str
+    _model: Any | None = None
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        model = self._load_model()
+        vectors = model.encode(
+            texts,
+            normalize_embeddings=True,
+            convert_to_numpy=False,
+        )
+        return [_normalize_vector(_coerce_vector(vector)) for vector in vectors]
+
+    def _load_model(self) -> Any:
+        if self._model is None:
+            try:
+                sentence_transformer_cls = _get_sentence_transformer_cls()
+            except ImportError as exc:
+                raise RuntimeError(
+                    "EMBEDDING_PROVIDER=local_sentence_transformers requires the "
+                    "sentence-transformers package. Install backend requirements "
+                    "or switch EMBEDDING_PROVIDER back to gemini."
+                ) from exc
+            self._model = sentence_transformer_cls(self.model_name, device=self.device)
+        return self._model
+
+
+def _get_sentence_transformer_cls() -> Any:
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer
+
+
+def get_embedding_client() -> object:
+    global _embedding_client, _embedding_client_key
+
+    settings = Settings()
+    info = get_embedding_info(settings)
+    key = (
+        info["provider"],
+        info["model"],
+        info.get("device"),
+    )
+    if _embedding_client is not None and _embedding_client_key == key:
+        return _embedding_client
+
+    if info["provider"] == LOCAL_SENTENCE_TRANSFORMERS_PROVIDER:
+        _embedding_client = LocalSentenceTransformersClient(
+            model_name=info["model"],
+            device=info.get("device") or "cpu",
+        )
+    else:
         _embedding_client = genai.Client(api_key=settings.get_google_api_key)
+
+    _embedding_client_key = key
     return _embedding_client
 
 
-async def get_embedding(client: genai.Client, text: str, max_retries: int = 2) -> list[float]:
-    """Embed a single query string. Uses RETRIEVAL_QUERY task type."""
+def get_embedding_info(settings: Settings | None = None) -> dict[str, str | int | None]:
+    settings = settings or Settings()
+    provider = settings.get_embedding_provider
+    if provider == LOCAL_SENTENCE_TRANSFORMERS_PROVIDER:
+        return {
+            "provider": provider,
+            "model": settings.get_local_embedding_model,
+            "dimension": settings.get_embedding_dimension,
+            "device": settings.get_local_embedding_device,
+        }
+    return {
+        "provider": GEMINI_PROVIDER,
+        "model": settings.get_embedding_model,
+        "dimension": settings.get_embedding_dimension,
+        "device": None,
+    }
+
+
+async def get_embedding(client: object, text: str, max_retries: int = 2) -> list[float]:
+    """Embed a single query string."""
+    if isinstance(client, LocalSentenceTransformersClient):
+        prefixed = _prefix_local_text(client.model_name, text, task="query")
+        vectors = await asyncio.to_thread(client.encode, [prefixed])
+        return validate_embedding_vector_length(vectors[0], context="query embedding")
+
+    return await _get_gemini_embedding(
+        client=client,
+        contents=text,
+        task_type="RETRIEVAL_QUERY",
+        max_retries=max_retries,
+        context="query embedding",
+    )
+
+
+async def get_embeddings(client: object, texts: list[str]) -> list[list[float]]:
+    """Embed a batch of document strings."""
+    if not texts:
+        return []
+
+    if isinstance(client, LocalSentenceTransformersClient):
+        prefixed = [
+            _prefix_local_text(client.model_name, text, task="document")
+            for text in texts
+        ]
+        vectors = await asyncio.to_thread(client.encode, prefixed)
+        return [
+            validate_embedding_vector_length(vector, context=f"document embedding {index}")
+            for index, vector in enumerate(vectors)
+        ]
+
+    vectors: list[list[float]] = []
+    for start in range(0, len(texts), GEMINI_EMBEDDING_MAX_BATCH_SIZE):
+        batch = texts[start:start + GEMINI_EMBEDDING_MAX_BATCH_SIZE]
+        batch_vectors = await _get_gemini_embedding(
+            client=client,
+            contents=batch,
+            task_type="RETRIEVAL_DOCUMENT",
+            max_retries=2,
+            context="document embeddings",
+        )
+        vectors.extend(batch_vectors)  # type: ignore[arg-type]
+    return vectors
+
+
+async def validate_embedding_configuration(client: object | None = None) -> dict[str, str | int | None]:
+    info = get_embedding_info()
+    probe_client = client or get_embedding_client()
+    vector = await get_embedding(probe_client, "embedding dimension probe", max_retries=0)
+    expected_dimension = info["dimension"]
+    actual_dimension = len(vector)
+    if actual_dimension != expected_dimension:
+        raise RuntimeError(
+            "Embedding dimension mismatch during startup validation: "
+            f"provider={info['provider']} model={info['model']} returned "
+            f"{actual_dimension} dimensions, but EMBEDDING_DIMENSION is "
+            f"{expected_dimension}. Use a matching model or recreate the Qdrant collection."
+        )
+    return info
+
+
+def validate_embedding_vector_length(vector: list[float], context: str = "embedding") -> list[float]:
+    settings = Settings()
+    info = get_embedding_info(settings)
+    expected_dimension = settings.get_embedding_dimension
+    actual_dimension = len(vector)
+    if actual_dimension != expected_dimension:
+        raise RuntimeError(
+            f"Embedding dimension mismatch for {context}: provider={info['provider']} "
+            f"model={info['model']} returned {actual_dimension} dimensions, but "
+            f"EMBEDDING_DIMENSION is {expected_dimension}. Use a matching model or "
+            "recreate the Qdrant collection before inserting vectors."
+        )
+    return vector
+
+
+async def _get_gemini_embedding(
+    client: object,
+    contents: str | list[str],
+    task_type: str,
+    max_retries: int,
+    context: str,
+) -> list[float] | list[list[float]]:
     settings = Settings()
     model = settings.get_embedding_model
     dimension = settings.get_embedding_dimension
@@ -26,37 +189,75 @@ async def get_embedding(client: genai.Client, text: str, max_retries: int = 2) -
         try:
             result = await client.aio.models.embed_content(
                 model=model,
-                contents=text,
+                contents=contents,
                 config={
                     "output_dimensionality": dimension,
-                    "task_type": "RETRIEVAL_QUERY",
+                    "task_type": task_type,
                 },
             )
-            return result.embeddings[0].values
-        except Exception as e:
+            vectors = [list(embedding.values) for embedding in result.embeddings]
+            if isinstance(contents, str):
+                return validate_embedding_vector_length(vectors[0], context=context)
+            return [
+                validate_embedding_vector_length(vector, context=f"{context} {index}")
+                for index, vector in enumerate(vectors)
+            ]
+        except Exception as exc:
             if attempt < max_retries:
-                delay = 1.0 * (2 ** attempt)
-                logger.warning(f"Embedding attempt {attempt + 1} failed: {e}, retrying in {delay:.0f}s")
+                delay = _extract_embedding_retry_delay(exc, default=1.0 * (2 ** attempt))
+                logger.warning(
+                    "Embedding attempt %d failed: %s, retrying in %.0fs",
+                    attempt + 1,
+                    exc,
+                    delay,
+                )
                 await asyncio.sleep(delay)
             else:
                 raise
 
+    raise RuntimeError("Embedding generation failed unexpectedly")
 
-async def get_embeddings(client: genai.Client, texts: list[str]) -> list[list[float]]:
-    """Embed a batch of document strings. Uses RETRIEVAL_DOCUMENT task type."""
-    if not texts:
-        return []
 
-    settings = Settings()
-    model = settings.get_embedding_model
-    dimension = settings.get_embedding_dimension
+def _extract_embedding_retry_delay(error: Exception, default: float) -> float:
+    message = str(error)
+    retry_info = re.search(r"retryDelay['\"]?:\s*['\"]?([0-9.]+)s", message)
+    if retry_info:
+        return float(retry_info.group(1))
+    retry_hint = re.search(r"retry in ([0-9.]+)s", message, flags=re.IGNORECASE)
+    if retry_hint:
+        return float(retry_hint.group(1))
+    return default
 
-    result = await client.aio.models.embed_content(
-        model=model,
-        contents=texts,
-        config={
-            "output_dimensionality": dimension,
-            "task_type": "RETRIEVAL_DOCUMENT",
-        },
-    )
-    return [e.values for e in result.embeddings]
+
+def _prefix_local_text(model_name: str, text: str, task: str) -> str:
+    if not _uses_e5_prompt_format(model_name):
+        return text
+
+    stripped = text.lstrip()
+    lower = stripped.lower()
+    if lower.startswith("query: ") or lower.startswith("passage: "):
+        return stripped
+
+    prefix = "query: " if task == "query" else "passage: "
+    return f"{prefix}{stripped}"
+
+
+def _uses_e5_prompt_format(model_name: str) -> bool:
+    return "e5" in model_name.lower()
+
+
+def _coerce_vector(vector: Any) -> list[float]:
+    if hasattr(vector, "detach"):
+        vector = vector.detach()
+    if hasattr(vector, "cpu"):
+        vector = vector.cpu()
+    if hasattr(vector, "tolist"):
+        vector = vector.tolist()
+    return [float(value) for value in vector]
+
+
+def _normalize_vector(vector: list[float]) -> list[float]:
+    norm = math.sqrt(sum(value * value for value in vector))
+    if norm == 0:
+        return vector
+    return [value / norm for value in vector]

@@ -4,6 +4,10 @@ import uuid
 import time
 from qdrant_client import AsyncQdrantClient, models
 from app.config import Settings
+from app.services.embeddings import (
+    validate_embedding_configuration,
+    validate_embedding_vector_length,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +30,7 @@ async def get_qdrant_client() -> AsyncQdrantClient:
 
 async def _ensure_collection_inner():
     settings = Settings()
+    embedding_info = await validate_embedding_configuration()
     client = await get_qdrant_client()
     collections = await client.get_collections()
     names = [c.name for c in collections.collections]
@@ -63,6 +68,7 @@ async def _ensure_collection_inner():
         )
         logger.info("Created Qdrant collection '%s' with payload indexes", COLLECTION_NAME)
     else:
+        await _validate_collection_dimension(client, settings.get_embedding_dimension)
         try:
             await client.create_payload_index(
                 COLLECTION_NAME, field_name="tenant_id",
@@ -70,16 +76,37 @@ async def _ensure_collection_inner():
             )
         except Exception:
             pass
-        logger.info("Qdrant collection '%s' already exists", COLLECTION_NAME)
+        logger.info(
+            "Qdrant collection '%s' already exists; embedding provider=%s model=%s dimension=%s",
+            COLLECTION_NAME,
+            embedding_info["provider"],
+            embedding_info["model"],
+            embedding_info["dimension"],
+        )
+
+
+async def _validate_collection_dimension(client: AsyncQdrantClient, expected_dimension: int) -> None:
+    collection = await client.get_collection(COLLECTION_NAME)
+    vectors_config = collection.config.params.vectors
+    actual_dimension = getattr(vectors_config, "size", None)
+    if actual_dimension is None and isinstance(vectors_config, dict):
+        first_vector = next(iter(vectors_config.values()), None)
+        actual_dimension = getattr(first_vector, "size", None)
+    if actual_dimension is not None and actual_dimension != expected_dimension:
+        raise RuntimeError(
+            f"Qdrant collection '{COLLECTION_NAME}' has vector dimension {actual_dimension}, "
+            f"but EMBEDDING_DIMENSION is {expected_dimension}. Use a matching embedding "
+            "model or recreate/use a separate collection before ingesting documents."
+        )
 
 
 async def ensure_collection():
     try:
         await asyncio.wait_for(_ensure_collection_inner(), timeout=15)
     except asyncio.TimeoutError:
-        logger.warning("Qdrant connection timed out — server starting in degraded mode")
+        logger.warning("RAG startup check timed out - server starting in degraded mode")
     except Exception as e:
-        logger.warning("Qdrant unavailable: %s — server starting in degraded mode", e)
+        logger.warning("RAG startup check failed: %s - server starting in degraded mode", e)
 
 
 async def insert_chunks(
@@ -94,6 +121,10 @@ async def insert_chunks(
         point_ids = [str(uuid.uuid4()) for _ in chunks]
     points = []
     for i, chunk in enumerate(chunks):
+        embedding = validate_embedding_vector_length(
+            chunk["embedding"],
+            context=f"chunk {i} for document {document_id}",
+        )
         payload: dict = {
             "user_id": user_id,
             **({"tenant_id": tenant_id} if tenant_id else {}),
@@ -109,7 +140,7 @@ async def insert_chunks(
         if chunk.get("metadata"):
             payload["metadata"] = chunk["metadata"]
         points.append(
-            models.PointStruct(id=point_ids[i], vector=chunk["embedding"], payload=payload)
+            models.PointStruct(id=point_ids[i], vector=embedding, payload=payload)
         )
     await client.upsert(collection_name=COLLECTION_NAME, points=points)
     logger.info("Inserted %d chunks for document %s", len(points), document_id)
@@ -342,6 +373,9 @@ async def get_sample_chunks(
             "document_id": point.payload.get("document_id"),
             "content": point.payload.get("content", "")[:200],
             "chunk_index": point.payload.get("chunk_index"),
+            "chunk_type": point.payload.get("chunk_type"),
+            "parent_id": point.payload.get("parent_id"),
+            "metadata": point.payload.get("metadata", {}),
         }
         for point in results
     ]

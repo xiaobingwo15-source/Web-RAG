@@ -2,9 +2,16 @@ import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
 from app.services import retrieval
+from app.services.semantic_cache import get_semantic_cache
 
 
 class RetrievalSourceTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        get_semantic_cache().clear()
+
+    def tearDown(self):
+        get_semantic_cache().clear()
+
     async def test_hybrid_retrieval_returns_public_source_metadata(self):
         with (
             patch.object(retrieval, "get_embedding_client", return_value=Mock()),
@@ -111,6 +118,63 @@ class RetrievalSourceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["chunks"], [])
         self.assertEqual(result["sources"], [])
+
+    async def test_vector_retrieval_expands_child_hit_to_parent_source(self):
+        parent_content = "## Page 1\n\nElectronics Technology Semester 1 Basic Electronics Chapter 1 Resistor Color Code."
+        parent_metadata = {"pdf_parser": "pypdfium", "pdf_parser_planned": "unstructured"}
+
+        with (
+            patch.object(retrieval, "get_embedding_client", return_value=Mock()),
+            patch.object(retrieval, "get_embedding", new=AsyncMock(return_value=[0.1, 0.2])),
+            patch.object(
+                retrieval,
+                "search_similar_chunks",
+                new=AsyncMock(return_value=[
+                    {
+                        "id": "child-a",
+                        "document_id": "doc-a",
+                        "content": "Resistor Color Code",
+                        "similarity": 0.8,
+                        "metadata": {"pdf_parser": "pypdfium"},
+                        "parent_id": "parent-a",
+                    }
+                ]),
+            ),
+            patch.object(
+                retrieval,
+                "get_documents_by_ids",
+                return_value={"doc-a": {"id": "doc-a", "filename": "problem.pdf", "status": "processed"}},
+            ),
+            patch.object(
+                retrieval,
+                "get_parent_chunks_by_ids",
+                new=AsyncMock(return_value={
+                    "parent-a": {
+                        "content": parent_content,
+                        "document_id": "doc-a",
+                        "metadata": parent_metadata,
+                    }
+                }),
+            ) as parents,
+            patch.object(retrieval, "log_retrieval", return_value={"id": "log-parent"}),
+        ):
+            result = await retrieval.retrieve_context(
+                token="token",
+                user_id="user-a",
+                target_user_id="admin-a",
+                tenant_id="tenant-a",
+                message="What subject and chapter is this PDF about?",
+                mode="vector",
+            )
+
+        parents.assert_awaited_once_with(["parent-a"])
+        self.assertEqual(result["chunks"], [parent_content])
+        self.assertEqual(result["sources"][0]["chunk_id"], "parent-a")
+        self.assertEqual(result["sources"][0]["document_id"], "doc-a")
+        self.assertEqual(result["sources"][0]["filename"], "problem.pdf")
+        self.assertEqual(result["sources"][0]["retrieval_mode"], "vector")
+        self.assertEqual(result["sources"][0]["metadata"], parent_metadata)
+        self.assertIn("Electronics Technology", result["sources"][0]["snippet"])
 
 
 if __name__ == "__main__":
