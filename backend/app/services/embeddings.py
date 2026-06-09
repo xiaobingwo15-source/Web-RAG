@@ -16,7 +16,7 @@ LOCAL_SENTENCE_TRANSFORMERS_PROVIDER = "local_sentence_transformers"
 GEMINI_EMBEDDING_MAX_BATCH_SIZE = 100
 
 _embedding_client: object | None = None
-_embedding_client_key: tuple[str, str, str | None] | None = None
+_embedding_client_key: tuple[str, str, str | None, str | None] | None = None
 
 
 @dataclass
@@ -63,6 +63,7 @@ def get_embedding_client() -> object:
         info["provider"],
         info["model"],
         info.get("device"),
+        settings.get_google_api_key if info["provider"] == GEMINI_PROVIDER else None,
     )
     if _embedding_client is not None and _embedding_client_key == key:
         return _embedding_client
