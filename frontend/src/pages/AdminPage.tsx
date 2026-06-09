@@ -496,7 +496,7 @@ export function AdminPage() {
   return (
     <div className="flex h-screen bg-background">
       {/* ── Left sidebar: WhatsApp-style admin controls ── */}
-      <aside className="flex w-80 lg:w-96 flex-col border-r border-border bg-surface shrink-0">
+      <aside className="flex w-80 lg:w-96 flex-col border-r border-border bg-surface shrink-0 overflow-hidden">
         {/* Sidebar header — WhatsApp teal */}
         <div className="flex items-center justify-between px-4 py-3 bg-primary text-primary-foreground">
           <div className="flex items-center gap-3">
@@ -560,8 +560,8 @@ export function AdminPage() {
           </button>
         </div>
 
-        {/* Collapsible Knowledge Base */}
-        <div className="border-b border-border">
+        {/* Collapsible Knowledge Base — open by default, fills space above profile */}
+        <div className="border-b border-border flex flex-col flex-1 min-h-0">
           <button
             onClick={() => {
               const el = document.getElementById('kb-section')
@@ -575,8 +575,8 @@ export function AdminPage() {
             </div>
             <ChevronDown className="h-4 w-4 text-muted-foreground" />
           </button>
-          <div id="kb-section" className="hidden">
-            <div className="px-4 pb-4 max-h-64 overflow-y-auto">
+          <div id="kb-section" className="flex-1 min-h-0 overflow-hidden">
+            <div className="px-4 pb-4 h-full overflow-y-auto">
               <DocumentUpload
                 documents={documents}
                 isUploading={isUploading}
@@ -592,8 +592,6 @@ export function AdminPage() {
             </div>
           </div>
         </div>
-
-        <div className="flex-1" />
 
         {/* User footer */}
         <div className="mt-auto border-t border-border px-4 py-3 bg-surface">

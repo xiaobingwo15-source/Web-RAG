@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from google import genai
 
 from app.config import Settings
@@ -13,7 +14,10 @@ logger = logging.getLogger(__name__)
 
 GEMINI_PROVIDER = "gemini"
 LOCAL_SENTENCE_TRANSFORMERS_PROVIDER = "local_sentence_transformers"
+JINA_PROVIDER = "jina"
 GEMINI_EMBEDDING_MAX_BATCH_SIZE = 100
+JINA_API_URL = "https://api.jina.ai/v1/embeddings"
+JINA_MAX_BATCH_SIZE = 100
 
 _embedding_client: object | None = None
 _embedding_client_key: tuple[str, str, str | None, str | None] | None = None
@@ -48,6 +52,34 @@ class LocalSentenceTransformersClient:
         return self._model
 
 
+@dataclass
+class JinaClient:
+    api_key: str
+    model: str
+    dimension: int
+
+    def embed(self, texts: list[str], task: str) -> list[list[float]]:
+        task_type = "retrieval.query" if task == "query" else "retrieval.passage"
+        response = httpx.post(
+            JINA_API_URL,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            json={
+                "model": self.model,
+                "task": task_type,
+                "normalized": True,
+                "dimensions": self.dimension,
+                "input": texts,
+            },
+            timeout=60.0,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return [item["embedding"] for item in data["data"]]
+
+
 def _get_sentence_transformer_cls() -> Any:
     from sentence_transformers import SentenceTransformer
 
@@ -59,11 +91,16 @@ def get_embedding_client() -> object:
 
     settings = Settings()
     info = get_embedding_info(settings)
+    provider_key: str | None = None
+    if info["provider"] == GEMINI_PROVIDER:
+        provider_key = settings.get_google_api_key
+    elif info["provider"] == JINA_PROVIDER:
+        provider_key = settings.get_jina_api_key
     key = (
         info["provider"],
         info["model"],
         info.get("device"),
-        settings.get_google_api_key if info["provider"] == GEMINI_PROVIDER else None,
+        provider_key,
     )
     if _embedding_client is not None and _embedding_client_key == key:
         return _embedding_client
@@ -72,6 +109,12 @@ def get_embedding_client() -> object:
         _embedding_client = LocalSentenceTransformersClient(
             model_name=info["model"],
             device=info.get("device") or "cpu",
+        )
+    elif info["provider"] == JINA_PROVIDER:
+        _embedding_client = JinaClient(
+            api_key=settings.get_jina_api_key,
+            model=info["model"],
+            dimension=info["dimension"],
         )
     else:
         _embedding_client = genai.Client(api_key=settings.get_google_api_key)
@@ -90,6 +133,13 @@ def get_embedding_info(settings: Settings | None = None) -> dict[str, str | int 
             "dimension": settings.get_embedding_dimension,
             "device": settings.get_local_embedding_device,
         }
+    if provider == JINA_PROVIDER:
+        return {
+            "provider": provider,
+            "model": settings.get_jina_embedding_model,
+            "dimension": settings.get_embedding_dimension,
+            "device": None,
+        }
     return {
         "provider": GEMINI_PROVIDER,
         "model": settings.get_embedding_model,
@@ -104,6 +154,24 @@ async def get_embedding(client: object, text: str, max_retries: int = 2) -> list
         prefixed = _prefix_local_text(client.model_name, text, task="query")
         vectors = await asyncio.to_thread(client.encode, [prefixed])
         return validate_embedding_vector_length(vectors[0], context="query embedding")
+
+    if isinstance(client, JinaClient):
+        for attempt in range(max_retries + 1):
+            try:
+                vectors = await asyncio.to_thread(client.embed, [text], "query")
+                return validate_embedding_vector_length(vectors[0], context="query embedding")
+            except Exception as exc:
+                if attempt < max_retries:
+                    delay = _extract_embedding_retry_delay(exc, default=1.0 * (2 ** attempt))
+                    logger.warning(
+                        "Jina embedding attempt %d failed: %s, retrying in %.0fs",
+                        attempt + 1,
+                        exc,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    raise
 
     return await _get_gemini_embedding(
         client=client,
@@ -129,6 +197,32 @@ async def get_embeddings(client: object, texts: list[str]) -> list[list[float]]:
             validate_embedding_vector_length(vector, context=f"document embedding {index}")
             for index, vector in enumerate(vectors)
         ]
+
+    if isinstance(client, JinaClient):
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), JINA_MAX_BATCH_SIZE):
+            batch = texts[start:start + JINA_MAX_BATCH_SIZE]
+            for attempt in range(3):
+                try:
+                    batch_vectors = await asyncio.to_thread(client.embed, batch, "document")
+                    vectors.extend(
+                        validate_embedding_vector_length(vector, context=f"document embedding {start + i}")
+                        for i, vector in enumerate(batch_vectors)
+                    )
+                    break
+                except Exception as exc:
+                    if attempt < 2:
+                        delay = _extract_embedding_retry_delay(exc, default=1.0 * (2 ** attempt))
+                        logger.warning(
+                            "Jina batch embedding attempt %d failed: %s, retrying in %.0fs",
+                            attempt + 1,
+                            exc,
+                            delay,
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        raise
+        return vectors
 
     vectors: list[list[float]] = []
     for start in range(0, len(texts), GEMINI_EMBEDDING_MAX_BATCH_SIZE):
