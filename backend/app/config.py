@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     openrouter_model: str = "deepseek/deepseek-v4-flash"
     openrouter_fallback_model: str = "deepseek/deepseek-v4-flash:free"
+    ocr_model: str = "google/gemini-2.0-flash-001"
     mistral_api_key: str = ""
     mistral_model: str = "mistral-large-latest"
     google_api_key: str = ""  # kept for embeddings only
@@ -130,6 +131,11 @@ class Settings(BaseSettings):
     def get_openrouter_fallback_model(self) -> str:
         val = self._get_db_setting("OPENROUTER_FALLBACK_MODEL")
         return val if val else self.openrouter_fallback_model
+
+    @property
+    def get_ocr_model(self) -> str:
+        val = self._get_db_setting("OCR_MODEL")
+        return val if val else self.ocr_model
 
     @property
     def get_google_api_key(self) -> str:

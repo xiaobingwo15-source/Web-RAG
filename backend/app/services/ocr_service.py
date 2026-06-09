@@ -3,7 +3,7 @@ import io
 import logging
 from openai import AsyncOpenAI
 from langfuse import observe
-from app.services.gemini import PRIMARY_MODEL
+from app.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,8 @@ async def ocr_with_llm(client: AsyncOpenAI, file_bytes: bytes) -> str:
 
     logger.info("Converting PDF pages to images for OCR")
     doc = pdfium.PdfDocument(file_bytes)
-    logger.info(f"PDF has {len(doc)} pages")
+    ocr_model = Settings().get_ocr_model
+    logger.info(f"PDF has {len(doc)} pages, OCR model: {ocr_model}")
 
     all_text = []
     for i in range(len(doc)):
@@ -37,7 +38,7 @@ async def ocr_with_llm(client: AsyncOpenAI, file_bytes: bytes) -> str:
         b64_image = base64.b64encode(image_bytes).decode("utf-8")
 
         response = await client.chat.completions.create(
-            model=PRIMARY_MODEL,
+            model=ocr_model,
             messages=[
                 {
                     "role": "user",
