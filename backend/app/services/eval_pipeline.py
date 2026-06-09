@@ -12,6 +12,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 
 from app.services.gemini import get_llm_client, generate_chat_response, PRIMARY_MODEL
 from app.services.retrieval import retrieve_context
@@ -99,6 +100,7 @@ class EvalSuiteResult:
     results: list[EvalResult] = field(default_factory=list)
     started_at: str = ""
     completed_at: str = ""
+    config_json: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -114,6 +116,7 @@ class EvalSuiteResult:
             "results": [r.to_dict() for r in self.results],
             "started_at": self.started_at,
             "completed_at": self.completed_at,
+            "config": self.config_json,
         }
 
 
@@ -389,6 +392,52 @@ async def create_golden_test_set(
     return test_cases
 
 
+# Default path for the golden test set fixture
+_GOLDEN_FIXTURE_PATH = Path(__file__).resolve().parent.parent.parent / "tests" / "fixtures" / "golden_test_set.json"
+
+
+def load_golden_test_set(path: str | Path | None = None) -> list[EvalTestCase]:
+    """Load a golden test set from a JSON fixture file.
+
+    Args:
+        path: Path to the JSON file. Defaults to backend/tests/fixtures/golden_test_set.json.
+
+    Returns:
+        List of EvalTestCase instances (only cases where validated=True, if the field exists).
+
+    Raises:
+        FileNotFoundError: If the fixture file does not exist.
+        ValueError: If the JSON structure is invalid.
+    """
+    fixture_path = Path(path) if path else _GOLDEN_FIXTURE_PATH
+    if not fixture_path.exists():
+        raise FileNotFoundError(f"Golden test set not found: {fixture_path}")
+
+    with open(fixture_path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    if not isinstance(data, dict) or "test_cases" not in data:
+        raise ValueError(f"Invalid golden test set format: expected dict with 'test_cases' key")
+
+    test_cases: list[EvalTestCase] = []
+    for case in data["test_cases"]:
+        if not isinstance(case, dict):
+            logger.warning("Skipping non-dict test case entry")
+            continue
+        if "question" not in case or "expected_answer" not in case:
+            logger.warning("Skipping test case missing required fields: %s", case)
+            continue
+        test_cases.append(EvalTestCase(
+            question=case["question"],
+            expected_answer=case["expected_answer"],
+            context=case.get("context", ""),
+            tags=case.get("tags", []),
+        ))
+
+    logger.info("Loaded %d test cases from %s", len(test_cases), fixture_path)
+    return test_cases
+
+
 async def generate_answer(query: str, contexts: list[str]) -> str:
     """Generate an answer using the RAG system's LLM given query and contexts."""
     client = get_llm_client()
@@ -406,6 +455,7 @@ async def run_eval_suite(
     access_token: str | None = None,
     user_id: str | None = None,
     tenant_id: str | None = None,
+    config_json: dict | None = None,
 ) -> EvalSuiteResult:
     """Run the full evaluation suite against the RAG pipeline.
 
@@ -474,6 +524,7 @@ async def run_eval_suite(
         results=results,
         started_at=started_at,
         completed_at=datetime.now(UTC).isoformat(),
+        config_json=config_json or {},
     )
 
     return suite
@@ -501,6 +552,8 @@ def save_eval_run(tenant_id: str, suite_result: EvalSuiteResult, test_set_id: st
         "started_at": suite_result.started_at,
         "completed_at": suite_result.completed_at,
     }
+    if suite_result.config_json:
+        run_data["config_json"] = suite_result.config_json
     result = db.table("eval_runs").insert(run_data).execute()
     return result.data[0] if result.data else run_data
 

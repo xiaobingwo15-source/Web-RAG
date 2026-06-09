@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     semantic_chunking: bool = False
     semantic_similarity_threshold: float = 0.75
 
+    # Contextual retrieval (Anthropic-style LLM-generated chunk prefixes)
+    contextual_retrieval: bool = False
+    contextual_retrieval_batch_size: int = 10
+
     # Embeddings
     embedding_provider: str = "gemini"
     embedding_model: str = "gemini-embedding-001"
@@ -157,6 +161,18 @@ class Settings(BaseSettings):
         val = self._get_db_setting("LOCAL_EMBEDDING_DEVICE")
         device = (val if val else self.local_embedding_device).strip().lower()
         return device if device in {"cpu", "cuda"} else "cpu"
+
+    @property
+    def get_contextual_retrieval(self) -> bool:
+        val = self._get_db_setting("CONTEXTUAL_RETRIEVAL")
+        if val is not None:
+            return val.strip().lower() in {"true", "1", "yes"}
+        return self.contextual_retrieval
+
+    @property
+    def get_contextual_retrieval_batch_size(self) -> int:
+        val = self._get_db_setting("CONTEXTUAL_RETRIEVAL_BATCH_SIZE")
+        return int(val) if val else self.contextual_retrieval_batch_size
 
     @property
     def get_tavly_api_key(self) -> str:

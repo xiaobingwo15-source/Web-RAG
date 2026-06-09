@@ -1,0 +1,9 @@
+{
+  "faithfulness": 3.5,
+  "answer_relevance": 3.5,
+  "context_precision": 3.5,
+  "context_recall": 3.5,
+  "overall": 3.5,
+  "updated_at": "2026-06-09T00:00:00Z",
+  "notes": "Initial conservative baselines. Update after first real eval run."
+}

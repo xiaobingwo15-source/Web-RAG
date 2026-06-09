@@ -13,6 +13,7 @@ from app.services.database import (
     update_document_chunk_count, update_document_metadata,
 )
 from app.services.qdrant_db import insert_chunks, update_chunks_metadata
+from app.services.contextual_retrieval import add_contextual_prefixes
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ async def process_document(
 
         logger.info(f"Document {document_id}: chunking text ({len(text)} chars)")
         settings_chunk = Settings()
+        doc_title = metadata.get("title", "")
         if settings_chunk.semantic_chunking:
             logger.info(f"Document {document_id}: using semantic chunking (threshold={settings_chunk.semantic_similarity_threshold})")
             from app.services.chunker import create_parent_child_chunks_semantic
@@ -75,12 +77,25 @@ async def process_document(
 
             hierarchy = await create_parent_child_chunks_semantic(
                 text, embed_fn=embed_fn, threshold=settings_chunk.semantic_similarity_threshold,
+                doc_title=doc_title,
             )
         else:
-            hierarchy = create_parent_child_chunks(text)
+            hierarchy = create_parent_child_chunks(text, doc_title=doc_title)
         parents = hierarchy["parents"]
         children = hierarchy["children"]
         logger.info(f"Document {document_id}: created {len(parents)} parent chunks, {len(children)} child chunks")
+
+        # Optional: add LLM-generated context prefixes to child chunks
+        settings = Settings()
+        if settings.get_contextual_retrieval:
+            logger.info(f"Document {document_id}: adding contextual prefixes (enabled)")
+            doc_summary = metadata.get("summary", "")
+            try:
+                children = await add_contextual_prefixes(
+                    children, doc_title=doc_title, doc_summary=doc_summary,
+                )
+            except Exception as ctx_err:
+                logger.warning(f"Document {document_id}: contextual retrieval failed, continuing without: {ctx_err}")
 
         # Embed only child chunks (fine-grained, searchable)
         logger.info(f"Document {document_id}: generating embeddings for {len(children)} child chunks")
@@ -101,7 +116,6 @@ async def process_document(
             })
 
         # Build parent chunk data with zero-vector embeddings
-        settings = Settings()
         zero_vector = [0.0] * settings.get_embedding_dimension
         parent_chunk_data = []
         for i, parent in enumerate(parents):

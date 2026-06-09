@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from collections.abc import AsyncGenerator
 from app.services.retrieval import retrieve_context
 from app.services.embeddings import get_embedding_client, get_embedding
@@ -10,6 +11,63 @@ from app.services.performance import elapsed_ms, log_latency, monotonic_ms
 from app.services.web_search import search_web
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Dynamic top-k: query complexity classifier
+# ---------------------------------------------------------------------------
+
+# Keyword patterns for each complexity tier
+_COMPARATIVE_RE = re.compile(
+    r"\b(compare|comparison|difference|versus|\bvs\b|pros\s+and\s+cons|"
+    r"advantages?\s+and\s+disadvantages?|better\s+than|worse\s+than|"
+    r"trade-?offs?|contrast|distinguish)\b",
+    re.IGNORECASE,
+)
+_MULTI_CONTEXT_RE = re.compile(
+    r"\b(list\s+all|summarize\s+all|overview\s+of|give\s+me\s+all|"
+    r"all\s+(?:the\s+)?(?:details?|information|benefits|features|types|"
+    r"steps|ways|methods|reasons|examples)|comprehensive\s+(?:list|overview|summary))\b",
+    re.IGNORECASE,
+)
+_SIMPLE_FACTUAL_RE = re.compile(
+    r"^(what|who|when|where|define|definition\s+of|meaning\s+of)\b",
+    re.IGNORECASE,
+)
+
+
+def classify_query_complexity(query: str) -> int:
+    """Return a ``match_count`` value based on lightweight heuristics.
+
+    Tiers:
+        3  — simple factual (short, single-definition queries)
+        5  — standard (default)
+        8  — comparative / complex
+        10 — multi-context (asks for broad lists or overviews)
+    """
+    stripped = query.strip()
+    length = len(stripped)
+    question_marks = stripped.count("?")
+
+    # Multi-context: long queries or explicit "list all" / "summarize all"
+    if length > 150 or _MULTI_CONTEXT_RE.search(stripped):
+        return 10
+
+    # Comparative / complex
+    if _COMPARATIVE_RE.search(stripped):
+        return 8
+    if question_marks > 1:
+        return 8
+    # "and" connecting two question clauses  (e.g. "What is X and how does Y work?")
+    if question_marks >= 1 and re.search(r"\band\b.+\?", stripped, re.IGNORECASE):
+        return 8
+
+    # Simple factual: short query starting with a question word
+    if length < 50 and _SIMPLE_FACTUAL_RE.search(stripped):
+        return 3
+
+    # Default
+    return 5
 
 REWRITE_SYSTEM_PROMPT = (
     "You are a query rewriting assistant. Given a conversation history and a "
@@ -245,6 +303,62 @@ def grade_retrieval_quality(sources: list[dict]) -> str:
         return "high"
 
     return "low"
+
+
+def lost_in_the_middle_reorder(
+    chunks: list[str], sources: list[dict]
+) -> tuple[list[str], list[dict]]:
+    """Reorder chunks to mitigate the Lost-in-the-Middle effect.
+
+    LLMs pay more attention to information at the beginning and end of their
+    context window (Liu et al., 2023). This function places the most relevant
+    chunks at position 0 (first) and position N-1 (last), with remaining chunks
+    in descending score order filling the middle.
+
+    Strategy:
+      - 0-2 chunks: return unchanged (no benefit from reordering)
+      - 3+ chunks: interleave so [best, 3rd, 4th, ..., 2nd-best]
+
+    Args:
+        chunks: list of chunk text strings
+        sources: list of source dicts aligned 1:1 with chunks
+
+    Returns:
+        (reordered_chunks, reordered_sources) tuple
+    """
+    n = len(chunks)
+    if n <= 2:
+        return chunks, sources
+
+    # Build indexed list with available scores
+    indexed = []
+    for i, src in enumerate(sources):
+        score = src.get("rerank_score")
+        if score is None:
+            score = src.get("score", 0.0)
+        indexed.append((i, score))
+
+    # Sort by score descending (stable sort preserves original order for ties)
+    indexed.sort(key=lambda x: x[1], reverse=True)
+
+    # Interleave: best at front, 2nd-best at end, rest in middle descending
+    reordered_indices = [indexed[0][0]]  # highest score -> position 0
+    # Middle positions: 3rd, 4th, 5th, ... in descending score order
+    for idx, _ in indexed[2:]:
+        reordered_indices.append(idx)
+    # Last position: 2nd highest score
+    reordered_indices.append(indexed[1][0])
+
+    new_chunks = [chunks[i] for i in reordered_indices]
+    new_sources = [sources[i] for i in reordered_indices]
+
+    if n >= 3:
+        logger.info(
+            f"Lost-in-the-middle reorder: {n} chunks, "
+            f"scores={[f'{indexed[j][1]:.3f}' for j in range(min(n, 5))]}"
+        )
+
+    return new_chunks, new_sources
 
 
 async def augment_with_web_search(query: str, doc_chunks: list[str], doc_sources: list[dict]) -> dict:
@@ -507,7 +621,9 @@ async def execute(
                 "action_source": "doc_rag",
             }
 
+    qr_start = monotonic_ms()
     augmented_query = await rewrite_query(message, history, client)
+    log_latency("llm.query_rewrite", elapsed_ms(qr_start), user_id=user_id, tenant_id=tenant_id, thread_id=thread_id, rewritten=augmented_query != message)
     if augmented_query != message:
         yield {
             "type": "thought",
@@ -518,7 +634,9 @@ async def execute(
         }
 
     # Multi-query retrieval: generate variants and search in parallel
+    qe_start = monotonic_ms()
     query_variants = await expand_queries(augmented_query, client)
+    log_latency("llm.query_expansion", elapsed_ms(qe_start), user_id=user_id, tenant_id=tenant_id, thread_id=thread_id, variant_count=len(query_variants))
     all_queries = [augmented_query] + query_variants
 
     if len(all_queries) > 1:
@@ -530,9 +648,13 @@ async def execute(
             "action_data": {"queries": all_queries},
         }
 
+    # Dynamic top-k based on query complexity
+    dynamic_match_count = classify_query_complexity(augmented_query)
+    logger.info("Query complexity classified: match_count=%d for query='%s'", dynamic_match_count, augmented_query[:80])
+
     # Run retrieval for all queries concurrently
     retrieval_tasks = [
-        retrieve_context(token, user_id, q, mode=retrieval_mode, target_user_id=target_user_id, tenant_id=tenant_id, thread_id=thread_id)
+        retrieve_context(token, user_id, q, mode=retrieval_mode, match_count=dynamic_match_count, target_user_id=target_user_id, tenant_id=tenant_id, thread_id=thread_id)
         for q in all_queries
     ]
     retrieval_results = await asyncio.gather(*retrieval_tasks, return_exceptions=True)
@@ -605,7 +727,9 @@ async def execute(
             "action_source": "doc_rag",
             "action_data": {"stage": "hyde_generation"},
         }
+        hyde_start = monotonic_ms()
         hyde_answer = await generate_hypothetical_answer(augmented_query, client)
+        log_latency("llm.hyde_generation", elapsed_ms(hyde_start), user_id=user_id, tenant_id=tenant_id, thread_id=thread_id, generated=hyde_answer is not None)
         if hyde_answer:
             try:
                 hyde_embedding = await get_embedding(get_embedding_client(), hyde_answer)
@@ -665,7 +789,9 @@ async def execute(
             "action_data": {"query": message, "fallback_reason": "no_doc_results", "retrieval_log_ids": retrieval_log_ids},
         }
 
+        ws_start = monotonic_ms()
         web_results = await search_web(augmented_query, max_results=5)
+        log_latency("retrieval.web_search", elapsed_ms(ws_start), user_id=user_id, tenant_id=tenant_id, thread_id=thread_id, result_count=len(web_results) if web_results else 0)
         if web_results:
             web_chunks = [f"[Web] {r['title']}: {r['content'][:500]}" for r in web_results]
             web_sources = [{"id": f"web_{r['url']}", "document_id": "web_search", "content": c, "score": 0.0, "title": r["title"], "url": r["url"]} for r, c in zip(web_results, web_chunks)]
@@ -800,7 +926,9 @@ async def execute(
                 "action_data": {"reason": "external_context_needed"},
             }
             search_query = await _extract_search_query(message, context_chunks, client)
+            wse_start = monotonic_ms()
             web_results = await search_web(search_query, max_results=3)
+            log_latency("retrieval.web_search_external", elapsed_ms(wse_start), user_id=user_id, tenant_id=tenant_id, thread_id=thread_id, result_count=len(web_results) if web_results else 0)
             if web_results:
                 web_context = []
                 web_sources = []
@@ -831,6 +959,12 @@ async def execute(
         system_prompt = HYBRID_SYSTEM_PROMPT
     else:
         system_prompt = RAG_SYSTEM_PROMPT
+
+    # ── Lost-in-the-Middle reorder ──
+    # Place most relevant chunks at the beginning and end of context so the LLM
+    # gives them maximum attention (Liu et al., 2023).
+    if context_chunks:
+        context_chunks, context_sources = lost_in_the_middle_reorder(context_chunks, context_sources)
 
     yield {
         "type": "thought",

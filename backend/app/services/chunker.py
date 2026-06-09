@@ -496,11 +496,43 @@ def chunk_text(
     return chunks
 
 
+def prepend_breadcrumb(text: str, heading: str, heading_level: int = 0, doc_title: str = "") -> str:
+    """Prepend a breadcrumb path to chunk text for structural context.
+
+    Format: "Document Title > Current Heading: original chunk text"
+
+    Only non-empty segments are included.  If neither ``heading`` nor
+    ``doc_title`` is provided, the text is returned unchanged.
+
+    Args:
+        text: Original chunk text.
+        heading: The section heading this chunk belongs to.
+        heading_level: Markdown heading level (1-6). Accepted for API
+            compatibility but not rendered in the breadcrumb output.
+        doc_title: Optional document title to prefix.
+
+    Returns:
+        Chunk text with breadcrumb prefix prepended (or unchanged if no context).
+    """
+    segments: list[str] = []
+    if doc_title:
+        segments.append(doc_title)
+    if heading and heading.strip():
+        segments.append(heading.strip())
+
+    if not segments:
+        return text
+
+    breadcrumb = " > ".join(segments)
+    return f"{breadcrumb}: {text}"
+
+
 def create_parent_child_chunks(
     text: str,
     parent_chunk_size: int | None = None,
     child_chunk_size: int | None = None,
     overlap: int | None = None,
+    doc_title: str = "",
 ) -> dict:
     """Split text into parent and child chunks for hierarchical retrieval.
 
@@ -509,11 +541,17 @@ def create_parent_child_chunks(
     - Child chunks (default 500 chars): fine-grained units that get embedded
       and searched.  When a child matches, the parent is returned instead.
 
+    Each chunk's text is prefixed with a breadcrumb path (e.g.
+    "Doc Title > Section: original text") so that embeddings carry
+    structural context, targeting a significant reduction in retrieval
+    failure rate per Anthropic's contextual retrieval research.
+
     Args:
         text: Full document text to chunk.
         parent_chunk_size: Character size for parent chunks (default from Settings).
         child_chunk_size: Character size for child chunks (default from Settings).
         overlap: Character overlap between consecutive chunks (default from Settings).
+        doc_title: Optional document title for breadcrumb prefix.
 
     Returns:
         {
@@ -540,24 +578,40 @@ def create_parent_child_chunks(
     if not text or not text.strip():
         return {"parents": [], "children": []}
 
-    # Step 1: create parent chunks at the larger size
-    parent_texts = chunk_text(text, chunk_size=parent_chunk_size, overlap=overlap)
+    # Step 1: create parent chunks using structured chunker (preserves headings)
+    parent_results = chunk_text_structured(text, chunk_size=parent_chunk_size, overlap=overlap)
 
     parents = []
     children = []
 
-    for parent_text in parent_texts:
+    for parent_result in parent_results:
         parent_id = str(uuid.uuid4())
+        parent_heading = parent_result.metadata.heading
+        parent_heading_level = parent_result.metadata.heading_level
 
-        # Step 2: split each parent into child chunks at the smaller size
-        child_texts = chunk_text(parent_text, chunk_size=child_chunk_size, overlap=overlap)
+        # Prepend breadcrumb to parent text
+        parent_text = prepend_breadcrumb(
+            parent_result.text, parent_heading, parent_heading_level, doc_title,
+        )
+
+        # Step 2: split each parent into child chunks using structured chunker
+        child_results = chunk_text_structured(
+            parent_result.text, chunk_size=child_chunk_size, overlap=overlap,
+        )
 
         # Edge case: if parent is short enough to be a single child, keep it as-is
-        if not child_texts:
-            child_texts = [parent_text]
+        if not child_results:
+            child_texts_bread = [parent_text]
+        else:
+            child_texts_bread = [
+                prepend_breadcrumb(
+                    cr.text, parent_heading, parent_heading_level, doc_title,
+                )
+                for cr in child_results
+            ]
 
         child_ids = []
-        for position, child_text in enumerate(child_texts):
+        for position, child_text in enumerate(child_texts_bread):
             child_id = str(uuid.uuid4())
             child_ids.append(child_id)
             children.append({
@@ -582,6 +636,7 @@ async def create_parent_child_chunks_semantic(
     threshold: float | None = None,
     parent_chunk_size: int | None = None,
     child_chunk_size: int | None = None,
+    doc_title: str = "",
 ) -> dict:
     """Semantic-aware parent-child chunking.
 
@@ -589,12 +644,17 @@ async def create_parent_child_chunks_semantic(
     character counts.  Parent chunks are created at topic boundaries;
     child chunks are fixed-size subdivisions of parents for embedding.
 
+    Each chunk's text is prefixed with a breadcrumb path (e.g.
+    "Doc Title > Section: original text") so that embeddings carry
+    structural context.
+
     Args:
         text: Full document text.
         embed_fn: Async callable that embeds a list of strings.
         threshold: Similarity threshold for breakpoints (default from Settings).
         parent_chunk_size: Max size for parent chunks (default from Settings).
         child_chunk_size: Max size for child chunks (default from Settings).
+        doc_title: Optional document title for breadcrumb prefix.
 
     Returns:
         Same structure as ``create_parent_child_chunks``:
@@ -631,14 +691,31 @@ async def create_parent_child_chunks_semantic(
     for parent_text in semantic_chunks:
         parent_id = str(uuid.uuid4())
 
-        # Step 2: Split each semantic parent into fixed-size child chunks
-        child_texts = chunk_text(parent_text, chunk_size=child_chunk_size)
+        # Extract heading from the parent text via structural parsing
+        parent_results = chunk_text_structured(parent_text, chunk_size=parent_chunk_size)
+        parent_heading = parent_results[0].metadata.heading if parent_results else ""
+        parent_heading_level = parent_results[0].metadata.heading_level if parent_results else 0
 
-        if not child_texts:
-            child_texts = [parent_text]
+        # Prepend breadcrumb to parent text
+        parent_text_bread = prepend_breadcrumb(
+            parent_text, parent_heading, parent_heading_level, doc_title,
+        )
+
+        # Step 2: Split each semantic parent into fixed-size child chunks
+        child_results = chunk_text_structured(parent_text, chunk_size=child_chunk_size)
+
+        if not child_results:
+            child_texts_bread = [parent_text_bread]
+        else:
+            child_texts_bread = [
+                prepend_breadcrumb(
+                    cr.text, parent_heading, parent_heading_level, doc_title,
+                )
+                for cr in child_results
+            ]
 
         child_ids = []
-        for position, child_text in enumerate(child_texts):
+        for position, child_text in enumerate(child_texts_bread):
             child_id = str(uuid.uuid4())
             child_ids.append(child_id)
             children.append({
@@ -650,7 +727,7 @@ async def create_parent_child_chunks_semantic(
 
         parents.append({
             "id": parent_id,
-            "text": parent_text,
+            "text": parent_text_bread,
             "child_ids": child_ids,
         })
 
