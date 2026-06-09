@@ -419,7 +419,8 @@ async def retrieve_context(
 
         if candidates:
             rerank_start = monotonic_ms()
-            scored = await rerank_with_cohere(message, candidates, top_n=match_count)
+            candidate_scores = [m.get("score", 0) for m in candidate_metas]
+            scored = await rerank_with_cohere(message, candidates, top_n=match_count, fallback_scores=candidate_scores)
             log_latency(
                 "retrieval.rerank",
                 elapsed_ms(rerank_start),

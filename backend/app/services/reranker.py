@@ -55,6 +55,7 @@ async def rerank_with_cohere(
     query: str,
     documents: list[str],
     top_n: int = 5,
+    fallback_scores: list[float] | None = None,
 ) -> list[dict]:
     if not documents:
         return []
@@ -69,6 +70,15 @@ async def rerank_with_cohere(
             top_n=top_n,
         )
     except Exception as e:
+        if fallback_scores and len(fallback_scores) == len(documents):
+            logger.warning(f"Cohere rerank failed, using provided fallback scores: {e}")
+            scored = [
+                {"index": i, "score": fallback_scores[i]}
+                for i in range(len(documents))
+            ]
+            scored.sort(key=lambda x: x["score"], reverse=True)
+            return scored[:top_n]
+
         logger.warning(f"Cohere rerank failed, using keyword-overlap fallback: {e}")
         scored = [
             {"index": i, "score": _keyword_overlap_score(query, doc)}

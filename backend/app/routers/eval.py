@@ -8,9 +8,11 @@ Provides:
 """
 
 import logging
+from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from app.config import Settings
 from app.middleware.auth import get_current_user
 from app.services.eval_pipeline import (
     create_golden_test_set,
@@ -47,6 +49,12 @@ class RunEvalRequest(BaseModel):
     test_set_id: str | None = Field(default=None, description="Existing test set ID. If omitted, uses auto-generated set from all docs.")
     document_id: str | None = Field(default=None, description="Document ID for auto-generation (if test_set_id not provided)")
     retrieval_mode: str = Field(default="hybrid", pattern="^(vector|fts|hybrid)$")
+    # Experiment tracking config fields
+    chunk_size: int | None = Field(default=None, ge=100, le=5000, description="Chunk size used for this experiment")
+    top_k: int | None = Field(default=None, ge=1, le=50, description="Number of chunks to retrieve")
+    reranker_model: str | None = Field(default=None, description="Reranker model used (default: rerank-v3.5)")
+    embedding_model: str | None = Field(default=None, description="Embedding model used")
+    notes: str = Field(default="", max_length=1000, description="Free-text notes about this experiment")
 
 
 class TestCaseResponse(BaseModel):
@@ -166,6 +174,18 @@ async def run_eval_endpoint(request: RunEvalRequest, user=Depends(get_current_us
     if not test_cases:
         raise HTTPException(status_code=422, detail="No test cases available for evaluation")
 
+    # Build experiment config for tracking
+    settings = Settings()
+    config_json = {
+        "retrieval_mode": request.retrieval_mode,
+        "chunk_size": request.chunk_size if request.chunk_size is not None else settings.child_chunk_size,
+        "top_k": request.top_k if request.top_k is not None else 5,
+        "reranker_model": request.reranker_model or "rerank-v3.5",
+        "embedding_model": request.embedding_model or settings.embedding_model,
+        "notes": request.notes,
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+
     # Run evaluation
     suite_result = await run_eval_suite(
         test_cases=test_cases,
@@ -173,6 +193,7 @@ async def run_eval_endpoint(request: RunEvalRequest, user=Depends(get_current_us
         access_token=user.access_token,
         user_id=user.id,
         tenant_id=user.tenant_id,
+        config_json=config_json,
     )
 
     # Persist results
