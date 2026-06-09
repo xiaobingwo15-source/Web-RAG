@@ -70,6 +70,26 @@ class EmbeddingProviderSelectionTests(unittest.TestCase):
 
         client_cls.assert_called_once_with(api_key="google-key")
 
+    def test_gemini_provider_rebuilds_client_when_google_api_key_changes(self):
+        first = settings_for("gemini")
+        second = settings_for("gemini")
+        second.get_google_api_key = "rotated-google-key"
+
+        with (
+            patch.object(embeddings, "Settings", side_effect=[first, second]),
+            patch.object(
+                embeddings.genai,
+                "Client",
+                side_effect=lambda api_key: {"api_key": api_key},
+            ) as client_cls,
+        ):
+            client_one = embeddings.get_embedding_client()
+            client_two = embeddings.get_embedding_client()
+
+        self.assertEqual(client_one["api_key"], "google-key")
+        self.assertEqual(client_two["api_key"], "rotated-google-key")
+        self.assertEqual(client_cls.call_count, 2)
+
     def test_local_provider_uses_sentence_transformers_adapter(self):
         with patch.object(
             embeddings,
