@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     embedding_dimension: int = 768
     local_embedding_model: str = "intfloat/multilingual-e5-base"
     local_embedding_device: str = "cpu"
+    jina_api_key: str = ""
+    jina_embedding_model: str = "jina-embeddings-v5-text-small"
 
     # Context budget
     max_context_tokens: int = 6000
@@ -138,7 +140,7 @@ class Settings(BaseSettings):
     def get_embedding_provider(self) -> str:
         val = self._get_db_setting("EMBEDDING_PROVIDER")
         provider = (val if val else self.embedding_provider).strip().lower()
-        allowed = {"gemini", "local_sentence_transformers"}
+        allowed = {"gemini", "local_sentence_transformers", "jina"}
         return provider if provider in allowed else "gemini"
 
     @property
@@ -161,6 +163,16 @@ class Settings(BaseSettings):
         val = self._get_db_setting("LOCAL_EMBEDDING_DEVICE")
         device = (val if val else self.local_embedding_device).strip().lower()
         return device if device in {"cpu", "cuda"} else "cpu"
+
+    @property
+    def get_jina_api_key(self) -> str:
+        val = self._get_db_setting("JINA_API_KEY")
+        return val if val else self.jina_api_key
+
+    @property
+    def get_jina_embedding_model(self) -> str:
+        val = self._get_db_setting("JINA_EMBEDDING_MODEL")
+        return val if val else self.jina_embedding_model
 
     @property
     def get_contextual_retrieval(self) -> bool:
