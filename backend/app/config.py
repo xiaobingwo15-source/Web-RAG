@@ -4,12 +4,25 @@ from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
+DEFAULT_OCR_MODEL = "google/gemini-2.5-flash-lite"
+OCR_MODEL_ALIASES = {
+    "google/gemini-2.0-flash-001": DEFAULT_OCR_MODEL,
+}
+
+
+def normalize_ocr_model(model: str | None) -> str:
+    normalized = (model or DEFAULT_OCR_MODEL).strip()
+    if not normalized:
+        return DEFAULT_OCR_MODEL
+    return OCR_MODEL_ALIASES.get(normalized, normalized)
+
+
 class Settings(BaseSettings):
     model_provider: str = "openrouter"
     openrouter_api_key: str = ""
     openrouter_model: str = "deepseek/deepseek-v4-flash"
     openrouter_fallback_model: str = "deepseek/deepseek-v4-flash:free"
-    ocr_model: str = "google/gemini-2.0-flash-001"
+    ocr_model: str = DEFAULT_OCR_MODEL
     mistral_api_key: str = ""
     mistral_model: str = "mistral-large-latest"
     google_api_key: str = ""  # kept for embeddings only
@@ -135,7 +148,7 @@ class Settings(BaseSettings):
     @property
     def get_ocr_model(self) -> str:
         val = self._get_db_setting("OCR_MODEL")
-        return val if val else self.ocr_model
+        return normalize_ocr_model(val if val else self.ocr_model)
 
     @property
     def get_google_api_key(self) -> str:

@@ -69,10 +69,10 @@ async def extract_pdf(
         try:
             result = await _run_parser(mode, file_bytes, requested_mode, inspection, filename)
         except PDFParserUnavailable as exc:
-            warnings.append(f"{mode} unavailable: {exc}")
+            warnings.append(_parser_warning(mode, "unavailable", exc))
             continue
         except Exception as exc:
-            warnings.append(f"{mode} failed: {exc}")
+            warnings.append(_parser_warning(mode, "failed", exc))
             continue
 
         result.metadata = _build_metadata(
@@ -85,6 +85,36 @@ async def extract_pdf(
         return result
 
     raise PDFParserFailed("No PDF parser produced text. " + " | ".join(warnings))
+
+
+def _parser_warning(mode: str, status: str, exc: Exception) -> str:
+    return f"{mode} {status}: {_friendly_parser_error(mode, exc)}"
+
+
+def _friendly_parser_error(mode: str, exc: Exception) -> str:
+    raw = " ".join(str(exc).split())
+    lower = raw.lower()
+
+    if mode == "ocr" and "no endpoints found" in lower:
+        return "OCR model is unavailable; configure OCR_MODEL to a supported vision model"
+    if "rate limit" in lower or "429" in lower:
+        return "provider rate limit reached"
+    if "api key" in lower or "401" in lower or "403" in lower:
+        return "provider credentials are missing or invalid"
+    if "timeout" in lower or "timed out" in lower:
+        return "provider request timed out"
+    if (
+        "user_id" in lower
+        or "{'error'" in lower
+        or '{"error"' in lower
+        or "error code:" in lower
+    ):
+        return "provider request failed"
+
+    redacted = re.sub(r"user_[A-Za-z0-9]+", "[redacted]", raw)
+    if len(redacted) > 220:
+        return f"{redacted[:217].rstrip()}..."
+    return redacted or exc.__class__.__name__
 
 
 async def _run_parser(
