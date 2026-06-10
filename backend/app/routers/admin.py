@@ -76,6 +76,7 @@ class SystemSettingsSchema(BaseModel):
     OPENROUTER_API_KEY: str | None = None
     OPENROUTER_MODEL: str | None = None
     OPENROUTER_FALLBACK_MODEL: str | None = None
+    OCR_MODEL: str | None = None
     MISTRAL_API_KEY: str | None = None
     MISTRAL_MODEL: str | None = None
     TAVLY_API_KEY: str | None = None
@@ -127,12 +128,15 @@ async def get_settings(user=Depends(get_current_user)):
             return "••••••••"
         return f"{val[:6]}••••••••{val[-4:]}"
 
+    from app.config import DEFAULT_OCR_MODEL, normalize_ocr_model
+
     return {
         "MODEL_PROVIDER": settings_dict.get("MODEL_PROVIDER", "openrouter"),
         "GOOGLE_API_KEY": redact(settings_dict.get("GOOGLE_API_KEY")),
         "OPENROUTER_API_KEY": redact(settings_dict.get("OPENROUTER_API_KEY")),
         "OPENROUTER_MODEL": settings_dict.get("OPENROUTER_MODEL", ""),
         "OPENROUTER_FALLBACK_MODEL": settings_dict.get("OPENROUTER_FALLBACK_MODEL", ""),
+        "OCR_MODEL": normalize_ocr_model(settings_dict.get("OCR_MODEL", DEFAULT_OCR_MODEL)),
         "MISTRAL_API_KEY": redact(settings_dict.get("MISTRAL_API_KEY")),
         "MISTRAL_MODEL": settings_dict.get("MISTRAL_MODEL", "mistral-large-latest"),
         "TAVLY_API_KEY": redact(settings_dict.get("TAVLY_API_KEY")),
@@ -170,6 +174,9 @@ async def save_settings(settings: SystemSettingsSchema, user=Depends(get_current
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="MODEL_PROVIDER must be 'openrouter' or 'mistral'",
             )
+        if key == "OCR_MODEL":
+            from app.config import normalize_ocr_model
+            value = normalize_ocr_model(value)
         
         # Save or update key-value pair in system_settings
         try:

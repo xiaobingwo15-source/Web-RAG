@@ -85,3 +85,28 @@ def test_auto_routes_image_only_pdf_to_ocr(monkeypatch):
 
     assert result.parser == "ocr"
     assert result.metadata["pdf_parser_planned"] == "ocr"
+
+
+def test_ocr_failure_falls_back_to_pypdfium_with_sanitized_warning(monkeypatch):
+    monkeypatch.setattr(pdf_parser, "_inspect_pdf", lambda _: _inspection("Digital fallback text"))
+
+    async def fake_ocr(file_bytes, requested_mode):
+        raise RuntimeError(
+            "Error code: 404 - {'error': {'message': 'No endpoints found for "
+            "google/gemini-2.0-flash-001.'}, 'user_id': 'user_secret'}"
+        )
+
+    def fake_pypdfium(inspection, requested_mode):
+        return PDFExtractionResult("Digital fallback text", "pypdfium", requested_mode)
+
+    monkeypatch.setattr(pdf_parser, "_extract_pdf_ocr", fake_ocr)
+    monkeypatch.setattr(pdf_parser, "_extract_pdf_pypdfium", fake_pypdfium)
+
+    result = asyncio.run(pdf_parser.extract_pdf(b"%PDF", parser_mode="auto", use_ocr=True))
+
+    assert result.parser == "pypdfium"
+    warning = result.metadata["extraction_quality_warning"]
+    assert "OCR model is unavailable" in warning
+    assert "No endpoints found" not in warning
+    assert "user_id" not in warning
+    assert "user_secret" not in warning

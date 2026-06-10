@@ -520,6 +520,7 @@ export interface SystemSettings {
   OPENROUTER_API_KEY?: string
   OPENROUTER_MODEL?: string
   OPENROUTER_FALLBACK_MODEL?: string
+  OCR_MODEL?: string
   MISTRAL_API_KEY?: string
   MISTRAL_MODEL?: string
   TAVLY_API_KEY?: string

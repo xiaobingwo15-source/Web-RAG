@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from app.config import DEFAULT_OCR_MODEL, Settings
 from app.services import gemini
 
 
@@ -62,6 +63,20 @@ class ModelProviderTests(unittest.TestCase):
         with patch.object(gemini, "Settings", return_value=settings):
             with self.assertRaisesRegex(RuntimeError, "MISTRAL_API_KEY"):
                 gemini.get_llm_client()
+
+
+class OcrModelConfigTests(unittest.TestCase):
+    def test_legacy_ocr_model_aliases_to_current_default(self):
+        with patch.object(Settings, "_get_db_setting", return_value=None):
+            settings = Settings(ocr_model="google/gemini-2.0-flash-001")
+
+            self.assertEqual(settings.get_ocr_model, DEFAULT_OCR_MODEL)
+
+    def test_db_ocr_model_aliases_to_current_default(self):
+        with patch.object(Settings, "_get_db_setting", return_value="google/gemini-2.0-flash-001"):
+            settings = Settings(ocr_model="other/model")
+
+            self.assertEqual(settings.get_ocr_model, DEFAULT_OCR_MODEL)
 
 
 class FakeDelta:

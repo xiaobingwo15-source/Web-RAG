@@ -334,6 +334,20 @@ function parserLabel(value?: string): string {
   }
 }
 
+function sanitizeExtractionWarning(warning?: string): string | null {
+  const trimmed = warning?.trim()
+  if (!trimmed) return null
+
+  if (/no endpoints found/i.test(trimmed)) {
+    return 'ocr failed: OCR model is unavailable; configure OCR_MODEL to a supported vision model'
+  }
+  if (/user_id|error code:|\{'error'|"error"/i.test(trimmed)) {
+    return 'Document parser warning: provider request failed'
+  }
+
+  return trimmed
+}
+
 export function DocumentPreviewModal({
   documentId,
   token,
@@ -389,6 +403,8 @@ export function DocumentPreviewModal({
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
+
+  const extractionWarning = sanitizeExtractionWarning(data?.metadata?.extraction_quality_warning)
 
   const renderContentToolbar = (): ReactNode => (
     <div className="mb-2 flex items-center justify-between gap-3 shrink-0">
@@ -725,10 +741,10 @@ export function DocumentPreviewModal({
                 </div>
               )}
 
-              {data.metadata?.extraction_quality_warning && (
+              {extractionWarning && (
                 <div className="flex items-start gap-2 rounded-lg border border-yellow-300 bg-yellow-50 px-3 py-2 text-yellow-800">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                  <p className="text-xs leading-relaxed">{data.metadata.extraction_quality_warning}</p>
+                  <p className="text-xs leading-relaxed">{extractionWarning}</p>
                 </div>
               )}
 

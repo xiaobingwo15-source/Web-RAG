@@ -1487,6 +1487,7 @@ export function AdminPage() {
                       <SettingInput label="OpenRouter API key" value={settings.OPENROUTER_API_KEY || ''} onChange={(v) => handleSettingChange('OPENROUTER_API_KEY', v)} placeholder="Paste to replace saved key" />
                       <SettingInput label="OpenRouter model" value={settings.OPENROUTER_MODEL || ''} onChange={(v) => handleSettingChange('OPENROUTER_MODEL', v)} placeholder="deepseek/deepseek-v4-flash" />
                       <SettingInput label="OpenRouter fallback" value={settings.OPENROUTER_FALLBACK_MODEL || ''} onChange={(v) => handleSettingChange('OPENROUTER_FALLBACK_MODEL', v)} placeholder="deepseek/deepseek-v4-flash:free" />
+                      <SettingInput label="OCR model" value={settings.OCR_MODEL || ''} onChange={(v) => handleSettingChange('OCR_MODEL', v)} placeholder="google/gemini-2.5-flash-lite" />
                     </div>
                   </section>
 
