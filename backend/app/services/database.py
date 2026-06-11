@@ -580,6 +580,89 @@ def archive_document(access_token: str, document_id: str) -> dict | None:
     return result.data[0] if result.data else None
 
 
+# --- Upload session functions ---
+
+def create_upload_session(
+    access_token: str,
+    user_id: str,
+    tenant_id: str | None,
+    filename: str,
+    mime_type: str,
+    total_size: int,
+    chunk_size: int,
+    total_chunks: int,
+    use_ocr: bool = False,
+    pdf_parser_mode: str = "auto",
+) -> dict:
+    db = get_user_db(access_token)
+    result = (
+        db.table("upload_sessions")
+        .insert({
+            "user_id": user_id,
+            "filename": filename,
+            "mime_type": mime_type,
+            "total_size": total_size,
+            "chunk_size": chunk_size,
+            "total_chunks": total_chunks,
+            "use_ocr": use_ocr,
+            "pdf_parser_mode": pdf_parser_mode,
+            **_tenant_payload(tenant_id),
+        })
+        .execute()
+    )
+    return result.data[0]
+
+
+def get_upload_session(access_token: str, session_id: str) -> dict | None:
+    db = get_user_db(access_token)
+    result = db.table("upload_sessions").select("*").eq("id", session_id).execute()
+    return result.data[0] if result.data else None
+
+
+def update_upload_session(
+    access_token: str,
+    session_id: str,
+    status: str | None = None,
+    uploaded_chunks: int | None = None,
+    document_id: str | None = None,
+    error_message: str | None = None,
+) -> dict:
+    db = get_user_db(access_token)
+    updates: dict = {}
+    if status is not None:
+        updates["status"] = status
+    if uploaded_chunks is not None:
+        updates["uploaded_chunks"] = uploaded_chunks
+    if document_id is not None:
+        updates["document_id"] = document_id
+    if error_message is not None:
+        updates["error_message"] = error_message
+    if not updates:
+        return {}
+    result = (
+        db.table("upload_sessions")
+        .update(updates)
+        .eq("id", session_id)
+        .execute()
+    )
+    return result.data[0] if result.data else {}
+
+
+def expire_stale_upload_sessions() -> int:
+    """Expire upload sessions older than 24 hours. Returns count expired."""
+    from datetime import timedelta
+    db = get_db()
+    cutoff = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
+    result = (
+        db.table("upload_sessions")
+        .update({"status": "expired", "error_message": "Session expired after 24 hours"})
+        .eq("status", "uploading")
+        .lt("created_at", cutoff)
+        .execute()
+    )
+    return len(result.data) if result.data else 0
+
+
 # --- Agent trace functions ---
 
 def save_agent_trace(

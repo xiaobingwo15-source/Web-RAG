@@ -361,6 +361,131 @@ export async function uploadDocument(
   return response.json()
 }
 
+// --- Chunked upload session API ---
+
+export interface UploadSessionInitResponse {
+  session_id: string
+  total_chunks: number
+  chunk_size: number
+}
+
+export interface UploadSessionStatus {
+  session_id: string
+  status: string
+  uploaded_chunks: number
+  total_chunks: number
+  filename: string
+  error_message?: string
+}
+
+export async function initUploadSession(
+  params: {
+    filename: string
+    mimeType: string
+    totalSize: number
+    chunkSize: number
+    useOcr: boolean
+    pdfParserMode: string
+  },
+  token: string,
+): Promise<UploadSessionInitResponse> {
+  const response = await fetch('/api/documents/upload/init', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      filename: params.filename,
+      mime_type: params.mimeType,
+      total_size: params.totalSize,
+      chunk_size: params.chunkSize,
+      use_ocr: params.useOcr,
+      pdf_parser_mode: params.pdfParserMode,
+    }),
+  })
+
+  if (response.status === 409) {
+    const detail = await response.json()
+    throw new DuplicateError(detail.detail?.message || 'Document already uploaded', detail.detail?.existing_document_id)
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to init upload session: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function uploadChunk(
+  sessionId: string,
+  chunkIndex: number,
+  chunkData: Blob,
+  checksum: string,
+  token: string,
+): Promise<{ chunk_index: number; uploaded_chunks: number; total_chunks: number }> {
+  const formData = new FormData()
+  formData.append('file', chunkData)
+  formData.append('checksum', checksum)
+
+  const response = await fetch(`/api/documents/upload/${sessionId}/chunk/${chunkIndex}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  })
+
+  if (response.status === 422) {
+    throw new Error('Chunk checksum mismatch')
+  }
+  if (!response.ok) {
+    throw new Error(`Chunk upload failed: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function completeUploadSession(
+  sessionId: string,
+  token: string,
+): Promise<DocumentUploadResponse> {
+  const response = await fetch(`/api/documents/upload/${sessionId}/complete`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+
+  if (response.status === 409) {
+    const detail = await response.json()
+    throw new DuplicateError(detail.detail?.message || 'Document already uploaded', detail.detail?.existing_document_id)
+  }
+  if (!response.ok) {
+    throw new Error(`Upload completion failed: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function getUploadSessionStatus(
+  sessionId: string,
+  token: string,
+): Promise<UploadSessionStatus> {
+  const response = await fetch(`/api/documents/upload/${sessionId}/status`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) {
+    throw new Error(`Upload session status failed: ${response.status}`)
+  }
+  return response.json()
+}
+
+export async function cancelUploadSession(
+  sessionId: string,
+  token: string,
+): Promise<void> {
+  const response = await fetch(`/api/documents/upload/${sessionId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) {
+    throw new Error(`Cancel upload failed: ${response.status}`)
+  }
+}
+
 export class DuplicateError extends Error {
   existingDocumentId?: string
   constructor(message: string, existingDocumentId?: string) {
@@ -370,15 +495,46 @@ export class DuplicateError extends Error {
   }
 }
 
+export class TransientStatusError extends Error {
+  status?: number
+
+  constructor(status?: number) {
+    super(
+      status
+        ? `Document status temporarily unavailable (${status})`
+        : 'Document status temporarily unavailable',
+    )
+    this.name = 'TransientStatusError'
+    this.status = status
+  }
+}
+
+export function isTransientStatusError(error: unknown): error is TransientStatusError {
+  return error instanceof TransientStatusError
+    || (error instanceof Error && error.name === 'TransientStatusError')
+}
+
+function isTransientStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504
+}
+
 export async function getDocumentStatus(
   documentId: string,
   token: string,
 ): Promise<DocumentStatus> {
-  const response = await fetch(`/api/documents/status/${documentId}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
+  let response: Response
+  try {
+    response = await fetch(`/api/documents/status/${documentId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+  } catch {
+    throw new TransientStatusError()
+  }
 
   if (!response.ok) {
+    if (isTransientStatus(response.status)) {
+      throw new TransientStatusError(response.status)
+    }
     throw new Error(`Status check failed: ${response.status}`)
   }
 
@@ -521,6 +677,8 @@ export interface SystemSettings {
   OPENROUTER_MODEL?: string
   OPENROUTER_FALLBACK_MODEL?: string
   OCR_MODEL?: string
+  PDF_OCR_MAX_PAGES?: string
+  PDF_LAYOUT_MAX_PAGES?: string
   MISTRAL_API_KEY?: string
   MISTRAL_MODEL?: string
   TAVLY_API_KEY?: string

@@ -17,6 +17,16 @@ def normalize_ocr_model(model: str | None) -> str:
     return OCR_MODEL_ALIASES.get(normalized, normalized)
 
 
+def _nonnegative_int_setting(value: str | None, default: int) -> int:
+    if value is None or not str(value).strip():
+        return default
+    try:
+        parsed = int(str(value).strip())
+    except ValueError:
+        return default
+    return parsed if parsed >= 0 else default
+
+
 class Settings(BaseSettings):
     model_provider: str = "openrouter"
     openrouter_api_key: str = ""
@@ -51,6 +61,11 @@ class Settings(BaseSettings):
     mineru_poll_timeout_seconds: int = 300
     mineru_poll_interval_seconds: int = 3
     mineru_language: str = "ch"
+
+    # Free-tier PDF safety limits. OCR and high-res layout parsing can exceed
+    # Render's 512 MB free instance memory on high-page PDFs.
+    pdf_ocr_max_pages: int = 20
+    pdf_layout_max_pages: int = 30
 
     # Rate limiting
     rate_limit_chat_requests: int = 30
@@ -149,6 +164,16 @@ class Settings(BaseSettings):
     def get_ocr_model(self) -> str:
         val = self._get_db_setting("OCR_MODEL")
         return normalize_ocr_model(val if val else self.ocr_model)
+
+    @property
+    def get_pdf_ocr_max_pages(self) -> int:
+        val = self._get_db_setting("PDF_OCR_MAX_PAGES")
+        return _nonnegative_int_setting(val, self.pdf_ocr_max_pages)
+
+    @property
+    def get_pdf_layout_max_pages(self) -> int:
+        val = self._get_db_setting("PDF_LAYOUT_MAX_PAGES")
+        return _nonnegative_int_setting(val, self.pdf_layout_max_pages)
 
     @property
     def get_google_api_key(self) -> str:

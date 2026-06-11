@@ -62,11 +62,56 @@ async def extract_pdf(
 ) -> PDFExtractionResult:
     requested_mode = normalize_pdf_parser_mode(parser_mode)
     inspection = _inspect_pdf(file_bytes)
+    settings = Settings()
     planned_mode = "ocr" if use_ocr else _choose_mode(requested_mode, inspection)
     warnings: list[str] = []
+    forced_candidates: list[str] | None = None
 
-    for mode in _candidate_modes(planned_mode):
+    logger.info(
+        "PDF inspection complete: pages=%s, text_pages=%s, chars=%s, requested=%s, use_ocr=%s, planned=%s",
+        inspection.page_count,
+        inspection.text_page_count,
+        inspection.char_count,
+        requested_mode,
+        use_ocr,
+        planned_mode,
+    )
+
+    pdf_ocr_max_pages = settings.get_pdf_ocr_max_pages
+    pdf_layout_max_pages = settings.get_pdf_layout_max_pages
+
+    if planned_mode == "ocr" and _over_limit(inspection.page_count, pdf_ocr_max_pages):
+        if inspection.text_page_count > 0 and inspection.char_count > 0:
+            warnings.append(
+                "ocr skipped: PDF OCR skipped because the file has extractable text "
+                "and exceeds the OCR page limit"
+            )
+            planned_mode = "pypdfium"
+            forced_candidates = ["pypdfium"]
+        else:
+            raise PDFParserFailed(
+                "PDF requires OCR but has too many pages for this deployment limit "
+                f"({inspection.page_count} pages > {pdf_ocr_max_pages} page limit)"
+            )
+
+    if planned_mode == "unstructured" and _over_limit(inspection.page_count, pdf_layout_max_pages):
+        if inspection.text_page_count > 0 and inspection.char_count > 0:
+            warnings.append(
+                "layout parser skipped: PDF exceeds the layout parser page limit; "
+                "using fast text extraction instead"
+            )
+            planned_mode = "pypdfium"
+            forced_candidates = ["pypdfium"]
+        else:
+            raise PDFParserFailed(
+                "PDF layout parser requires too much memory for this deployment limit "
+                "and no extractable text fallback is available "
+                f"({inspection.page_count} pages > {pdf_layout_max_pages} page limit)"
+            )
+
+    for mode in (forced_candidates or _candidate_modes(planned_mode)):
         try:
+            logger.info("PDF parser attempt: mode=%s", mode)
             result = await _run_parser(mode, file_bytes, requested_mode, inspection, filename)
         except PDFParserUnavailable as exc:
             warnings.append(_parser_warning(mode, "unavailable", exc))
@@ -85,6 +130,10 @@ async def extract_pdf(
         return result
 
     raise PDFParserFailed("No PDF parser produced text. " + " | ".join(warnings))
+
+
+def _over_limit(page_count: int, limit: int) -> bool:
+    return limit > 0 and page_count > limit
 
 
 def _parser_warning(mode: str, status: str, exc: Exception) -> str:

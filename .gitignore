@@ -32,5 +32,11 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+server-*.log
+vite-dev-*.log
+dev-server-*.log
 
 .claude/worktrees/
+
+# Upload chunks (temporary chunked upload storage)
+uploaded_chunks/

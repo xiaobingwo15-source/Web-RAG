@@ -6,13 +6,21 @@ import {
   getDocumentStatus,
   deleteDocument as apiDeleteDocument,
   DuplicateError,
+  isTransientStatusError,
   type DocumentStatus,
   type PdfParserMode,
 } from '@/lib/api'
+import * as uploadStorage from '@/lib/uploadStorage'
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
 }
+
+const POLL_TIMEOUT_MS = 5 * 60 * 1000
+const POLL_INTERVAL_MS = 2000
+const MAX_TRANSIENT_POLL_INTERVAL_MS = 30000
+const STATUS_RETRY_MESSAGE = 'Status temporarily unavailable; retrying.'
+const STILL_PROCESSING_MESSAGE = 'Still processing. Refresh the document list later for the latest status.'
 
 export function useDocuments() {
   const [documents, setDocuments] = useState<DocumentStatus[]>([])
@@ -67,35 +75,88 @@ export function useDocuments() {
           ...prev.filter((doc) => doc.id !== res.id),
         ])
 
-        // Poll for processing completion (up to 5 minutes)
-        const MAX_POLL_ATTEMPTS = 150
-        const POLL_INTERVAL_MS = 2000
+        // Persist polling document ID to localStorage for recovery
+        if (session?.user?.id) {
+          uploadStorage.addPollingDocument(session.user.id, {
+            documentId: res.id,
+            filename: res.filename,
+            addedAt: Date.now(),
+          })
+        }
+
         let lastStatus = res.status
+        let latestStatus: DocumentStatus | null = null
+        let pollIntervalMs = POLL_INTERVAL_MS
+        let transientFailures = 0
+        const pollDeadline = Date.now() + POLL_TIMEOUT_MS
 
-        for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
-          await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
+        while (Date.now() < pollDeadline) {
+          const waitMs = Math.min(pollIntervalMs, Math.max(0, pollDeadline - Date.now()))
+          if (waitMs > 0) {
+            await new Promise((r) => setTimeout(r, waitMs))
+          }
 
-          const statusRes = await getDocumentStatus(res.id, accessToken)
-          lastStatus = statusRes.status
+          try {
+            const statusRes = await getDocumentStatus(res.id, accessToken)
+            latestStatus = statusRes
+            lastStatus = statusRes.status
+            transientFailures = 0
+            pollIntervalMs = POLL_INTERVAL_MS
 
-          // Update the document in the list with latest status
-          setDocuments((prev) =>
-            prev.map((doc) =>
-              doc.id === res.id
-                ? { ...statusRes, error_message: statusRes.error_message }
-                : doc,
-            ),
-          )
+            setDocuments((prev) =>
+              prev.map((doc) =>
+                doc.id === res.id
+                  ? { ...statusRes, error_message: statusRes.error_message }
+                  : doc,
+              ),
+            )
 
-          // Terminal states — stop polling
-          if (statusRes.status === 'processed' || statusRes.status === 'failed') {
-            break
+            if (statusRes.status === 'processed' || statusRes.status === 'failed') {
+              break
+            }
+          } catch (err: unknown) {
+            if (!isTransientStatusError(err)) {
+              throw err
+            }
+
+            transientFailures += 1
+            pollIntervalMs = Math.min(
+              POLL_INTERVAL_MS * 2 ** Math.min(transientFailures, 4),
+              MAX_TRANSIENT_POLL_INTERVAL_MS,
+            )
+            setDocuments((prev) =>
+              prev.map((doc) =>
+                doc.id === res.id
+                  ? {
+                    ...doc,
+                    status: doc.status === 'pending' ? 'processing' : doc.status,
+                    error_message: STATUS_RETRY_MESSAGE,
+                  }
+                  : doc,
+              ),
+            )
           }
         }
 
+        // Clean up polling document from localStorage
+        if (session?.user?.id) {
+          uploadStorage.removePollingDocument(session.user.id, res.id)
+        }
+
         if (lastStatus === 'failed') {
-          const statusRes = await getDocumentStatus(res.id, accessToken)
-          failures.push({ filename: file.name, error: statusRes.error_message || 'Processing failed' })
+          failures.push({ filename: file.name, error: latestStatus?.error_message || 'Processing failed' })
+        } else if (lastStatus !== 'processed') {
+          setDocuments((prev) =>
+            prev.map((doc) =>
+              doc.id === res.id
+                ? {
+                  ...doc,
+                  status: doc.status === 'pending' ? 'processing' : doc.status,
+                  error_message: STILL_PROCESSING_MESSAGE,
+                }
+                : doc,
+            ),
+          )
         }
       } catch (err: unknown) {
         if (err instanceof DuplicateError) {
@@ -129,17 +190,117 @@ export function useDocuments() {
   }
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void fetchDocuments()
+    let cancelled = false
+    const timer = window.setTimeout(async () => {
+      await fetchDocuments()
+      if (cancelled || !accessToken || !session?.user?.id) return
+
+      // Recover polling for documents tracked in localStorage
+      const pollingDocs = uploadStorage.getPollingDocuments(session.user.id)
+      if (pollingDocs.length === 0) return
+
+      for (const doc of pollingDocs) {
+        // Start a polling loop for each non-terminal document
+        const pollLoop = async () => {
+          const RECOVER_POLL_TIMEOUT = 10 * 60 * 1000 // 10 minutes
+          const deadline = Date.now() + RECOVER_POLL_TIMEOUT
+
+          while (Date.now() < deadline && !cancelled) {
+            await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
+            if (cancelled) break
+
+            try {
+              const statusRes = await getDocumentStatus(doc.documentId, accessToken)
+              setDocuments((prev) =>
+                prev.map((d) =>
+                  d.id === doc.documentId
+                    ? { ...statusRes, error_message: statusRes.error_message }
+                    : d,
+                ),
+              )
+
+              if (statusRes.status === 'processed' || statusRes.status === 'failed') {
+                uploadStorage.removePollingDocument(session.user.id!, doc.documentId)
+                break
+              }
+            } catch (err: unknown) {
+              if (!isTransientStatusError(err)) break
+              // Transient — keep polling
+            }
+          }
+
+          // Timed out — remove from tracking
+          if (!cancelled) {
+            uploadStorage.removePollingDocument(session.user.id!, doc.documentId)
+          }
+        }
+
+        void pollLoop()
+      }
     }, 0)
-    return () => window.clearTimeout(timer)
-  }, [fetchDocuments])
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [fetchDocuments, accessToken, session?.user?.id])
+
+  /**
+   * Add a document (already uploaded via chunked upload) to the list
+   * and start polling for its processing status.
+   */
+  const addDocumentForPolling = useCallback(
+    async (documentId: string, filename: string) => {
+      if (!accessToken || !session?.user?.id) return
+
+      // Add to document list
+      setDocuments((prev) => [
+        { id: documentId, filename, status: 'pending' },
+        ...prev.filter((d) => d.id !== documentId),
+      ])
+
+      // Persist to localStorage
+      uploadStorage.addPollingDocument(session.user.id, {
+        documentId,
+        filename,
+        addedAt: Date.now(),
+      })
+
+      // Start polling
+      const deadline = Date.now() + POLL_TIMEOUT_MS
+
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
+
+        try {
+          const statusRes = await getDocumentStatus(documentId, accessToken)
+
+          setDocuments((prev) =>
+            prev.map((d) =>
+              d.id === documentId
+                ? { ...statusRes, error_message: statusRes.error_message }
+                : d,
+            ),
+          )
+
+          if (statusRes.status === 'processed' || statusRes.status === 'failed') {
+            break
+          }
+        } catch (err: unknown) {
+          if (!isTransientStatusError(err)) break
+        }
+      }
+
+      uploadStorage.removePollingDocument(session.user.id, documentId)
+    },
+    [accessToken, session?.user?.id],
+  )
 
   return {
     documents,
     uploadDocument,
     deleteDocument,
     fetchDocuments,
+    addDocumentForPolling,
     isUploading,
     isLoading,
     loadError,

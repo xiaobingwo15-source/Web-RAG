@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import logging
+import time
 from app.services.text_extractor import extract_text_with_metadata
 from app.services.chunker import chunk_text, create_parent_child_chunks
 from app.services.embeddings import get_embedding_client, get_embeddings
@@ -18,6 +19,30 @@ from app.services.contextual_retrieval import add_contextual_prefixes
 logger = logging.getLogger(__name__)
 
 
+def _log_document_stage(
+    document_id: str,
+    stage: str,
+    event: str,
+    **fields: object,
+) -> None:
+    details = " ".join(
+        f"{key}={value}"
+        for key, value in fields.items()
+        if value is not None
+    )
+    logger.info(
+        "Document %s: stage=%s event=%s%s",
+        document_id,
+        stage,
+        event,
+        f" {details}" if details else "",
+    )
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return int((time.perf_counter() - started_at) * 1000)
+
+
 def compute_content_hash(file_bytes: bytes) -> str:
     return hashlib.md5(file_bytes).hexdigest()
 
@@ -33,16 +58,22 @@ async def process_document(
     filename: str | None = None,
     tenant_id: str | None = None,
 ) -> dict:
+    process_started_at = time.perf_counter()
     try:
         content_hash = compute_content_hash(file_bytes)
         update_document_hash(access_token, document_id, content_hash)
 
-        logger.info(
-            "Processing document %s: extracting text (ocr=%s, pdf_parser_mode=%s)",
+        _log_document_stage(
             document_id,
-            use_ocr,
-            pdf_parser_mode,
+            "inspect",
+            "started",
+            mime_type=mime_type,
+            bytes=len(file_bytes),
+            ocr=use_ocr,
+            pdf_parser_mode=pdf_parser_mode,
         )
+        parse_started_at = time.perf_counter()
+        _log_document_stage(document_id, "parse", "started")
         extraction = await extract_text_with_metadata(
             file_bytes,
             mime_type,
@@ -51,21 +82,54 @@ async def process_document(
             filename=filename,
         )
         text = extraction.text
+        _log_document_stage(
+            document_id,
+            "inspect",
+            "completed",
+            pages=extraction.metadata.get("pdf_page_count"),
+            text_pages=extraction.metadata.get("pdf_text_page_count"),
+            extracted_chars=extraction.metadata.get("extracted_char_count"),
+        )
+        _log_document_stage(
+            document_id,
+            "parse",
+            "completed",
+            elapsed_ms=_elapsed_ms(parse_started_at),
+            chars=len(text),
+            parser=extraction.metadata.get("pdf_parser"),
+            pages=extraction.metadata.get("pdf_page_count"),
+        )
 
         if not text.strip():
             raise ValueError("No text content extracted from file")
 
-        logger.info(f"Document {document_id}: extracting metadata")
+        metadata_started_at = time.perf_counter()
+        _log_document_stage(document_id, "metadata", "started")
         gemini_client = get_llm_client()
         metadata = await extract_metadata(gemini_client, text[:2000])
         metadata = {**metadata, **extraction.metadata}
         update_document_metadata(access_token, document_id, metadata)
-        logger.info(f"Document {document_id}: metadata extracted — {metadata}")
+        _log_document_stage(
+            document_id,
+            "metadata",
+            "completed",
+            elapsed_ms=_elapsed_ms(metadata_started_at),
+            title=bool(metadata.get("title")),
+            tags=len(metadata.get("tags", [])) if isinstance(metadata.get("tags"), list) else 0,
+            language=metadata.get("language"),
+        )
 
         text = emphasize_document_text(text, metadata)
 
-        logger.info(f"Document {document_id}: chunking text ({len(text)} chars)")
         settings_chunk = Settings()
+        chunk_started_at = time.perf_counter()
+        _log_document_stage(
+            document_id,
+            "chunk",
+            "started",
+            chars=len(text),
+            semantic=settings_chunk.semantic_chunking,
+        )
         doc_title = metadata.get("title", "")
         if settings_chunk.semantic_chunking:
             logger.info(f"Document {document_id}: using semantic chunking (threshold={settings_chunk.semantic_similarity_threshold})")
@@ -83,7 +147,14 @@ async def process_document(
             hierarchy = create_parent_child_chunks(text, doc_title=doc_title)
         parents = hierarchy["parents"]
         children = hierarchy["children"]
-        logger.info(f"Document {document_id}: created {len(parents)} parent chunks, {len(children)} child chunks")
+        _log_document_stage(
+            document_id,
+            "chunk",
+            "completed",
+            elapsed_ms=_elapsed_ms(chunk_started_at),
+            parent_chunks=len(parents),
+            child_chunks=len(children),
+        )
 
         # Optional: add LLM-generated context prefixes to child chunks
         settings = Settings()
@@ -98,10 +169,18 @@ async def process_document(
                 logger.warning(f"Document {document_id}: contextual retrieval failed, continuing without: {ctx_err}")
 
         # Embed only child chunks (fine-grained, searchable)
-        logger.info(f"Document {document_id}: generating embeddings for {len(children)} child chunks")
+        embed_started_at = time.perf_counter()
+        _log_document_stage(document_id, "embed", "started", child_chunks=len(children))
         client = get_embedding_client()
         child_texts = [c["text"] for c in children]
         embeddings = await get_embeddings(client, child_texts)
+        _log_document_stage(
+            document_id,
+            "embed",
+            "completed",
+            elapsed_ms=_elapsed_ms(embed_started_at),
+            embeddings=len(embeddings),
+        )
 
         # Build child chunk data with parent_id and chunk_type
         child_chunk_data = []
@@ -127,7 +206,14 @@ async def process_document(
                 "metadata": metadata,
             })
 
-        logger.info(f"Document {document_id}: storing {len(child_chunk_data)} child + {len(parent_chunk_data)} parent chunks")
+        store_started_at = time.perf_counter()
+        _log_document_stage(
+            document_id,
+            "store",
+            "started",
+            child_chunks=len(child_chunk_data),
+            parent_chunks=len(parent_chunk_data),
+        )
 
         # Insert child chunks into Supabase FTS first to get canonical IDs
         child_fts_rows = await asyncio.to_thread(
@@ -161,9 +247,29 @@ async def process_document(
         total_chunks = len(child_chunk_data) + len(parent_chunk_data)
         update_document_chunk_count(access_token, document_id, total_chunks)
         update_document_status(access_token, document_id, "processed")
+        _log_document_stage(
+            document_id,
+            "store",
+            "completed",
+            elapsed_ms=_elapsed_ms(store_started_at),
+            total_chunks=total_chunks,
+        )
+        _log_document_stage(
+            document_id,
+            "ingest",
+            "completed",
+            elapsed_ms=_elapsed_ms(process_started_at),
+        )
         return {"id": document_id, "status": "processed", "chunk_count": total_chunks}
 
     except Exception as e:
+        _log_document_stage(
+            document_id,
+            "ingest",
+            "failed",
+            elapsed_ms=_elapsed_ms(process_started_at),
+            error_type=e.__class__.__name__,
+        )
         logger.error(f"Document {document_id} processing failed: {e}")
         update_document_status(access_token, document_id, "failed", str(e))
         return {"id": document_id, "status": "failed", "error_message": str(e)}
