@@ -81,6 +81,20 @@ EXPANSION_SYSTEM_PROMPT = (
     "to improve recall. Return one query per line, nothing else. No numbering, no bullets."
 )
 
+DECOMPOSITION_SYSTEM_PROMPT = (
+    "Given a comparative or multi-faceted query, decompose it into 2-3 focused sub-queries "
+    "that each address ONE aspect of the comparison. Each sub-query should be self-contained "
+    "and searchable. Return one query per line, nothing else. No numbering, no bullets.\n\n"
+    "Example:\n"
+    "Query: Compare Python and Java for web development\n"
+    "Python web development advantages and frameworks\n"
+    "Java web development advantages and frameworks\n\n"
+    "Example:\n"
+    "Query: What are the pros and cons of React vs Vue?\n"
+    "React pros cons for frontend development\n"
+    "Vue pros cons for frontend development"
+)
+
 # HyDE constants
 HYDE_SYSTEM_PROMPT = (
     "You are a helpful assistant. Given a question, write a short, specific, "
@@ -212,16 +226,24 @@ async def rewrite_query(message: str, history: list, client) -> str:
 
 
 async def expand_queries(message: str, client) -> list[str]:
-    """Generate 2 alternative query formulations for better recall."""
+    """Generate alternative search query formulations for better recall.
+
+    For comparative queries, uses decomposition to generate focused sub-queries.
+    For regular queries, uses standard expansion with different phrasings.
+    """
+    # Check if this is a comparative query that benefits from decomposition
+    is_comparative = bool(_COMPARATIVE_RE.search(message))
+    prompt = DECOMPOSITION_SYSTEM_PROMPT if is_comparative else EXPANSION_SYSTEM_PROMPT
+
     try:
         response = await asyncio.wait_for(
             client.chat.completions.create(
                 model=get_primary_model(),
                 messages=[
-                    {"role": "system", "content": EXPANSION_SYSTEM_PROMPT},
+                    {"role": "system", "content": prompt},
                     {"role": "user", "content": message},
                 ],
-                max_tokens=80,
+                max_tokens=100,
                 temperature=0.3,
             ),
             timeout=5.0,
@@ -231,8 +253,9 @@ async def expand_queries(message: str, client) -> list[str]:
         # Filter out variants that are too similar to the original
         unique = [v for v in variants if v.lower() != message.lower() and len(v) > 10]
         if unique:
-            logger.info(f"Query expansion: '{message[:50]}' -> {len(unique)} variants")
-            print(f"[DOC_RAG] Query expansion: {len(unique)} variants generated")
+            mode = "decomposition" if is_comparative else "expansion"
+            logger.info(f"Query {mode}: '{message[:50]}' -> {len(unique)} variants")
+            print(f"[DOC_RAG] Query {mode}: {len(unique)} variants generated")
             return unique[:2]  # Max 2 variants
     except Exception as e:
         logger.warning(f"Query expansion failed: {e}")
@@ -659,13 +682,10 @@ async def execute(
     ]
     retrieval_results = await asyncio.gather(*retrieval_tasks, return_exceptions=True)
 
-    # Merge results, deduplicating by chunk content.
-    # Use separate tracking sets for chunks and sources to avoid cross-dedup drops.
-    seen_chunk_keys: set[str] = set()
-    seen_source_keys: set[str] = set()
-    context_chunks: list[str] = []
-    context_sources: list[dict] = []  # Aligned 1:1 with context_chunks for LLM source attribution
-    sources: list[dict] = []
+    # ── RAG-Fusion: RRF merge across query variants ──
+    # Documents appearing in multiple variant result sets get higher fused scores.
+    rrf_k = 60
+    fused: dict[str, dict] = {}  # key -> {content, sources, score, ...}
     retrieval_log_ids: list[str] = []
 
     for result in retrieval_results:
@@ -675,24 +695,45 @@ async def execute(
         retrieval_log_ids.extend(result.get("retrieval_log_ids", []))
         result_chunks = result.get("chunks", [])
         result_sources = result.get("sources", [])
-        for i, chunk in enumerate(result_chunks):
+        for rank, chunk in enumerate(result_chunks):
             key = chunk[:200].strip().lower()
-            if key not in seen_chunk_keys:
-                seen_chunk_keys.add(key)
-                context_chunks.append(chunk)
-                # Align source with chunk by index — each retrieval returns sources in the same order as chunks
-                if i < len(result_sources):
-                    context_sources.append(result_sources[i])
-                else:
-                    context_sources.append({})
-        for src in result_sources:
-            key = src.get("content", "")[:200].strip().lower()
-            if key not in seen_source_keys:
-                seen_source_keys.add(key)
-                sources.append(src)
+            rrf_score = 1.0 / (rrf_k + rank + 1)
+            if key in fused:
+                # Document found by another variant — boost its score
+                fused[key]["score"] += rrf_score
+            else:
+                source = result_sources[rank] if rank < len(result_sources) else {}
+                fused[key] = {
+                    "content": chunk,
+                    "source": source,
+                    "score": rrf_score,
+                }
 
+    # Sort by fused score descending, then dedup into final lists
+    sorted_fused = sorted(fused.values(), key=lambda x: x["score"], reverse=True)
+
+    seen_chunk_keys: set[str] = set()
+    seen_source_keys: set[str] = set()
+    context_chunks: list[str] = []
+    context_sources: list[dict] = []
+    sources: list[dict] = []
+
+    for item in sorted_fused:
+        chunk = item["content"]
+        source = item["source"]
+        key = chunk[:200].strip().lower()
+        if key not in seen_chunk_keys:
+            seen_chunk_keys.add(key)
+            context_chunks.append(chunk)
+            context_sources.append(source)
+        src_key = source.get("content", "")[:200].strip().lower() if source else ""
+        if src_key and src_key not in seen_source_keys:
+            seen_source_keys.add(src_key)
+            sources.append(source)
+
+    logger.info(f"RAG-Fusion: {len(fused)} unique chunks from {len(all_queries)} variants, top fused score={sorted_fused[0]['score']:.4f}" if sorted_fused else "RAG-Fusion: 0 chunks")
     public_sources = _public_sources(sources)
-    print(f"[DOC_RAG] Retrieved {len(context_chunks)} context chunks (multi-query: {len(all_queries)} variants) for user_id={user_id}")
+    print(f"[DOC_RAG] Retrieved {len(context_chunks)} context chunks (RAG-Fusion: {len(all_queries)} variants, {len(fused)} unique) for user_id={user_id}")
 
     # ── Merge delegated SQL results into context ──
     if delegated_sql_result and delegated_sql_result.get("chunks"):

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import time
 from app.services.embeddings import get_embedding_client, get_embedding
 from app.services.reranker import rerank_with_cohere
@@ -198,6 +199,51 @@ def _finalize_sources(
     return sources
 
 
+def _classify_query_type(query: str) -> str:
+    """Classify a query as 'keyword' or 'semantic' for weighted RRF.
+
+    Keyword queries (error codes, part numbers, exact phrases) benefit from FTS.
+    Semantic queries (paraphrased questions) benefit from vector search.
+    """
+    stripped = query.strip()
+
+    # Guard against empty/whitespace-only queries
+    if not stripped:
+        return "keyword"
+
+    # Indicators of keyword-heavy queries
+    keyword_indicators = 0
+
+    # Contains codes/error messages (alphanumeric with digits, e.g. ERR404, ERR-404, ERR 404)
+    if re.search(r'\b[A-Z]{2,}[\s\-_]?\d+\b', stripped):
+        keyword_indicators += 2
+
+    # Contains quoted exact phrases (but not single-char quotes in natural language)
+    if re.search(r'"[^"]{2,}"', stripped) or re.search(r"'[^']{2,}'", stripped):
+        keyword_indicators += 2
+
+    # Short query with digits (technical terms, part numbers)
+    words = stripped.lower().split()
+    if len(words) <= 3 and any(c.isdigit() for c in stripped):
+        keyword_indicators += 1
+
+    # Contains specific technical patterns (version numbers, model names)
+    if re.search(r'\b\d+\.\d+(\.\d+)?\b', stripped):
+        keyword_indicators += 1
+
+    # All caps words (abbreviations, acronyms)
+    caps_words = [w for w in stripped.split() if w.isupper() and len(w) >= 2]
+    if caps_words:
+        keyword_indicators += 1
+
+    # Short query with strong keyword signals
+    if len(words) <= 4 and keyword_indicators >= 2:
+        return "keyword"
+
+    # Default to semantic for natural language queries
+    return "keyword" if keyword_indicators >= 2 else "semantic"
+
+
 async def retrieve_context(
     token: str | None,
     user_id: str | None,
@@ -394,20 +440,26 @@ async def retrieve_context(
             logger.warning("Hybrid retrieval: NO results from either Qdrant vector search or Supabase FTS. Check if documents are properly indexed.")
             return _empty()
 
-        # Reciprocal Rank Fusion (RRF) merge
+        # Reciprocal Rank Fusion (RRF) merge with dynamic weights
         rrf_k = 60
+        query_type = _classify_query_type(message)
+        if query_type == "keyword":
+            w_vector, w_fts = 0.3, 0.7
+        else:
+            w_vector, w_fts = 0.7, 0.3
+        logger.info(f"RRF query_type={query_type}, w_vector={w_vector}, w_fts={w_fts}")
         combined: dict[str, dict] = {}
 
         for rank, chunk in enumerate(vector_results):
             cid = chunk["id"]
-            combined[cid] = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": 1.0 / (rrf_k + rank + 1), "metadata": chunk.get("metadata", {}), **({"parent_id": chunk["parent_id"]} if chunk.get("parent_id") else {})}
+            combined[cid] = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": w_vector / (rrf_k + rank + 1), "metadata": chunk.get("metadata", {}), **({"parent_id": chunk["parent_id"]} if chunk.get("parent_id") else {})}
 
         for rank, chunk in enumerate(fts_results):
             cid = chunk.get("id", f"fts_{rank}")
             if cid in combined:
-                combined[cid]["score"] += 1.0 / (rrf_k + rank + 1)
+                combined[cid]["score"] += w_fts / (rrf_k + rank + 1)
             else:
-                combined[cid] = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": 1.0 / (rrf_k + rank + 1), "metadata": chunk.get("metadata", {}), **({"parent_id": chunk["parent_id"]} if chunk.get("parent_id") else {})}
+                combined[cid] = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": w_fts / (rrf_k + rank + 1), "metadata": chunk.get("metadata", {}), **({"parent_id": chunk["parent_id"]} if chunk.get("parent_id") else {})}
 
         sorted_results = sorted(combined.values(), key=lambda x: x["score"], reverse=True)
 

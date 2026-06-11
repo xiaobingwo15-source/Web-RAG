@@ -9,7 +9,7 @@ from app.config import Settings
 
 logger = logging.getLogger(__name__)
 
-COHERE_MODEL = "rerank-v3.5"
+COHERE_MODEL = "rerank-v4"
 
 _STOP_WORDS = frozenset({
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
