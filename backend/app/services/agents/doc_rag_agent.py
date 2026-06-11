@@ -376,10 +376,8 @@ def lost_in_the_middle_reorder(
     new_sources = [sources[i] for i in reordered_indices]
 
     if n >= 3:
-        logger.info(
-            f"Lost-in-the-middle reorder: {n} chunks, "
-            f"scores={[f'{indexed[j][1]:.3f}' for j in range(min(n, 5))]}"
-        )
+        top_scores = [f"{score:.3f}" for _, score in indexed[:5]]
+        logger.info(f"Lost-in-the-middle reorder: {n} chunks, scores={top_scores}")
 
     return new_chunks, new_sources
 
@@ -894,6 +892,7 @@ async def execute(
         augmented = await augment_with_web_search(augmented_query, context_chunks, sources)
         context_chunks = augmented["chunks"]
         sources = augmented["sources"]
+        context_sources = sources  # keep in sync for lost_in_the_middle_reorder
         used_web_fallback = bool(augmented["web_results"])
 
         if used_web_fallback:
