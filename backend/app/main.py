@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import Settings
 from app.services.langfuse import configure_langfuse, get_langfuse
 from app.services.qdrant_db import ensure_collection
-from app.routers import health, auth, chat, documents, tools, admin, owner, widget, eval
+from app.routers import health, auth, chat, documents, tools, admin, owner, widget, eval, upload_session
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,6 +35,14 @@ async def lifespan(app: FastAPI):
         logging.getLogger(__name__).warning(
             "Startup: Qdrant init failed (%s) — running in degraded mode", e
         )
+    # Expire stale upload sessions on startup
+    try:
+        from app.services.database import expire_stale_upload_sessions
+        expired = expire_stale_upload_sessions()
+        if expired:
+            logging.getLogger(__name__).info("Startup: expired %d stale upload sessions", expired)
+    except Exception as e:
+        logging.getLogger(__name__).warning("Startup: upload session cleanup failed (%s)", e)
     yield
     # Flush pending Langfuse events on shutdown
     langfuse = get_langfuse()
@@ -55,6 +63,7 @@ app.include_router(health.router, prefix="/api", tags=["health"])
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
+app.include_router(upload_session.router, prefix="/api/documents", tags=["upload"])
 app.include_router(tools.router, prefix="/api/tools", tags=["tools"])
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
 app.include_router(owner.router, prefix="/api/owner", tags=["owner"])

@@ -84,3 +84,40 @@ def test_admin_settings_saves_normalized_ocr_model(monkeypatch):
 
     assert response.status_code == 200
     assert fake_db.settings["OCR_MODEL"] == DEFAULT_OCR_MODEL
+
+
+def test_admin_settings_returns_pdf_page_limits(monkeypatch):
+    fake_db = FakeDb({"PDF_OCR_MAX_PAGES": "12", "PDF_LAYOUT_MAX_PAGES": "18"})
+    client = _client(monkeypatch, fake_db)
+
+    response = client.get("/api/admin/settings")
+
+    assert response.status_code == 200
+    assert response.json()["PDF_OCR_MAX_PAGES"] == "12"
+    assert response.json()["PDF_LAYOUT_MAX_PAGES"] == "18"
+
+
+def test_admin_settings_saves_pdf_page_limits(monkeypatch):
+    fake_db = FakeDb({})
+    client = _client(monkeypatch, fake_db)
+
+    response = client.post(
+        "/api/admin/settings",
+        json={"PDF_OCR_MAX_PAGES": "7", "PDF_LAYOUT_MAX_PAGES": "11"},
+    )
+
+    assert response.status_code == 200
+    assert fake_db.settings["PDF_OCR_MAX_PAGES"] == "7"
+    assert fake_db.settings["PDF_LAYOUT_MAX_PAGES"] == "11"
+
+
+def test_admin_settings_rejects_invalid_pdf_page_limit(monkeypatch):
+    fake_db = FakeDb({})
+    client = _client(monkeypatch, fake_db)
+
+    response = client.post(
+        "/api/admin/settings",
+        json={"PDF_OCR_MAX_PAGES": "-1"},
+    )
+
+    assert response.status_code == 400

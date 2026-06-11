@@ -77,6 +77,8 @@ class SystemSettingsSchema(BaseModel):
     OPENROUTER_MODEL: str | None = None
     OPENROUTER_FALLBACK_MODEL: str | None = None
     OCR_MODEL: str | None = None
+    PDF_OCR_MAX_PAGES: str | None = None
+    PDF_LAYOUT_MAX_PAGES: str | None = None
     MISTRAL_API_KEY: str | None = None
     MISTRAL_MODEL: str | None = None
     TAVLY_API_KEY: str | None = None
@@ -128,7 +130,8 @@ async def get_settings(user=Depends(get_current_user)):
             return "••••••••"
         return f"{val[:6]}••••••••{val[-4:]}"
 
-    from app.config import DEFAULT_OCR_MODEL, normalize_ocr_model
+    from app.config import DEFAULT_OCR_MODEL, Settings, normalize_ocr_model
+    runtime_settings = Settings()
 
     return {
         "MODEL_PROVIDER": settings_dict.get("MODEL_PROVIDER", "openrouter"),
@@ -137,6 +140,8 @@ async def get_settings(user=Depends(get_current_user)):
         "OPENROUTER_MODEL": settings_dict.get("OPENROUTER_MODEL", ""),
         "OPENROUTER_FALLBACK_MODEL": settings_dict.get("OPENROUTER_FALLBACK_MODEL", ""),
         "OCR_MODEL": normalize_ocr_model(settings_dict.get("OCR_MODEL", DEFAULT_OCR_MODEL)),
+        "PDF_OCR_MAX_PAGES": settings_dict.get("PDF_OCR_MAX_PAGES", str(runtime_settings.pdf_ocr_max_pages)),
+        "PDF_LAYOUT_MAX_PAGES": settings_dict.get("PDF_LAYOUT_MAX_PAGES", str(runtime_settings.pdf_layout_max_pages)),
         "MISTRAL_API_KEY": redact(settings_dict.get("MISTRAL_API_KEY")),
         "MISTRAL_MODEL": settings_dict.get("MISTRAL_MODEL", "mistral-large-latest"),
         "TAVLY_API_KEY": redact(settings_dict.get("TAVLY_API_KEY")),
@@ -177,6 +182,20 @@ async def save_settings(settings: SystemSettingsSchema, user=Depends(get_current
         if key == "OCR_MODEL":
             from app.config import normalize_ocr_model
             value = normalize_ocr_model(value)
+        if key in {"PDF_OCR_MAX_PAGES", "PDF_LAYOUT_MAX_PAGES"}:
+            try:
+                parsed_limit = int(value)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"{key} must be a non-negative integer",
+                ) from None
+            if parsed_limit < 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"{key} must be a non-negative integer",
+                )
+            value = str(parsed_limit)
         
         # Save or update key-value pair in system_settings
         try:

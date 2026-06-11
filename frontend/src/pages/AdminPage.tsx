@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useDocuments } from '@/hooks/useDocuments'
+import { useChunkedUpload } from '@/hooks/useChunkedUpload'
 import { useFlaggedNotifications } from '@/hooks/useFlaggedNotifications'
 import { DocumentUpload } from '@/components/DocumentUpload'
 import {
@@ -62,6 +63,7 @@ export function AdminPage() {
     documents,
     uploadDocument,
     deleteDocument,
+    addDocumentForPolling,
     isUploading,
     loadError,
     duplicateWarning,
@@ -69,6 +71,15 @@ export function AdminPage() {
     uploadFailure,
     clearUploadFailure
   } = useDocuments()
+
+  const {
+    upload: chunkedUpload,
+    activeUploads,
+    pendingResumes,
+    resumeUpload,
+    cancelUpload,
+    dismissResume,
+  } = useChunkedUpload()
 
   const [activeTab, setActiveTab] = useState<'conversations' | 'users' | 'evals' | 'settings'>('conversations')
   const [clients, setClients] = useState<AdminClient[]>([])
@@ -588,6 +599,13 @@ export function AdminPage() {
                 onDismissFailure={clearUploadFailure}
                 loadError={loadError}
                 token={session?.access_token}
+                chunkedUpload={chunkedUpload}
+                activeUploads={activeUploads}
+                pendingResumes={pendingResumes}
+                onResumeUpload={resumeUpload}
+                onCancelUpload={cancelUpload}
+                onDismissResume={dismissResume}
+                onUploadComplete={addDocumentForPolling}
               />
             </div>
           </div>
@@ -1488,6 +1506,14 @@ export function AdminPage() {
                       <SettingInput label="OpenRouter model" value={settings.OPENROUTER_MODEL || ''} onChange={(v) => handleSettingChange('OPENROUTER_MODEL', v)} placeholder="deepseek/deepseek-v4-flash" />
                       <SettingInput label="OpenRouter fallback" value={settings.OPENROUTER_FALLBACK_MODEL || ''} onChange={(v) => handleSettingChange('OPENROUTER_FALLBACK_MODEL', v)} placeholder="deepseek/deepseek-v4-flash:free" />
                       <SettingInput label="OCR model" value={settings.OCR_MODEL || ''} onChange={(v) => handleSettingChange('OCR_MODEL', v)} placeholder="google/gemini-2.5-flash-lite" />
+                    </div>
+                  </section>
+
+                  <section className="rounded-lg border border-border bg-card p-4">
+                    <h2 className="text-sm font-semibold text-foreground">PDF Processing</h2>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <SettingInput label="PDF OCR max pages" value={settings.PDF_OCR_MAX_PAGES || ''} onChange={(v) => handleSettingChange('PDF_OCR_MAX_PAGES', v)} placeholder="20" />
+                      <SettingInput label="PDF layout max pages" value={settings.PDF_LAYOUT_MAX_PAGES || ''} onChange={(v) => handleSettingChange('PDF_LAYOUT_MAX_PAGES', v)} placeholder="30" />
                     </div>
                   </section>
 
