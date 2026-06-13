@@ -27,6 +27,12 @@ def _truncate_log_text(value: str | None, limit: int = MAX_RETRIEVAL_LOG_TEXT_CH
     return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
 
 
+def _stage_timing(diagnostics: dict, stage: str, duration_ms: int) -> None:
+    """Record a per-stage timing into the diagnostics dict."""
+    timings = diagnostics.setdefault("stage_timings_ms", {})
+    timings[stage] = duration_ms
+
+
 def _loggable_retrieval_evidence(sources: list[dict], chunks: list[str]) -> tuple[list[dict], list[str]]:
     bounded_sources = []
     for source in sources[:MAX_RETRIEVAL_LOG_ITEMS]:
@@ -300,14 +306,15 @@ async def retrieve_context(
     def _log_and_return(result: dict) -> dict:
         """Log retrieval metrics then return the result unchanged."""
         result["retrieval_log_ids"] = []
-        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        _total_ms = int((time.monotonic() - t0) * 1000)
         sources = result.get("sources", [])
         chunks = result.get("chunks", [])
         top_score = sources[0]["score"] if sources else None
         retrieval_quality = "no_sources" if not sources else "retrieved"
+        _stage_timing(retrieval_diagnostics, "total_ms", _total_ms)
         log_latency(
             "retrieval.total",
-            elapsed_ms,
+            _total_ms,
             mode=mode,
             chunk_count=len(result.get("chunks", [])),
             source_count=len(sources),
@@ -325,7 +332,7 @@ async def retrieve_context(
                 chunk_count=len(chunks),
                 source_count=len(sources),
                 top_score=top_score,
-                duration_ms=elapsed_ms,
+                duration_ms=_total_ms,
                 user_id=user_id,
                 tenant_id=tenant_id,
                 thread_id=thread_id,
@@ -341,8 +348,10 @@ async def retrieve_context(
             )
             if log_row and log_row.get("id"):
                 result["retrieval_log_ids"] = [log_row["id"]]
-        except Exception:
-            pass  # fire-and-forget
+            else:
+                logger.warning("log_retrieval returned no row — diagnostics not persisted")
+        except Exception as e:
+            logger.warning("Failed to persist retrieval diagnostics: %s", e)
         return result
 
     def _empty():
@@ -352,9 +361,11 @@ async def retrieve_context(
         fts_start = monotonic_ms()
         chunks = await asyncio.to_thread(search_chunks_fts, token, target_user_id, message, match_count, tenant_id)
         retrieval_diagnostics["fts_result_count"] = len(chunks)
+        _fts_dur = elapsed_ms(fts_start)
+        _stage_timing(retrieval_diagnostics, "fts_ms", _fts_dur)
         log_latency(
             "retrieval.fts",
-            elapsed_ms(fts_start),
+            _fts_dur,
             mode=mode,
             result_count=len(chunks),
             user_id=user_id,
@@ -375,26 +386,28 @@ async def retrieve_context(
 
     if mode == "hybrid":
         # FTS doesn't need the embedding — run it concurrently with embedding generation
-        async def _embed_query() -> list[float]:
+        async def _embed_query() -> tuple[list[float], int]:
             embedding_start = monotonic_ms()
             result = await get_embedding(get_embedding_client(), message)
+            dur = elapsed_ms(embedding_start)
             log_latency(
                 "retrieval.embedding",
-                elapsed_ms(embedding_start),
+                dur,
                 mode=mode,
                 user_id=user_id,
                 target_user_id=target_user_id,
                 tenant_id=tenant_id,
                 thread_id=thread_id,
             )
-            return result
+            return result, dur
 
-        async def _search_fts() -> list[dict]:
+        async def _search_fts() -> tuple[list[dict], int]:
             fts_start = monotonic_ms()
             result = await asyncio.to_thread(search_chunks_fts, token, target_user_id, message, match_count * 2, tenant_id)
+            dur = elapsed_ms(fts_start)
             log_latency(
                 "retrieval.fts",
-                elapsed_ms(fts_start),
+                dur,
                 mode=mode,
                 result_count=len(result),
                 user_id=user_id,
@@ -402,11 +415,13 @@ async def retrieve_context(
                 tenant_id=tenant_id,
                 thread_id=thread_id,
             )
-            return result
+            return result, dur
 
         embedding_task = _embed_query()
         fts_task = _search_fts()
-        query_embedding, fts_results = await asyncio.gather(embedding_task, fts_task)
+        (query_embedding, embedding_dur), (fts_results, fts_dur) = await asyncio.gather(embedding_task, fts_task)
+        _stage_timing(retrieval_diagnostics, "embedding_ms", embedding_dur)
+        _stage_timing(retrieval_diagnostics, "fts_ms", fts_dur)
         query_embedding_for_cache = query_embedding
 
         # Check semantic cache after we have the embedding
@@ -436,9 +451,11 @@ async def retrieve_context(
         )
         retrieval_diagnostics["vector_result_count"] = len(vector_results)
         retrieval_diagnostics["fts_result_count"] = len(fts_results)
+        _vector_dur = elapsed_ms(vector_start)
+        _stage_timing(retrieval_diagnostics, "qdrant_ms", _vector_dur)
         log_latency(
             "retrieval.qdrant_vector",
-            elapsed_ms(vector_start),
+            _vector_dur,
             mode=mode,
             result_count=len(vector_results),
             user_id=user_id,
@@ -492,9 +509,11 @@ async def retrieve_context(
             candidate_scores = [m.get("score", 0) for m in candidate_metas]
             scored = await rerank_with_cohere(message, candidates, top_n=match_count, fallback_scores=candidate_scores)
             retrieval_diagnostics["rerank_result_count"] = len(scored)
+            _rerank_dur = elapsed_ms(rerank_start)
+            _stage_timing(retrieval_diagnostics, "rerank_ms", _rerank_dur)
             log_latency(
                 "retrieval.rerank",
-                elapsed_ms(rerank_start),
+                _rerank_dur,
                 mode=mode,
                 candidate_count=len(candidates),
                 result_count=len(scored),
@@ -556,9 +575,11 @@ async def retrieve_context(
     # mode == "vector"
     embedding_start = monotonic_ms()
     query_embedding = await get_embedding(get_embedding_client(), message)
+    _emb_dur = elapsed_ms(embedding_start)
+    _stage_timing(retrieval_diagnostics, "embedding_ms", _emb_dur)
     log_latency(
         "retrieval.embedding",
-        elapsed_ms(embedding_start),
+        _emb_dur,
         mode=mode,
         user_id=user_id,
         target_user_id=target_user_id,
@@ -592,9 +613,11 @@ async def retrieve_context(
         tenant_id=tenant_id,
     )
     retrieval_diagnostics["vector_result_count"] = len(chunks)
+    _vec_dur = elapsed_ms(vector_start)
+    _stage_timing(retrieval_diagnostics, "qdrant_ms", _vec_dur)
     log_latency(
         "retrieval.qdrant_vector",
-        elapsed_ms(vector_start),
+        _vec_dur,
         mode=mode,
         result_count=len(chunks),
         user_id=user_id,

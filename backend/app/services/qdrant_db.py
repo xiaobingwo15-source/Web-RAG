@@ -173,6 +173,32 @@ async def update_chunks_metadata(document_id: str, metadata: dict) -> None:
     logger.info("Updated metadata for %d chunks of document %s", len(point_ids), document_id)
 
 
+async def delete_chunks_by_document(document_id: str) -> int:
+    """Delete all Qdrant vectors for a given document. Returns count of deleted points."""
+    client = await get_qdrant_client()
+    results, _ = await client.scroll(
+        collection_name=COLLECTION_NAME,
+        scroll_filter=models.Filter(
+            must=[models.FieldCondition(
+                key="document_id",
+                match=models.MatchValue(value=document_id),
+            )]
+        ),
+        limit=10000,
+        with_payload=False,
+        with_vectors=False,
+    )
+    if not results:
+        return 0
+    point_ids = [point.id for point in results]
+    await client.delete(
+        collection_name=COLLECTION_NAME,
+        points_selector=models.PointIdsList(points=point_ids),
+    )
+    logger.info("Deleted %d Qdrant chunks for document %s", len(point_ids), document_id)
+    return len(point_ids)
+
+
 async def search_similar_chunks(
     user_id: str,
     query_embedding: list[float],
