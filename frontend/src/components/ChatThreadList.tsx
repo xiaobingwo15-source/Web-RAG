@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Search, Trash2, MessageSquare } from 'lucide-react'
 import type { ThreadSummary } from '@/lib/api'
+import { ConfirmDialog } from './ConfirmDialog'
 
 interface ChatThreadListProps {
   threads: ThreadSummary[]
@@ -16,6 +17,7 @@ export function ChatThreadList({
   onDeleteThread,
 }: ChatThreadListProps) {
   const [searchQuery, setSearchQuery] = useState('')
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
 
   const filteredThreads = threads.filter((thread) =>
     thread.title.toLowerCase().includes(searchQuery.toLowerCase())
@@ -87,7 +89,7 @@ export function ChatThreadList({
               <button
                 onClick={(e) => {
                   e.stopPropagation()
-                  onDeleteThread(thread.id)
+                  setConfirmDeleteId(thread.id)
                 }}
                 className="rounded-full p-1.5 opacity-0 group-hover:opacity-100 text-[#8696A0] hover:text-[#EF4444] hover:bg-red-50 transition-all cursor-pointer"
                 title="Delete thread"
@@ -98,6 +100,21 @@ export function ChatThreadList({
           ))
         )}
       </div>
+
+      <ConfirmDialog
+        open={confirmDeleteId !== null}
+        title="Delete Conversation"
+        message={`Are you sure you want to delete "${filteredThreads.find((t) => t.id === confirmDeleteId)?.title || 'this conversation'}"? This action cannot be undone.`}
+        confirmLabel="Delete"
+        danger
+        onConfirm={() => {
+          if (confirmDeleteId) {
+            onDeleteThread(confirmDeleteId)
+            setConfirmDeleteId(null)
+          }
+        }}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
     </>
   )
 }

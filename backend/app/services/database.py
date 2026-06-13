@@ -577,7 +577,26 @@ def archive_document(access_token: str, document_id: str) -> dict | None:
         .eq("id", document_id)
         .execute()
     )
-    return result.data[0] if result.data else None
+    doc = result.data[0] if result.data else None
+    if doc:
+        # Clean up Qdrant vectors for archived document (fire-and-forget)
+        try:
+            from app.services.qdrant_db import delete_chunks_by_document
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(delete_chunks_by_document(document_id))
+            else:
+                loop.run_until_complete(delete_chunks_by_document(document_id))
+        except Exception as e:
+            logger.warning("Failed to clean up Qdrant vectors for archived document %s: %s", document_id, e)
+        # Clean up FTS chunks for archived document
+        try:
+            db.table("document_chunks").delete().eq("document_id", document_id).execute()
+            logger.info("Cleaned up document_chunks for archived document %s", document_id)
+        except Exception as e:
+            logger.warning("Failed to clean up document_chunks for archived document %s: %s", document_id, e)
+    return doc
 
 
 # --- Upload session functions ---

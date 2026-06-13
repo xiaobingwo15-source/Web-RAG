@@ -12,6 +12,10 @@ WEAK_TOP_SCORE_THRESHOLD = 0.40
 LATENCY_WARNING_MS = 3000
 LATENCY_CRITICAL_MS = 6000
 MAX_EXAMPLES_PER_SIGNAL = 5
+NEAR_RANDOM_TOP_SCORE_THRESHOLD = 0.15
+STALENESS_DEGRADATION_RATIO = 0.50
+STALENESS_ABSOLUTE_THRESHOLD = 0.30
+STALENESS_MIN_LOGS = 10
 
 
 def _safe_float(value: Any) -> float | None:
@@ -60,6 +64,17 @@ def _percentile(values: list[int], percentile: float) -> int | None:
     ordered = sorted(values)
     index = min(len(ordered) - 1, max(0, round((len(ordered) - 1) * percentile)))
     return ordered[index]
+
+
+def _staleness_status(recent_avg: float, older_avg: float) -> str | None:
+    if older_avg <= 0:
+        return None
+    ratio = recent_avg / older_avg
+    if ratio < STALENESS_DEGRADATION_RATIO and recent_avg < STALENESS_ABSOLUTE_THRESHOLD:
+        return "critical"
+    if ratio < STALENESS_DEGRADATION_RATIO:
+        return "watch"
+    return None
 
 
 def _log_example(row: dict, value: Any, reason: str) -> dict:
@@ -157,6 +172,33 @@ def build_rag_quality_signals(
         and (score := _safe_float(row.get("top_score"))) is not None
         and score < WEAK_TOP_SCORE_THRESHOLD
     ]
+    near_random_logs = [
+        row for row in retrieval_logs
+        if _safe_int(row.get("source_count")) > 0
+        and (score := _safe_float(row.get("top_score"))) is not None
+        and score < NEAR_RANDOM_TOP_SCORE_THRESHOLD
+    ]
+
+    # --- Data staleness: compare recent vs older retrieval quality ---
+    sorted_logs = sorted(
+        retrieval_logs,
+        key=lambda r: r.get("created_at") or "",
+    )
+    _top_scores = [_safe_float(r.get("top_score")) for r in sorted_logs if _safe_float(r.get("top_score")) is not None]
+    _half = len(_top_scores) // 2
+    older_scores = _top_scores[:_half] if _half > 0 else []
+    recent_scores = _top_scores[_half:] if _half > 0 else []
+    older_avg = sum(older_scores) / len(older_scores) if older_scores else 0.0
+    recent_avg = sum(recent_scores) / len(recent_scores) if recent_scores else 0.0
+    staleness_ratio = recent_avg / older_avg if older_avg > 0 else 1.0
+    staleness_status = _staleness_status(recent_avg, older_avg) if len(_top_scores) >= STALENESS_MIN_LOGS else None
+    staleness_degraded_logs = [
+        row for row in sorted_logs[_half:]
+        if (score := _safe_float(row.get("top_score"))) is not None
+        and older_avg > 0
+        and score < older_avg * STALENESS_DEGRADATION_RATIO
+    ]
+
     groundedness_logs = [row for row in retrieval_logs if bool(row.get("groundedness_flag"))]
 
     duration_values = [
@@ -193,7 +235,7 @@ def build_rag_quality_signals(
         _signal(
             signal_id="weak_sources",
             label="Weak Sources",
-            description=f"Retrieved sources whose top score is below {WEAK_TOP_SCORE_THRESHOLD:.2f}.",
+            description=f"Retrieved sources whose top score is below {WEAK_TOP_SCORE_THRESHOLD:.2f}. Near-random matches (score < {NEAR_RANDOM_TOP_SCORE_THRESHOLD:.2f}): {len(near_random_logs)}.",
             status=_rate_status(_rate(len(weak_match_logs), retrieval_total), WEAK_MATCH_WARNING_RATE),
             count=len(weak_match_logs),
             rate=_rate(len(weak_match_logs), retrieval_total),
@@ -243,6 +285,24 @@ def build_rag_quality_signals(
                 *[_log_example(row, row.get("retrieval_quality"), "fallback_used") for row in fallback_logs],
             ],
         ),
+        _signal(
+            signal_id="data_staleness",
+            label="Data Staleness",
+            description=(
+                f"Retrieval quality degradation over time. "
+                f"Recent avg top_score: {recent_avg:.3f} vs older avg: {older_avg:.3f} "
+                f"(ratio: {staleness_ratio:.2f})."
+            ),
+            status=staleness_status or "ok",
+            count=len(staleness_degraded_logs),
+            rate=_rate(len(staleness_degraded_logs), max(len(recent_scores), 1)),
+            threshold=STALENESS_DEGRADATION_RATIO,
+            value=round(staleness_ratio, 4),
+            examples=[
+                _log_example(row, row.get("top_score"), "staleness_degradation")
+                for row in staleness_degraded_logs
+            ],
+        ),
     ]
 
     return {
@@ -256,6 +316,8 @@ def build_rag_quality_signals(
             "weak_source_count": len(weak_match_logs),
             "groundedness_flag_count": len(groundedness_logs),
             "fallback_count": len(fallback_logs),
+            "near_random_count": len(near_random_logs),
+            "staleness_ratio": round(staleness_ratio, 4),
             "latency_sample_count": len(duration_values),
             "latency_p95_ms": latency_p95,
         },

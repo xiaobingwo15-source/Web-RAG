@@ -66,6 +66,7 @@ export function AdminPage() {
     documents,
     uploadDocument,
     deleteDocument,
+    deleteDocuments,
     addDocumentForPolling,
     isUploading,
     loadError,
@@ -659,6 +660,7 @@ export function AdminPage() {
                 isUploading={isUploading}
                 onUpload={uploadDocument}
                 onDelete={deleteDocument}
+                onDeleteMany={deleteDocuments}
                 duplicateWarning={duplicateWarning}
                 onDismissWarning={clearDuplicateWarning}
                 uploadFailure={uploadFailure}

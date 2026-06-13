@@ -71,19 +71,86 @@ class RagQualityPolicyTests(unittest.TestCase):
         )
 
         signals = {signal["id"]: signal for signal in result["signals"]}
-        self.assertEqual(set(signals), {
+        # 5 original signals + data_staleness (only when enough logs; 4 logs < STALENESS_MIN_LOGS*2 so it's ok)
+        # With only 4 logs, staleness won't fire (needs >= 10). But near_random is always computed.
+        expected_base = {
             "zero_sources",
             "weak_sources",
             "groundedness",
             "completion_latency",
             "feedback_fallback",
-        })
+        }
+        # data_staleness only appears when there are enough scored logs in both halves
+        self.assertTrue(expected_base.issubset(set(signals)), f"Missing base signals: {expected_base - set(signals)}")
         self.assertEqual(signals["zero_sources"]["count"], 1)
         self.assertEqual(signals["weak_sources"]["count"], 1)
         self.assertEqual(signals["groundedness"]["count"], 1)
         self.assertEqual(signals["completion_latency"]["value"], 3500)
         self.assertEqual(signals["feedback_fallback"]["count"], 2)
         self.assertEqual(result["totals"]["thumbs_down_count"], 1)
+
+    def test_near_random_signal_detected(self):
+        """Logs with top_score < 0.15 are flagged as near-random."""
+        retrieval_logs = [
+            {
+                "id": f"nr-{i}",
+                "query": f"near random query {i}",
+                "retrieval_mode": "hybrid",
+                "source_count": 1,
+                "chunk_count": 1,
+                "top_score": 0.05,
+                "duration_ms": 500,
+                "created_at": f"2026-06-12T00:{i:02d}:00Z",
+                "diagnostics": {},
+            }
+            for i in range(5)
+        ]
+        result = rag_quality_policy.build_rag_quality_signals(
+            retrieval_logs=retrieval_logs,
+            feedback_rows=[],
+        )
+        signals = {s["id"]: s for s in result["signals"]}
+        self.assertIn("weak_sources", signals)
+        self.assertEqual(result["totals"]["near_random_count"], 5)
+        # Near-random count is mentioned in weak_sources description
+        self.assertIn("Near-random", signals["weak_sources"]["description"])
+
+    def test_staleness_signal_fires_on_score_degradation(self):
+        """When recent scores drop significantly vs older scores, staleness signal fires."""
+        # 20 logs: first 10 with score 0.8, last 10 with score 0.05
+        retrieval_logs = []
+        for i in range(10):
+            retrieval_logs.append({
+                "id": f"old-{i}",
+                "query": f"old query {i}",
+                "retrieval_mode": "hybrid",
+                "source_count": 1,
+                "chunk_count": 1,
+                "top_score": 0.8,
+                "duration_ms": 500,
+                "created_at": f"2026-06-01T00:{i:02d}:00Z",
+                "diagnostics": {},
+            })
+        for i in range(10):
+            retrieval_logs.append({
+                "id": f"new-{i}",
+                "query": f"new query {i}",
+                "retrieval_mode": "hybrid",
+                "source_count": 1,
+                "chunk_count": 1,
+                "top_score": 0.05,
+                "duration_ms": 500,
+                "created_at": f"2026-06-12T00:{i:02d}:00Z",
+                "diagnostics": {},
+            })
+        result = rag_quality_policy.build_rag_quality_signals(
+            retrieval_logs=retrieval_logs,
+            feedback_rows=[],
+        )
+        signals = {s["id"]: s for s in result["signals"]}
+        self.assertIn("data_staleness", signals)
+        self.assertEqual(signals["data_staleness"]["status"], "critical")
+        self.assertIn("staleness_ratio", result["totals"])
 
     def test_retrieval_log_model_accepts_diagnostics(self):
         log = RagQualityRetrievalLog(

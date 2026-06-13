@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Plus, MessageSquare, Trash2, Search } from 'lucide-react'
 import type { ThreadSummary } from '@/lib/api'
 import type { ChatMessage } from '@/hooks/useChat'
+import { ConfirmDialog } from './ConfirmDialog'
 
 interface ChatHistoryPanelProps {
   threads: ThreadSummary[]
@@ -21,6 +22,7 @@ export function ChatHistoryPanel({
   messages: _messages,
 }: ChatHistoryPanelProps) {
   const [searchQuery, setSearchQuery] = useState('')
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
 
   const filteredThreads = threads.filter((thread) =>
     thread.title.toLowerCase().includes(searchQuery.toLowerCase())
@@ -86,7 +88,7 @@ export function ChatHistoryPanel({
               <button
                 onClick={(e) => {
                   e.stopPropagation()
-                  onDeleteThread(thread.id)
+                  setConfirmDeleteId(thread.id)
                 }}
                 className="rounded-full p-1.5 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all cursor-pointer"
                 title="Delete thread"
@@ -97,6 +99,21 @@ export function ChatHistoryPanel({
           ))
         )}
       </div>
+
+      <ConfirmDialog
+        open={confirmDeleteId !== null}
+        title="Delete Conversation"
+        message={`Are you sure you want to delete "${filteredThreads.find((t) => t.id === confirmDeleteId)?.title || 'this conversation'}"? This action cannot be undone.`}
+        confirmLabel="Delete"
+        danger
+        onConfirm={() => {
+          if (confirmDeleteId) {
+            onDeleteThread(confirmDeleteId)
+            setConfirmDeleteId(null)
+          }
+        }}
+        onCancel={() => setConfirmDeleteId(null)}
+      />
     </aside>
   )
 }

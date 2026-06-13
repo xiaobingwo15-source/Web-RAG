@@ -72,19 +72,27 @@ def classify_query_complexity(query: str) -> int:
 REWRITE_SYSTEM_PROMPT = (
     "You are a query rewriting assistant. Given a conversation history and a "
     "follow-up question, rewrite the question as a standalone search query that "
-    "contains all necessary context. Return ONLY the rewritten query, nothing else."
+    "contains all necessary context. "
+    "IMPORTANT: Write the rewritten query in the SAME LANGUAGE as the follow-up question. "
+    "If the follow-up is in English, output English. If in Chinese, output Chinese. "
+    "Do NOT switch languages based on the conversation history. "
+    "Return ONLY the rewritten query, nothing else."
 )
 
 EXPANSION_SYSTEM_PROMPT = (
     "Generate exactly 2 alternative search queries that capture different angles "
     "of the original question. Each variant should use different keywords or phrasing "
-    "to improve recall. Return one query per line, nothing else. No numbering, no bullets."
+    "to improve recall. "
+    "IMPORTANT: If the original query contains spelling errors or typos, correct them "
+    "in all variants. Use proper domain terminology. "
+    "Return one query per line, nothing else. No numbering, no bullets."
 )
 
 DECOMPOSITION_SYSTEM_PROMPT = (
     "Given a comparative or multi-faceted query, decompose it into 2-3 focused sub-queries "
     "that each address ONE aspect of the comparison. Each sub-query should be self-contained "
-    "and searchable. Return one query per line, nothing else. No numbering, no bullets.\n\n"
+    "and searchable. Correct any spelling errors in the process. "
+    "Return one query per line, nothing else. No numbering, no bullets.\n\n"
     "Example:\n"
     "Query: Compare Python and Java for web development\n"
     "Python web development advantages and frameworks\n"
@@ -100,6 +108,8 @@ HYDE_SYSTEM_PROMPT = (
     "You are a helpful assistant. Given a question, write a short, specific, "
     "factual paragraph that would be the ideal answer if the information existed "
     "in a knowledge base. Be concrete and use domain-appropriate terminology. "
+    "If the question contains spelling errors or typos, interpret the intended meaning "
+    "and write the paragraph using correct terminology. "
     "Return ONLY the hypothetical answer paragraph, nothing else."
 )
 HYDE_MIN_WORD_COUNT = 5

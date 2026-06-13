@@ -1,8 +1,9 @@
 import { useRef, useState, useEffect, type DragEvent } from 'react'
-import { Upload, FileText, CheckCircle, XCircle, Loader2, AlertTriangle, Trash2, Eye, RotateCcw, X } from 'lucide-react'
+import { Upload, FileText, CheckCircle, XCircle, Loader2, AlertTriangle, Trash2, Eye, RotateCcw, X, SquareCheck, Square } from 'lucide-react'
 import type { DocumentStatus, PdfParserMode, DocumentUploadResponse } from '@/lib/api'
 import type { ChunkedUploadProgress, PendingResume } from '@/hooks/useChunkedUpload'
 import { DocumentPreviewModal } from './DocumentPreviewModal'
+import { ConfirmDialog } from './ConfirmDialog'
 
 const ACCEPTED_TYPES = ['.pdf', '.md', '.txt', '.csv', '.xlsx', '.xls']
 const PDF_PARSER_OPTIONS: { value: PdfParserMode; label: string }[] = [
@@ -25,6 +26,7 @@ export function DocumentUpload({
   isUploading,
   onUpload,
   onDelete,
+  onDeleteMany,
   duplicateWarning,
   onDismissWarning,
   uploadFailure,
@@ -43,6 +45,7 @@ export function DocumentUpload({
   isUploading: boolean
   onUpload: (files: File[], useOcr?: boolean, pdfParserMode?: PdfParserMode) => void
   onDelete?: (documentId: string) => Promise<{ message: string; filename: string }>
+  onDeleteMany?: (ids: string[]) => Promise<{ deleted: number; errors: string[] }>
   duplicateWarning?: string | null
   onDismissWarning?: () => void
   uploadFailure?: { filename: string; error: string } | null
@@ -60,38 +63,100 @@ export function DocumentUpload({
   const inputRef = useRef<HTMLInputElement>(null)
   const [useOcr, setUseOcr] = useState(false)
   const [pdfParserMode, setPdfParserMode] = useState<PdfParserMode>('auto')
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [previewDocId, setPreviewDocId] = useState<string | null>(null)
   const [chunkedError, setChunkedError] = useState<string | null>(null)
-  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  useEffect(() => {
-    return () => {
-      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current)
-    }
-  }, [])
+  // Multi-select state
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [isSelecting, setIsSelecting] = useState(false)
 
-  const handleDeleteClick = async (docId: string) => {
+  // Confirm dialog state
+  const [confirmDialog, setConfirmDialog] = useState<{
+    open: boolean
+    title: string
+    message: string
+    ids: string[]
+  }>({ open: false, title: '', message: '', ids: [] })
+
+  const handleDeleteClick = (docId: string) => {
     if (!onDelete) return
-    if (confirmDeleteId === docId) {
-      setConfirmDeleteId(null)
-      setDeletingId(docId)
+    const doc = documents.find((d) => d.id === docId)
+    setDeleteError(null)
+    setConfirmDialog({
+      open: true,
+      title: 'Delete Document',
+      message: `Are you sure you want to delete "${doc?.metadata?.title || doc?.filename || 'this document'}"? This action cannot be undone.`,
+      ids: [docId],
+    })
+  }
+
+  const handleBulkDelete = () => {
+    const ids = Array.from(selectedIds)
+    if (ids.length === 0) return
+    setDeleteError(null)
+    setConfirmDialog({
+      open: true,
+      title: `Delete ${ids.length} Document${ids.length > 1 ? 's' : ''}`,
+      message: `Are you sure you want to delete ${ids.length} selected document${ids.length > 1 ? 's' : ''}? This action cannot be undone.`,
+      ids,
+    })
+  }
+
+  const executeDelete = async () => {
+    const ids = confirmDialog.ids
+    setConfirmDialog({ open: false, title: '', message: '', ids: [] })
+
+    if (ids.length === 1 && onDelete) {
+      setDeletingId(ids[0])
       setDeleteError(null)
       try {
-        await onDelete(docId)
+        await onDelete(ids[0])
       } catch (err: unknown) {
         setDeleteError(errorMessage(err, 'Failed to delete document'))
       } finally {
         setDeletingId(null)
       }
-    } else {
+    } else if (ids.length > 1 && onDeleteMany) {
+      setDeletingId('bulk')
       setDeleteError(null)
-      setConfirmDeleteId(docId)
-      if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current)
-      confirmTimerRef.current = setTimeout(() => setConfirmDeleteId(null), 3000)
+      try {
+        const result = await onDeleteMany(ids)
+        if (result.errors.length > 0) {
+          setDeleteError(`Deleted ${result.deleted}/${ids.length}. ${result.errors[0]}`)
+        }
+      } catch (err: unknown) {
+        setDeleteError(errorMessage(err, 'Failed to delete documents'))
+      } finally {
+        setDeletingId(null)
+      }
     }
+
+    setSelectedIds(new Set())
+    if (selectedIds.size === ids.length) setIsSelecting(false)
+  }
+
+  const toggleSelect = (docId: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(docId)) next.delete(docId)
+      else next.add(docId)
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === documents.length) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(documents.map((d) => d.id)))
+    }
+  }
+
+  const exitSelectionMode = () => {
+    setIsSelecting(false)
+    setSelectedIds(new Set())
   }
 
   const processFiles = async (files: File[]) => {
@@ -391,13 +456,81 @@ export function DocumentUpload({
       {/* Document list */}
       {documents.length > 0 && (
         <div className="space-y-2">
-          <h4 className="text-sm font-medium text-foreground">Uploaded Documents</h4>
+          {/* Header with select controls */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              {(onDelete || onDeleteMany) && (
+                <button
+                  onClick={() => {
+                    if (isSelecting) {
+                      exitSelectionMode()
+                    } else {
+                      setIsSelecting(true)
+                    }
+                  }}
+                  className={`text-xs px-2 py-1 rounded-md border transition-colors cursor-pointer ${
+                    isSelecting
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted'
+                  }`}
+                >
+                  {isSelecting ? 'Cancel' : 'Select'}
+                </button>
+              )}
+              <h4 className="text-sm font-medium text-foreground">Uploaded Documents</h4>
+            </div>
+            {isSelecting && selectedIds.size > 0 && (
+              <button
+                onClick={handleBulkDelete}
+                disabled={deletingId === 'bulk'}
+                className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 transition-colors cursor-pointer"
+              >
+                {deletingId === 'bulk' ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3 w-3" />
+                )}
+                Delete ({selectedIds.size})
+              </button>
+            )}
+          </div>
+
+          {/* Select all row */}
+          {isSelecting && (
+            <button
+              onClick={toggleSelectAll}
+              className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+            >
+              {selectedIds.size === documents.length ? (
+                <SquareCheck className="h-4 w-4 text-primary" />
+              ) : (
+                <Square className="h-4 w-4" />
+              )}
+              {selectedIds.size === documents.length ? 'Deselect all' : 'Select all'}
+            </button>
+          )}
+
           {documents.map((doc) => (
             <div
               key={doc.id}
-              className="group rounded-md border border-border px-3 py-2"
+              className={`group rounded-md border px-3 py-2 transition-colors ${
+                selectedIds.has(doc.id) ? 'border-primary/50 bg-primary/5' : 'border-border'
+              }`}
             >
               <div className="flex items-center gap-2">
+                {/* Checkbox */}
+                {isSelecting && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); toggleSelect(doc.id) }}
+                    className="shrink-0 cursor-pointer"
+                  >
+                    {selectedIds.has(doc.id) ? (
+                      <SquareCheck className="h-4 w-4 text-primary" />
+                    ) : (
+                      <Square className="h-4 w-4 text-muted-foreground" />
+                    )}
+                  </button>
+                )}
                 <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
                 <span className="flex-1 truncate text-sm text-foreground">
                   {doc.metadata?.title || doc.filename}
@@ -412,18 +545,14 @@ export function DocumentUpload({
                     <Eye className="h-4 w-4" />
                   </button>
                 )}
-                {onDelete && (
+                {onDelete && !isSelecting && (
                   deletingId === doc.id ? (
                     <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                   ) : (
                     <button
                       onClick={(e) => { e.stopPropagation(); handleDeleteClick(doc.id) }}
-                      className={`h-4 w-4 shrink-0 transition-colors ${
-                        confirmDeleteId === doc.id
-                          ? 'text-red-400 hover:text-red-300'
-                          : 'text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-red-400'
-                      }`}
-                      title={confirmDeleteId === doc.id ? 'Click again to confirm' : 'Delete document'}
+                      className="h-4 w-4 shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-red-400 transition-colors"
+                      title="Delete document"
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
@@ -464,6 +593,16 @@ export function DocumentUpload({
           onClose={() => setPreviewDocId(null)}
         />
       )}
+
+      <ConfirmDialog
+        open={confirmDialog.open}
+        title={confirmDialog.title}
+        message={confirmDialog.message}
+        confirmLabel={confirmDialog.ids.length > 1 ? `Delete ${confirmDialog.ids.length} Documents` : 'Delete'}
+        danger
+        onConfirm={executeDelete}
+        onCancel={() => setConfirmDialog({ open: false, title: '', message: '', ids: [] })}
+      />
     </div>
   )
 }
