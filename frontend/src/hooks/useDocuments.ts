@@ -189,6 +189,22 @@ export function useDocuments() {
     return result
   }
 
+  const deleteDocuments = async (ids: string[]): Promise<{ deleted: number; errors: string[] }> => {
+    if (!accessToken) throw new Error('Not authenticated')
+    const errors: string[] = []
+    let deleted = 0
+    for (const id of ids) {
+      try {
+        await apiDeleteDocument(id, accessToken)
+        deleted++
+      } catch (err: unknown) {
+        errors.push(errorMessage(err, `Failed to delete ${id}`))
+      }
+    }
+    setDocuments((prev) => prev.filter((d) => !ids.includes(d.id)))
+    return { deleted, errors }
+  }
+
   useEffect(() => {
     let cancelled = false
     const timer = window.setTimeout(async () => {
@@ -299,6 +315,7 @@ export function useDocuments() {
     documents,
     uploadDocument,
     deleteDocument,
+    deleteDocuments,
     fetchDocuments,
     addDocumentForPolling,
     isUploading,
