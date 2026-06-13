@@ -25,7 +25,7 @@ export function ChatWidgetMessages({
     return (
       <div className="flex flex-1 items-center justify-center p-4" style={{ backgroundColor: '#EFEAE2' }}>
         <p className="text-center text-sm text-[#667781]">
-          Ask me anything about our products and solutions.
+          Ask about the RAG package, supported sources, deployment workflow, or admin controls.
         </p>
       </div>
     )

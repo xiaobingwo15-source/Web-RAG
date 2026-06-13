@@ -15,6 +15,7 @@ from app.services.database import (
 )
 from app.services.qdrant_db import insert_chunks, update_chunks_metadata
 from app.services.contextual_retrieval import add_contextual_prefixes
+from app.services.semantic_cache import clear_semantic_cache
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +248,7 @@ async def process_document(
         total_chunks = len(child_chunk_data) + len(parent_chunk_data)
         update_document_chunk_count(access_token, document_id, total_chunks)
         update_document_status(access_token, document_id, "processed")
+        clear_semantic_cache(f"document processed {document_id}")
         _log_document_stage(
             document_id,
             "store",

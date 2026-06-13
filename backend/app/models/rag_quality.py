@@ -26,6 +26,7 @@ class RagQualityRetrievalLog(BaseModel):
     groundedness_score: float | None = None
     groundedness_flag: bool = False
     retrieval_quality: str | None = None
+    diagnostics: dict | None = None
 
 
 class RagQualitySummary(BaseModel):
@@ -59,3 +60,32 @@ class RagQualityFeedbackItem(BaseModel):
 
 class RagQualityThumbsDownResponse(BaseModel):
     items: list[RagQualityFeedbackItem]
+
+
+class RagQualitySignalExample(BaseModel):
+    id: str | None = None
+    query: str | None = None
+    created_at: str | None = None
+    retrieval_mode: str | None = None
+    value: str | int | float | None = None
+    reason: str
+    details: dict = Field(default_factory=dict)
+
+
+class RagQualitySignal(BaseModel):
+    id: str
+    label: str
+    description: str
+    status: str
+    count: int
+    rate: float
+    threshold: float | int
+    value: float | int | None = None
+    examples: list[RagQualitySignalExample] = Field(default_factory=list)
+
+
+class RagQualitySignalsResponse(BaseModel):
+    window_hours: int
+    limit: int
+    totals: dict
+    signals: list[RagQualitySignal]

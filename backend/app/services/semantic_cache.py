@@ -142,3 +142,9 @@ def get_semantic_cache() -> SemanticCache:
     if _cache is None:
         _cache = SemanticCache()
     return _cache
+
+
+def clear_semantic_cache(reason: str | None = None) -> None:
+    cache = get_semantic_cache()
+    cache.clear()
+    logger.info("Semantic cache cleared%s", f": {reason}" if reason else "")

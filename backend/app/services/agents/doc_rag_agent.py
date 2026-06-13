@@ -598,6 +598,7 @@ async def execute(
     tenant_id: str | None = None,
     thread_id: str | None = None,
     enable_hyde: bool = True,
+    allow_web_fallback: bool = True,
 ) -> AsyncGenerator[dict, None]:
     yield {
         "type": "thought",
@@ -608,6 +609,7 @@ async def execute(
     }
 
     client = get_llm_client()
+    channel = "widget" if not token else "authenticated"
 
     # ── Inter-Agent Delegation: keyword pre-filter then LLM check ──
     SQL_KEYWORDS = {"sales", "revenue", "total", "count", "average", "sum", "how many",
@@ -675,8 +677,23 @@ async def execute(
 
     # Run retrieval for all queries concurrently
     retrieval_tasks = [
-        retrieve_context(token, user_id, q, mode=retrieval_mode, match_count=dynamic_match_count, target_user_id=target_user_id, tenant_id=tenant_id, thread_id=thread_id)
-        for q in all_queries
+        retrieve_context(
+            token,
+            user_id,
+            q,
+            mode=retrieval_mode,
+            match_count=dynamic_match_count,
+            target_user_id=target_user_id,
+            tenant_id=tenant_id,
+            thread_id=thread_id,
+            diagnostics={
+                "channel": channel,
+                "query_variant_count": len(all_queries),
+                "query_variant_index": index,
+                "web_fallback_allowed": allow_web_fallback,
+            },
+        )
+        for index, q in enumerate(all_queries)
     ]
     retrieval_results = await asyncio.gather(*retrieval_tasks, return_exceptions=True)
 
@@ -819,6 +836,36 @@ async def execute(
     public_sources = _public_sources(sources)
 
     if not context_chunks:
+        if not allow_web_fallback:
+            yield {
+                "type": "thought",
+                "content": "No matching content found in the knowledge base. Web fallback is disabled for this channel.",
+                "action_type": "no_results",
+                "action_source": "doc_rag",
+                "action_data": {
+                    "query": message,
+                    "fallback_reason": "no_doc_results",
+                    "retrieval_log_ids": retrieval_log_ids,
+                    "web_fallback_allowed": False,
+                },
+            }
+            yield {"type": "token", "content": "I don't have that information in my knowledge base."}
+            yield {
+                "type": "rag_quality",
+                "retrieval_log_ids": retrieval_log_ids,
+                "groundedness": None,
+                "groundedness_flag": False,
+                "retrieval_quality": "no_sources",
+                "diagnostics": {
+                    "channel": channel,
+                    "doc_chunk_count": 0,
+                    "web_result_count": 0,
+                    "fallback_reason": "no_doc_results",
+                    "web_fallback_allowed": False,
+                    "query_variant_count": len(all_queries),
+                },
+            }
+            return
         # No document results at all — fall back to web search (Corrective RAG)
         yield {
             "type": "thought",
@@ -853,6 +900,14 @@ async def execute(
                 "groundedness": None,
                 "groundedness_flag": False,
                 "retrieval_quality": "no_sources_web_fallback",
+                "diagnostics": {
+                    "channel": channel,
+                    "doc_chunk_count": 0,
+                    "web_result_count": len(web_results),
+                    "fallback_reason": "no_doc_results",
+                    "web_fallback_allowed": True,
+                    "query_variant_count": len(all_queries),
+                },
             }
             return
 
@@ -870,12 +925,54 @@ async def execute(
             "groundedness": None,
             "groundedness_flag": False,
             "retrieval_quality": "no_sources",
+            "diagnostics": {
+                "channel": channel,
+                "doc_chunk_count": 0,
+                "web_result_count": 0,
+                "fallback_reason": "no_doc_or_web_results",
+                "web_fallback_allowed": True,
+                "query_variant_count": len(all_queries),
+            },
         }
         return
 
     # --- Corrective RAG: grade retrieval quality ---
     quality = grade_retrieval_quality(sources)
     used_web_fallback = False
+
+    if quality == "low" and not allow_web_fallback:
+        logger.info("Corrective RAG: retrieval quality is LOW and web fallback is disabled.")
+        yield {
+            "type": "thought",
+            "content": "Document matches are weak and web fallback is disabled for this channel.",
+            "action_type": "guardrail",
+            "action_source": "doc_rag",
+            "action_data": {
+                "quality": quality,
+                "fallback_reason": "low_quality_no_web",
+                "doc_chunk_count": len(context_chunks),
+                "web_fallback_allowed": False,
+                "retrieval_log_ids": retrieval_log_ids,
+            },
+        }
+        yield {"type": "sources", "sources": _public_sources(sources)}
+        yield {"type": "token", "content": "I don't have enough reliable information in my knowledge base to answer that."}
+        yield {
+            "type": "rag_quality",
+            "retrieval_log_ids": retrieval_log_ids,
+            "groundedness": None,
+            "groundedness_flag": False,
+            "retrieval_quality": "low_no_web",
+            "diagnostics": {
+                "channel": channel,
+                "doc_chunk_count": len(context_chunks),
+                "web_result_count": 0,
+                "fallback_reason": "low_quality_no_web",
+                "web_fallback_allowed": False,
+                "query_variant_count": len(all_queries),
+            },
+        }
+        return
 
     if quality == "low":
         logger.info(f"Corrective RAG: retrieval quality is LOW. Triggering web search.")
@@ -955,7 +1052,7 @@ async def execute(
 
     # Check if the query needs external information beyond the documents (existing logic)
     use_hybrid = False
-    if context_chunks and not used_web_fallback:
+    if context_chunks and not used_web_fallback and allow_web_fallback:
         needs_external = await _needs_external_context(message, context_chunks, client)
         if needs_external:
             yield {
@@ -1087,6 +1184,12 @@ async def execute(
         retry_result = await retrieve_context(
             token, user_id, refined_query, mode=retrieval_mode,
             target_user_id=target_user_id, tenant_id=tenant_id, thread_id=thread_id,
+            diagnostics={
+                "channel": channel,
+                "query_variant_count": len(all_queries),
+                "retry": True,
+                "web_fallback_allowed": allow_web_fallback,
+            },
         )
         retry_retrieval_log_ids.extend(retry_result.get("retrieval_log_ids", []))
 
@@ -1148,6 +1251,8 @@ async def execute(
         yield {"type": "token", "content": disclaimer}
 
     all_retrieval_log_ids = retrieval_log_ids + retry_retrieval_log_ids
+    final_doc_count = sum(1 for s in sources if s.get("document_id") != "web_search")
+    final_web_count = sum(1 for s in sources if s.get("document_id") == "web_search" or s.get("url"))
     yield {
         "type": "rag_quality",
         "retrieval_log_ids": all_retrieval_log_ids,
@@ -1155,4 +1260,13 @@ async def execute(
         "groundedness_flag": not is_grounded,
         "retrieval_quality": quality,
         "retried": attempt > 0,
+        "diagnostics": {
+            "channel": channel,
+            "doc_chunk_count": final_doc_count,
+            "web_result_count": final_web_count,
+            "used_web_fallback": used_web_fallback or use_hybrid,
+            "web_fallback_allowed": allow_web_fallback,
+            "query_variant_count": len(all_queries),
+            **({"fallback_reason": "web_augmented"} if used_web_fallback or use_hybrid else {}),
+        },
     }

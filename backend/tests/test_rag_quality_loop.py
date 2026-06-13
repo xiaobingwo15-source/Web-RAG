@@ -1,0 +1,130 @@
+import unittest
+from unittest.mock import patch
+
+from app.services import rag_quality_loop
+
+
+class RagQualityLoopTests(unittest.TestCase):
+    def test_sync_promotes_feedback_and_fallback_groups_to_drafts(self):
+        created_payloads = []
+
+        def create_case(tenant_id, payload):
+            created_payloads.append(payload)
+            return {
+                "id": f"case-{len(created_payloads)}",
+                "tenant_id": tenant_id,
+                **payload,
+            }
+
+        feedback_item = {
+            "feedback_id": "feedback-1",
+            "feedback_created_at": "2026-06-12T00:10:00Z",
+            "feedback_comment": "Wrong source",
+            "rating": -1,
+            "thread_id": "thread-1",
+            "thread_title": "Benefits policy",
+            "client_email": "client@example.com",
+            "question": "What is the PTO rollover limit?",
+            "question_message_id": "question-1",
+            "resolved_message_id": "answer-1",
+            "answer": "The old answer.",
+            "answer_created_at": "2026-06-12T00:09:00Z",
+            "retrieval_logs": [{
+                "id": "log-feedback",
+                "query": "What is the PTO rollover limit?",
+                "retrieval_mode": "hybrid",
+                "chunk_count": 1,
+                "source_count": 1,
+                "top_score": 0.31,
+                "created_at": "2026-06-12T00:08:00Z",
+                "retrieval_quality": "weak_sources",
+                "diagnostics": {"channel": "chat"},
+                "sources": [{
+                    "document_id": "doc-1",
+                    "chunk_id": "chunk-1",
+                    "filename": "benefits.md",
+                    "score": 0.31,
+                    "snippet": "Rollover details",
+                }],
+            }],
+            "summary": {"source_count": 1, "top_score": 0.31},
+        }
+        fallback_logs = [
+            {
+                "id": "fallback-1",
+                "query": "Where is the escalation policy?",
+                "retrieval_mode": "hybrid",
+                "chunk_count": 0,
+                "source_count": 0,
+                "top_score": None,
+                "created_at": "2026-06-12T00:11:00Z",
+                "retrieval_quality": "no_sources_web_fallback",
+                "diagnostics": {"fallback_reason": "no_sources", "web_result_count": 3},
+                "sources": [],
+                "chunks": [],
+            },
+            {
+                "id": "fallback-2",
+                "query": "where is the escalation policy? ",
+                "retrieval_mode": "hybrid",
+                "chunk_count": 1,
+                "source_count": 1,
+                "top_score": 0.22,
+                "created_at": "2026-06-12T00:12:00Z",
+                "retrieval_quality": "low_quality_web_fallback",
+                "diagnostics": {"fallback_reason": "low_quality", "web_result_count": 2},
+                "sources": [{"filename": "ops.md", "score": 0.22, "snippet": "Escalation"}],
+                "chunks": ["Escalation"],
+            },
+        ]
+
+        with (
+            patch.object(rag_quality_loop.database, "list_rag_eval_cases", return_value=[]),
+            patch.object(rag_quality_loop.database, "list_rag_quality_thumbs_down", return_value=[feedback_item]),
+            patch.object(rag_quality_loop.database, "list_recent_retrieval_logs", return_value=fallback_logs),
+            patch.object(rag_quality_loop.database, "create_rag_eval_case", side_effect=create_case),
+        ):
+            result = rag_quality_loop.sync_quality_loop_eval_drafts("tenant-1")
+
+        self.assertEqual(result["created_count"], 2)
+        feedback_payload = created_payloads[0]
+        fallback_payload = created_payloads[1]
+        self.assertEqual(feedback_payload["status"], "draft")
+        self.assertFalse(feedback_payload["enabled"])
+        self.assertEqual(feedback_payload["source_type"], "thumbs_down_feedback")
+        self.assertEqual(feedback_payload["source_ref_id"], "feedback-1")
+        self.assertEqual(
+            feedback_payload["retrieval_metadata"]["retrieval"]["logs"][0]["diagnostics"]["channel"],
+            "chat",
+        )
+        self.assertEqual(fallback_payload["source_type"], "fallback_retrieval")
+        self.assertTrue(fallback_payload["source_ref_id"].startswith("fallback:"))
+        self.assertEqual(fallback_payload["retrieval_metadata"]["fallback"]["fallback_count"], 2)
+        self.assertIn("fallback-heavy", fallback_payload["tags"])
+
+    def test_sync_skips_existing_quality_loop_sources(self):
+        feedback_item = {
+            "feedback_id": "feedback-1",
+            "thread_title": "Existing",
+            "question": "Existing question?",
+            "retrieval_logs": [],
+        }
+
+        with (
+            patch.object(rag_quality_loop.database, "list_rag_eval_cases", return_value=[{
+                "source_type": "thumbs_down_feedback",
+                "source_ref_id": "feedback-1",
+            }]),
+            patch.object(rag_quality_loop.database, "list_rag_quality_thumbs_down", return_value=[feedback_item]),
+            patch.object(rag_quality_loop.database, "list_recent_retrieval_logs", return_value=[]),
+            patch.object(rag_quality_loop.database, "create_rag_eval_case") as create_case,
+        ):
+            result = rag_quality_loop.sync_quality_loop_eval_drafts("tenant-1")
+
+        create_case.assert_not_called()
+        self.assertEqual(result["created_count"], 0)
+        self.assertEqual(result["skipped_existing_count"], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

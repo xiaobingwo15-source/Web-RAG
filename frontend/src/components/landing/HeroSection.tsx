@@ -1,59 +1,75 @@
-import { ArrowRight } from 'lucide-react'
+import { ArrowRight, CalendarDays, CheckCircle2, Database, FileText, ShieldCheck } from 'lucide-react'
+import heroStory from '@/assets/rag-hero-story.png'
+
+const proofPoints = [
+  { icon: FileText, label: 'Documents', value: 'PDF, Markdown, TXT, CSV' },
+  { icon: Database, label: 'Data', value: 'Hybrid retrieval and SQL tools' },
+  { icon: ShieldCheck, label: 'Controls', value: 'Tenants, roles, approvals' },
+  { icon: CheckCircle2, label: 'Quality', value: 'Citations, evals, feedback' },
+]
 
 export function HeroSection() {
   return (
-    <header className="relative min-h-[90vh] md:h-[80vh] flex items-center overflow-hidden pt-20">
+    <header className="relative overflow-hidden bg-[#071427] pt-20 md:pt-24">
       <div className="absolute inset-0 z-0">
         <img
-          className="w-full h-full object-cover"
-          src="https://lh3.googleusercontent.com/aida-public/AB6AXuClCeOi1LespBMAgcwHIsIcTYBU7Xuz35IxRneVbpINOIWRU9d8PkrYyfZlhM-9xCu4edg9yq_MtOKJ1yQ8kbRgwyy2RTmHtY0XGJ632GXplb2OF3OffjU9k8WzmwgppxzxtyN5pUcZkaekGl99XotpPgaVTMetT1qJ72B-vrWoBMkpOc3ZQsgzKjOn20pRmDmXNFnx5ANb8DWhUwvZfLpQcJL-26UNZeS_dU6iPWfpWhPu0AndJkqZI55HVt5WV0v5emtm9ynBPGMr"
-          alt="Precision manufacturing cleanroom and instrumentation"
+          className="h-full w-full object-cover opacity-50"
+          src={heroStory}
+          alt="Documents, database, chat answers, and guardrails connected inside a RAG system"
         />
-        <div className="absolute inset-0 bg-gradient-to-r from-surface via-surface/90 to-transparent"></div>
+        <div className="absolute inset-0 bg-gradient-to-r from-[#071427] via-[#071427]/88 to-[#071427]/35"></div>
+        <div
+          className="absolute inset-0 opacity-[0.14]"
+          style={{
+            backgroundImage:
+              'linear-gradient(rgba(255,255,255,.22) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.22) 1px, transparent 1px)',
+            backgroundSize: '56px 56px',
+          }}
+        ></div>
       </div>
-      
-      <div className="relative z-10 px-6 md:px-12 max-w-[1440px] mx-auto w-full">
-        <div className="max-w-2xl border-l-2 border-secondary pl-6 md:pl-8">
-          <div className="flex flex-wrap items-center gap-2 mb-4 bg-surface-container-high/60 backdrop-blur-md px-3 py-1.5 border border-outline-variant rounded-sm w-fit">
-            <span className="text-xs font-bold text-secondary">5.0</span>
-            <div className="flex text-secondary gap-0.5">
-              {"★".repeat(5)}
-            </div>
-            <span className="text-[10px] font-medium text-on-surface-variant uppercase tracking-wider">
-              5 Google Reviews
-            </span>
-            <span className="text-outline-variant text-xs hidden sm:inline">|</span>
-            <span className="text-[10px] font-medium text-on-surface-variant uppercase tracking-wider hidden sm:inline">
-              Klang Electronics Repair Shop
-            </span>
-          </div>
-          <span className="font-semibold text-xs tracking-[0.2em] text-on-surface-variant uppercase block mb-3">
-            Premium Engineering &amp; Services
+
+      <div className="relative z-10 mx-auto flex min-h-[68vh] w-full max-w-[1440px] items-center px-6 pb-10 pt-6 md:min-h-[74vh] md:px-12 md:pb-20 md:pt-8">
+        <div className="max-w-3xl">
+          <span className="mb-4 inline-flex items-center gap-2 rounded-sm border border-white/20 bg-white/10 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#A7F3D0] backdrop-blur-md">
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            Private AI knowledge system
           </span>
-          <h1 className="text-3xl md:text-5xl font-bold text-on-surface mb-6 uppercase tracking-tight leading-tight">
-            Precision Engineered for <span className="text-secondary">Industrial Excellence</span>
+          <h1 className="text-3xl font-bold leading-[1.04] text-white sm:text-4xl md:text-6xl">
+            Web-RAG RAG System Package
           </h1>
-          <p className="text-base md:text-lg text-on-surface-variant mb-8 max-w-lg leading-relaxed">
-            Advanced circuit board solutions for heavy machinery and precision electronics. Designed for zero-failure environments.
+          <p className="mt-4 max-w-2xl text-sm leading-7 text-white/80 md:mt-6 md:text-xl md:leading-8">
+            Turn company documents, spreadsheets, and operational data into cited AI answers with streaming chat, source evidence, admin review, and deployment guardrails already built in.
           </p>
-          <div className="flex flex-col sm:flex-row gap-4">
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row md:mt-8 md:gap-4">
             <a
-              href="#solutions"
-              className="bg-primary text-on-primary hover:bg-primary-container px-6 py-4 font-semibold text-xs rounded-sm tracking-widest uppercase flex items-center justify-center gap-2 transition-all duration-200 active:scale-95"
+              href="#contact"
+              className="flex items-center justify-center gap-2 rounded-sm bg-primary px-5 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-on-primary transition-all duration-200 hover:bg-primary-container active:scale-95 md:px-6 md:py-4"
             >
-              View Catalog
+              <CalendarDays className="h-4 w-4" />
+              Plan Implementation
+            </a>
+            <a
+              href="#package"
+              className="flex items-center justify-center gap-2 rounded-sm border border-white/25 bg-white/8 px-5 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-white backdrop-blur-md transition-all duration-200 hover:bg-white/14 active:scale-95 md:px-6 md:py-4"
+            >
+              See Package
               <ArrowRight className="h-4 w-4" />
             </a>
-            <a
-              href="#capabilities"
-              className="border border-outline text-on-surface hover:bg-surface-variant px-6 py-4 font-semibold text-xs rounded-sm tracking-widest uppercase transition-all duration-200 active:scale-95"
-            >
-              Technical Specs
-            </a>
+          </div>
+
+          <div className="mt-8 grid max-w-4xl grid-cols-2 gap-x-3 gap-y-4 border-y border-white/14 py-4 sm:grid-cols-2 md:mt-12 md:gap-3 md:py-5 lg:grid-cols-4">
+            {proofPoints.map(({ icon: Icon, label, value }) => (
+              <div key={label} className="grid grid-cols-[28px_minmax(0,1fr)] gap-3">
+                <Icon className="mt-0.5 h-5 w-5 text-[#F7B267]" />
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-white">{label}</p>
+                  <p className="mt-1 text-sm leading-5 text-white/65">{value}</p>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>
     </header>
-  );
+  )
 }
-

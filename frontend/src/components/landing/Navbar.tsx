@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { Menu, X } from 'lucide-react'
+import { CalendarDays, LogIn, Menu, X } from 'lucide-react'
 import { markInteraction } from '@/lib/performance'
 
 const NAV_LINKS = [
-  { label: 'Solutions', href: '#solutions' },
+  { label: 'Package', href: '#package' },
+  { label: 'Workflow', href: '#workflow' },
   { label: 'Capabilities', href: '#capabilities' },
-  { label: 'Compliance', href: '#compliance' },
-  { label: 'Support', href: '#contact' },
+  { label: 'Quality', href: '#governance' },
+  { label: 'Contact', href: '#contact' },
 ]
 
 export function Navbar() {
@@ -23,16 +24,15 @@ export function Navbar() {
   return (
     <nav
       className={`fixed top-0 left-0 right-0 z-50 border-b transition-all duration-200 ${scrolled
-          ? 'bg-surface/95 backdrop-blur-sm shadow-xl border-outline-variant py-2'
-          : 'bg-surface border-outline-variant/30 py-4'
+          ? 'bg-white/95 backdrop-blur-md shadow-lg border-outline-variant py-2'
+          : 'bg-white/88 backdrop-blur-md border-outline-variant/30 py-4'
         }`}
     >
       <div className="flex items-center justify-between px-6 md:px-12 w-full max-w-[1440px] mx-auto">
-        <a href="#" className="font-sans text-lg md:text-xl font-bold tracking-tight text-on-surface hover:opacity-90 active:scale-95 transition-all">
-          IE Industrial Electronics
+        <a href="#" className="font-sans text-lg md:text-xl font-bold text-on-surface hover:opacity-90 active:scale-95 transition-all">
+          Web-RAG
         </a>
 
-        {/* Desktop Links */}
         <div className="hidden md:flex gap-6 items-center">
           {NAV_LINKS.map((link) => (
             <a
@@ -45,35 +45,35 @@ export function Navbar() {
           ))}
         </div>
 
-        {/* Actions */}
         <div className="hidden md:flex items-center gap-4">
           <a
             href="#contact"
-            className="px-4 py-2 bg-secondary text-on-secondary font-semibold text-xs rounded-sm transition-all duration-200 hover:brightness-110 active:scale-95"
+            className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-on-primary font-semibold text-xs rounded-sm transition-all duration-200 hover:bg-primary-container active:scale-95"
           >
-            Request Quote
+            <CalendarDays className="h-4 w-4" />
+            Plan Rollout
           </a>
           <Link
             to="/login"
             onClick={() => markInteraction('nav.portal')}
-            className="px-4 py-2 border border-outline-variant text-on-surface font-semibold text-xs rounded-sm hover:bg-surface-variant transition-all duration-200 active:scale-95"
+            className="inline-flex items-center gap-2 px-4 py-2 border border-outline-variant text-on-surface font-semibold text-xs rounded-sm hover:bg-surface-container-low transition-all duration-200 active:scale-95"
           >
+            <LogIn className="h-4 w-4" />
             Portal
           </Link>
         </div>
 
-        {/* Mobile Toggle */}
         <button
           className="text-on-surface md:hidden focus:outline-none"
           onClick={() => setMobileOpen(!mobileOpen)}
+          aria-label="Toggle navigation"
         >
           {mobileOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
         </button>
       </div>
 
-      {/* Mobile Menu */}
       {mobileOpen && (
-        <div className="border-t border-outline-variant bg-surface/98 backdrop-blur-md px-6 py-6 md:hidden absolute left-0 right-0 top-[100%] shadow-2xl flex flex-col gap-6">
+        <div className="border-t border-outline-variant bg-white/98 backdrop-blur-md px-6 py-6 md:hidden absolute left-0 right-0 top-[100%] shadow-2xl flex flex-col gap-6">
           <div className="flex flex-col gap-4">
             {NAV_LINKS.map((link) => (
               <a
@@ -91,9 +91,10 @@ export function Navbar() {
             <a
               href="#contact"
               onClick={() => setMobileOpen(false)}
-              className="w-full py-3 bg-secondary text-on-secondary font-semibold text-xs rounded-sm text-center"
+              className="inline-flex w-full items-center justify-center gap-2 py-3 bg-primary text-on-primary font-semibold text-xs rounded-sm text-center"
             >
-              Request Quote
+              <CalendarDays className="h-4 w-4" />
+              Plan Rollout
             </a>
             <Link
               to="/login"
@@ -101,8 +102,9 @@ export function Navbar() {
                 markInteraction('nav.portal')
                 setMobileOpen(false)
               }}
-              className="w-full py-3 border border-outline-variant text-on-surface font-semibold text-xs rounded-sm text-center hover:bg-surface-variant"
+              className="inline-flex w-full items-center justify-center gap-2 py-3 border border-outline-variant text-on-surface font-semibold text-xs rounded-sm text-center hover:bg-surface-container-low"
             >
+              <LogIn className="h-4 w-4" />
               Portal
             </Link>
           </div>

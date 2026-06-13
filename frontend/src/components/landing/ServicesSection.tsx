@@ -1,118 +1,111 @@
+import { CheckCircle2, ClipboardCheck, CloudUpload, Database, FileText, MessageSquareText, SearchCheck } from 'lucide-react'
+import workflowStory from '@/assets/rag-workflow-story.png'
+
+const deliverables = [
+  {
+    icon: CloudUpload,
+    title: 'Source ingestion',
+    body: 'Upload and process PDFs, Markdown, TXT, CSV, spreadsheets, and OCR-heavy files with duplicate checks and resilient chunked uploads.',
+  },
+  {
+    icon: SearchCheck,
+    title: 'Grounded retrieval',
+    body: 'Hybrid vector and full-text search, reranking, source snippets, and retrieval modes tuned for document-heavy workflows.',
+  },
+  {
+    icon: MessageSquareText,
+    title: 'Chat workspace',
+    body: 'Threaded streaming chat, RAG toggle, image-aware prompts, tool traces, citations, and feedback built into the client experience.',
+  },
+  {
+    icon: Database,
+    title: 'Admin operations',
+    body: 'Tenant-aware Supabase auth, role routing, document status tracking, AI settings, conversations, eval cases, and quality signals.',
+  },
+]
+
+const workflow = [
+  'Map source inventory and access model',
+  'Ingest files with parsing, OCR, metadata, and embeddings',
+  'Retrieve with hybrid search, reranking, and source evidence',
+  'Improve with eval cases, feedback review, and retrieval diagnostics',
+]
+
 export function ServicesSection() {
   return (
-    <section id="solutions" className="scroll-mt-20 py-24 px-6 md:px-12 max-w-[1440px] mx-auto">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-end mb-16 gap-6">
-        <div>
-          <span className="font-semibold text-xs tracking-[0.2em] text-secondary uppercase block mb-2">
-            Our Specialization
-          </span>
-          <h2 className="text-3xl md:text-4xl font-bold text-on-surface">
-            Specialized PCBA Solutions
-          </h2>
-        </div>
-        <p className="text-on-surface-variant max-w-md text-sm md:text-base leading-relaxed">
-          Our manufacturing process is calibrated for the most demanding technical requirements in industrial automation and heavy logistics.
-        </p>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
-        {/* Large Machine Card */}
-        <div className="group relative bg-surface-container border border-outline-variant overflow-hidden crosshair-corner rounded-sm flex flex-col justify-between">
+    <section id="package" className="scroll-mt-24 px-6 py-20 md:px-12 md:py-24">
+      <div className="mx-auto max-w-[1440px]">
+        <div className="mb-12 grid gap-6 md:grid-cols-[minmax(0,0.78fr)_minmax(320px,0.42fr)] md:items-end">
           <div>
-            <div className="aspect-video overflow-hidden">
-              <img
-                className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
-                src="https://lh3.googleusercontent.com/aida-public/AB6AXuClCeOi1LespBMAgcwHIsIcTYBU7Xuz35IxRneVbpINOIWRU9d8PkrYyfZlhM-9xCu4edg9yq_MtOKJ1yQ8kbRgwyy2RTmHtY0XGJ632GXplb2OF3OffjU9k8WzmwgppxzxtyN5pUcZkaekGl99XotpPgaVTMetT1qJ72B-vrWoBMkpOc3ZQsgzKjOn20pRmDmXNFnx5ANb8DWhUwvZfLpQcJL-26UNZeS_dU6iPWfpWhPu0AndJkqZI55HVt5WV0v5emtm9ynBPGMr"
-                alt="Large Machine Circuit Boards"
-              />
-            </div>
-            <div className="p-6 md:p-8">
-              <div className="flex justify-between items-start mb-6">
-                <h3 className="text-xl md:text-2xl font-bold text-on-surface">
-                  Large Machine Circuit Boards
-                </h3>
-                <span className="px-2 py-1 border border-secondary text-secondary font-semibold text-[10px] tracking-wider uppercase rounded-sm">
-                  HEAVY DUTY
-                </span>
-              </div>
-              <p className="text-on-surface-variant mb-6 text-sm md:text-base leading-relaxed">
-                High-current capacity boards designed for prime movers, hydraulic controllers, and massive power distribution units.
-              </p>
-              <ul className="space-y-3 mb-8 border-t border-outline-variant pt-6">
-                <li className="flex items-center gap-3 font-semibold text-xs tracking-wider uppercase text-on-surface">
-                  <span className="w-2 h-2 bg-secondary rounded-sm"></span> 4oz Copper Weight Standard
-                </li>
-                <li className="flex items-center gap-3 font-semibold text-xs tracking-wider uppercase text-on-surface">
-                  <span className="w-2 h-2 bg-secondary rounded-sm"></span> Vibration-Resistant Mounting
-                </li>
-                <li className="flex items-center gap-3 font-semibold text-xs tracking-wider uppercase text-on-surface">
-                  <span className="w-2 h-2 bg-secondary rounded-sm"></span> Thermal Stress Mitigation
-                </li>
-              </ul>
-            </div>
+            <span className="mb-3 block text-xs font-semibold uppercase tracking-[0.2em] text-primary">
+              Package
+            </span>
+            <h2 className="max-w-3xl text-3xl font-bold leading-tight text-on-surface md:text-5xl">
+              A deployed RAG application, not a starter template.
+            </h2>
           </div>
-          <div className="px-6 pb-6 md:px-8 md:pb-8">
-            <a
-              href="#contact"
-              className="w-full py-4 border border-outline text-on-surface font-semibold text-xs tracking-widest uppercase hover:bg-secondary hover:border-secondary hover:text-on-secondary transition-all duration-200 block text-center"
-            >
-              Configure Component
-            </a>
-          </div>
-          <div className="absolute top-4 right-4 text-white/5 font-mono text-[60px] font-bold pointer-events-none select-none">
-            01
-          </div>
+          <p className="text-sm leading-7 text-on-surface-variant md:text-base">
+            Web-RAG packages the production pieces teams usually have to assemble separately: ingestion, retrieval, chat, admin control, evaluation, and a public assistant widget.
+          </p>
         </div>
 
-        {/* Small Machine Card */}
-        <div className="group relative bg-surface-container border border-outline-variant overflow-hidden crosshair-corner rounded-sm flex flex-col justify-between">
-          <div>
-            <div className="aspect-video overflow-hidden">
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-4">
+          {deliverables.map(({ icon: Icon, title, body }) => (
+            <article key={title} className="rounded-lg border border-outline-variant bg-surface p-6 shadow-sm">
+              <Icon className="mb-5 h-8 w-8 text-primary" />
+              <h3 className="text-lg font-bold text-on-surface">{title}</h3>
+              <p className="mt-3 text-sm leading-6 text-on-surface-variant">{body}</p>
+            </article>
+          ))}
+        </div>
+
+        <div id="workflow" className="scroll-mt-24 pt-16">
+          <div className="grid grid-cols-1 gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(360px,0.72fr)] lg:items-center">
+            <figure className="overflow-hidden rounded-lg border border-outline-variant bg-surface shadow-xl">
               <img
-                className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
-                src="https://lh3.googleusercontent.com/aida-public/AB6AXuComcU7ENuc7X_cGj6gtW3j3mYOhGKN1RjLDpIgSMcQuAIY1u5XKKf1tuKFIc5eUqdD3hmQMRvYnq1lbFI6MEuqioedz2nOcPMfXHM_y-xzJyjOdG0s2ydUnYvEd2pw_dNvuC3eTkUuL3n9Pe0Uy2ha6cy2q6pu31FDFguP8_tnAxSCmvsOeOJUxeDVzaHpTwr8gcmzSPpZr94Z1aKpun6OamYpP01w5yMqLepadt_2fgCWQF2g6IVVoMKMuNSRvMxmJcVTSWbK6x1-"
-                alt="Small Machine Circuit Boards"
+                className="h-full w-full object-cover"
+                src={workflowStory}
+                alt="RAG workflow from source ingestion through retrieval, answers, and deployment handoff"
               />
-            </div>
-            <div className="p-6 md:p-8">
-              <div className="flex justify-between items-start mb-6">
-                <h3 className="text-xl md:text-2xl font-bold text-on-surface">
-                  Small Machine Circuit Boards
-                </h3>
-                <span className="px-2 py-1 border border-primary text-primary font-semibold text-[10px] tracking-wider uppercase rounded-sm">
-                  PRECISION
-                </span>
+            </figure>
+
+            <div>
+              <span className="mb-3 block text-xs font-semibold uppercase tracking-[0.2em] text-secondary">
+                Workflow
+              </span>
+              <h3 className="text-2xl font-bold leading-tight text-on-surface md:text-4xl">
+                From scattered knowledge to answerable systems.
+              </h3>
+              <div className="mt-7 grid gap-3">
+                {workflow.map((item, index) => (
+                  <div key={item} className="grid grid-cols-[44px_minmax(0,1fr)] gap-4 rounded-lg border border-outline-variant bg-surface-container-low p-4">
+                    <span className="flex h-9 w-9 items-center justify-center rounded-sm bg-[#0B1B33] text-sm font-bold text-white">
+                      {index + 1}
+                    </span>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        {index === 0 ? <FileText className="h-4 w-4 text-primary" /> : <ClipboardCheck className="h-4 w-4 text-primary" />}
+                        <p className="text-sm font-semibold text-on-surface">{item}</p>
+                      </div>
+                      <p className="mt-1 text-xs leading-5 text-on-surface-variant">
+                        {index === 0
+                          ? 'Discovery keeps scope tied to real documents, data sources, users, and success metrics.'
+                          : 'Each stage leaves observable status, source evidence, or admin review data behind.'}
+                      </p>
+                    </div>
+                  </div>
+                ))}
               </div>
-              <p className="text-on-surface-variant mb-6 text-sm md:text-base leading-relaxed">
-                Micro-circuitry optimized for precision robotics, sensor arrays, and high-speed data acquisition modules.
-              </p>
-              <ul className="space-y-3 mb-8 border-t border-outline-variant pt-6">
-                <li className="flex items-center gap-3 font-semibold text-xs tracking-wider uppercase text-on-surface">
-                  <span className="w-2 h-2 bg-primary rounded-sm"></span> 0.1mm Trace Precision
-                </li>
-                <li className="flex items-center gap-3 font-semibold text-xs tracking-wider uppercase text-on-surface">
-                  <span className="w-2 h-2 bg-primary rounded-sm"></span> Low-Latency Signal Paths
-                </li>
-                <li className="flex items-center gap-3 font-semibold text-xs tracking-wider uppercase text-on-surface">
-                  <span className="w-2 h-2 bg-primary rounded-sm"></span> HDI Multi-Layer Fabrication
-                </li>
-              </ul>
+              <div className="mt-6 flex items-start gap-3 rounded-lg border border-primary/20 bg-[#ECFDF5] p-4">
+                <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+                <p className="text-sm leading-6 text-[#115E59]">
+                  The existing app structure remains intact: public landing page, protected chat workspace, admin dashboard, owner approval screen, and embedded anonymous assistant.
+                </p>
+              </div>
             </div>
-          </div>
-          <div className="px-6 pb-6 md:px-8 md:pb-8">
-            <a
-              href="#contact"
-              className="w-full py-4 border border-outline text-on-surface font-semibold text-xs tracking-widest uppercase hover:bg-primary hover:border-primary hover:text-on-primary transition-all duration-200 block text-center"
-            >
-              Request Prototype
-            </a>
-          </div>
-          <div className="absolute top-4 right-4 text-white/5 font-mono text-[60px] font-bold pointer-events-none select-none">
-            02
           </div>
         </div>
       </div>
     </section>
-  );
+  )
 }
-

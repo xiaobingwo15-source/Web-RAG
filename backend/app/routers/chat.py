@@ -125,7 +125,19 @@ async def chat(request: ChatRequest, user=Depends(get_current_user)):
         sources = []
         retrieval_log_ids: list[str] = []
         if request.use_documents:
-            retrieval_result = await retrieve_context(token, user.id, active_message, mode=request.retrieval_mode, tenant_id=user.tenant_id, thread_id=thread_id)
+            retrieval_result = await retrieve_context(
+                token,
+                user.id,
+                active_message,
+                mode=request.retrieval_mode,
+                tenant_id=user.tenant_id,
+                thread_id=thread_id,
+                diagnostics={
+                    "channel": "authenticated",
+                    "web_fallback_allowed": request.enable_web_search,
+                    "direct_chat": True,
+                },
+            )
             context_chunks = retrieval_result["chunks"]
             sources = retrieval_result["sources"]
             retrieval_log_ids = retrieval_result.get("retrieval_log_ids", [])
@@ -194,6 +206,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
             groundedness_score: float | None = None
             groundedness_flag = False
             retrieval_quality: str | None = None
+            rag_diagnostics: dict | None = None
             try:
                 yield {
                     "data": json_lib.dumps({
@@ -265,6 +278,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                         groundedness_score = event.get("groundedness")
                         groundedness_flag = bool(event.get("groundedness_flag"))
                         retrieval_quality = event.get("retrieval_quality")
+                        rag_diagnostics = event.get("diagnostics")
 
                 assistant_message = save_message(token, user.id, thread_id, "assistant", full_response, tenant_id=user.tenant_id)
                 if retrieval_log_ids:
@@ -275,6 +289,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                         groundedness_score=groundedness_score,
                         groundedness_flag=groundedness_flag,
                         retrieval_quality=retrieval_quality,
+                        diagnostics=rag_diagnostics,
                     )
 
                 yield {

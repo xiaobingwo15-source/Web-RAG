@@ -324,7 +324,7 @@ export function useChunkedUpload() {
         return false
       }
 
-      const startChunk = Math.max(serverStatus.uploaded_chunks, pendingResume.uploadedChunks)
+      const startChunk = Math.min(serverStatus.uploaded_chunks, pendingResume.uploadedChunks)
       const sessionId = pendingResume.sessionId
       const chunkSize = DEFAULT_CHUNK_SIZE
 

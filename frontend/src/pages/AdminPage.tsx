@@ -21,6 +21,7 @@ import {
   runRagEval,
   updateRagEvalCase,
   getRagQualityThumbsDown,
+  getRagQualitySignals,
   type AdminClient,
   type AdminMessage,
   type FlaggedMessage,
@@ -30,6 +31,8 @@ import {
   type RagEvalRunSummary,
   type RagEvalRunDetail,
   type RagQualityFeedbackItem,
+  type RagQualitySignal,
+  type RagQualitySignalsResponse,
   type RagQualitySource,
 } from '@/lib/api'
 import { markInteraction, markRouteReady } from '@/lib/performance'
@@ -107,10 +110,12 @@ export function AdminPage() {
   const [evalCases, setEvalCases] = useState<RagEvalCase[]>([])
   const [evalRuns, setEvalRuns] = useState<RagEvalRunSummary[]>([])
   const [selectedEvalRun, setSelectedEvalRun] = useState<RagEvalRunDetail | null>(null)
-  const [evalWorkspaceView, setEvalWorkspaceView] = useState<'runs' | 'feedback'>('runs')
+  const [evalWorkspaceView, setEvalWorkspaceView] = useState<'runs' | 'signals' | 'feedback'>('runs')
   const [qualityFeedback, setQualityFeedback] = useState<RagQualityFeedbackItem[]>([])
+  const [ragSignals, setRagSignals] = useState<RagQualitySignalsResponse | null>(null)
   const [selectedQualityFeedbackId, setSelectedQualityFeedbackId] = useState<string | null>(null)
   const [qualityLoading, setQualityLoading] = useState(false)
+  const [signalsLoading, setSignalsLoading] = useState(false)
   const [expandedQualityChunks, setExpandedQualityChunks] = useState<Record<string, boolean>>({})
   const [evalLoading, setEvalLoading] = useState(false)
   const [evalRunning, setEvalRunning] = useState(false)
@@ -123,6 +128,7 @@ export function AdminPage() {
     expectedDocumentId: '',
     tags: '',
     enabled: true,
+    status: 'active' as RagEvalCase['status'],
   })
 
   useEffect(() => {
@@ -255,12 +261,27 @@ export function AdminPage() {
     }
   }, [session?.access_token])
 
+  const fetchRagSignals = useCallback(async () => {
+    if (!session?.access_token) return
+    setSignalsLoading(true)
+    try {
+      const data = await getRagQualitySignals(session.access_token, { window_hours: 168, limit: 50 })
+      setRagSignals(data)
+    } catch (err) {
+      console.error('Failed to fetch RAG quality signals:', err)
+      setEvalMessage('Failed to load RAG signals')
+    } finally {
+      setSignalsLoading(false)
+    }
+  }, [session?.access_token])
+
   useEffect(() => {
     if (activeTab === 'evals') {
       fetchEvals()
+      fetchRagSignals()
       fetchQualityFeedback()
     }
-  }, [activeTab, fetchEvals, fetchQualityFeedback])
+  }, [activeTab, fetchEvals, fetchQualityFeedback, fetchRagSignals])
 
   const handleSettingChange = (key: keyof SystemSettings, value: string) => {
     setSettings((prev) => ({ ...prev, [key]: value }))
@@ -287,7 +308,8 @@ export function AdminPage() {
     if (!session?.access_token || !evalForm.question.trim()) return
     markInteraction('admin.evals.save_case', { editing: Boolean(editingEvalCaseId) })
     const expectedFacts = splitFactsInput(evalForm.expectedFacts)
-    if (expectedFacts.length === 0) {
+    const isDraft = evalForm.status === 'draft'
+    if (!isDraft && expectedFacts.length === 0) {
       setEvalMessage('Add at least one expected fact')
       return
     }
@@ -305,14 +327,15 @@ export function AdminPage() {
         expected_answer: evalForm.expectedAnswer.trim() || null,
         expected_document_id: expectedDocumentId || null,
         tags: splitListInput(evalForm.tags),
-        enabled: evalForm.enabled,
+        enabled: isDraft ? false : evalForm.enabled,
+        status: evalForm.status,
       }
       if (editingEvalCaseId) {
         await updateRagEvalCase(editingEvalCaseId, payload, session.access_token)
-        setEvalMessage('Eval case updated')
+        setEvalMessage(isDraft ? 'Draft eval case updated' : 'Eval case updated')
       } else {
         await createRagEvalCase(payload, session.access_token)
-        setEvalMessage('Eval case added')
+        setEvalMessage(isDraft ? 'Draft eval case added' : 'Eval case added')
       }
       resetEvalForm()
       await fetchEvals(selectedEvalRun?.run.id)
@@ -332,13 +355,24 @@ export function AdminPage() {
       expectedAnswer: item.expected_answer || '',
       expectedDocumentId: item.expected_document_id || '',
       tags: item.tags.join('\n'),
-      enabled: item.enabled,
+      enabled: item.status === 'draft' ? false : item.enabled,
+      status: item.status || 'active',
     })
     setEvalMessage(null)
   }
 
   const handleToggleEvalCase = async (item: RagEvalCase) => {
     if (!session?.access_token) return
+    if (item.status === 'draft') {
+      handleEditEvalCase(item)
+      setEvalMessage('Review the draft and add expected facts before activating it.')
+      return
+    }
+    if (!item.enabled && item.expected_facts.length === 0) {
+      handleEditEvalCase(item)
+      setEvalMessage('Add expected facts before enabling this eval case.')
+      return
+    }
     setEvalLoading(true)
     setEvalMessage(null)
     try {
@@ -365,6 +399,7 @@ export function AdminPage() {
       expectedDocumentId: '',
       tags: '',
       enabled: true,
+      status: 'active',
     })
   }
 
@@ -406,6 +441,36 @@ export function AdminPage() {
     [qualityFeedback, selectedQualityFeedbackId],
   )
 
+  const qualityLoopDrafts = useMemo(
+    () => evalCases.filter((item) => item.status === 'draft' && item.source_type),
+    [evalCases],
+  )
+
+  const runnableEvalCases = useMemo(
+    () => evalCases.filter((item) => item.enabled && item.status !== 'draft'),
+    [evalCases],
+  )
+
+  const qualityDraftBySource = useMemo(() => {
+    const drafts = new Map<string, RagEvalCase>()
+    for (const item of evalCases) {
+      if (item.source_type && item.source_ref_id) {
+        drafts.set(`${item.source_type}:${item.source_ref_id}`, item)
+      }
+    }
+    return drafts
+  }, [evalCases])
+
+  const editingEvalCase = useMemo(
+    () => evalCases.find((item) => item.id === editingEvalCaseId) ?? null,
+    [evalCases, editingEvalCaseId],
+  )
+
+  const selectedFeedbackDraft = useMemo(() => {
+    if (!selectedQualityFeedback) return null
+    return qualityDraftBySource.get(`thumbs_down_feedback:${selectedQualityFeedback.feedback_id}`) ?? null
+  }, [qualityDraftBySource, selectedQualityFeedback])
+
   const handleSeedEvalCase = (item: RagQualityFeedbackItem) => {
     setEditingEvalCaseId(null)
     setEvalWorkspaceView('runs')
@@ -415,9 +480,10 @@ export function AdminPage() {
       expectedAnswer: '',
       expectedDocumentId: '',
       tags: 'thumbs-down\nquality-loop',
-      enabled: true,
+      enabled: false,
+      status: 'draft',
     })
-    setEvalMessage('Seeded eval case from feedback. Add expected facts before saving.')
+    setEvalMessage('Seeded a draft eval case from feedback. Add expected facts before activating.')
   }
 
   const handleUpdateUserStatus = async (userId: string, action: 'approve' | 'suspend') => {
@@ -1034,7 +1100,7 @@ export function AdminPage() {
               <div>
                 <h1 className="text-sm font-semibold text-foreground">RAG Evaluation</h1>
                 <p className="text-[10px] text-muted-foreground">
-                  {evalCases.length} case{evalCases.length !== 1 ? 's' : ''} · {evalRuns.length} run{evalRuns.length !== 1 ? 's' : ''}
+                  {runnableEvalCases.length} runnable · {qualityLoopDrafts.length} draft{qualityLoopDrafts.length !== 1 ? 's' : ''} · {evalRuns.length} run{evalRuns.length !== 1 ? 's' : ''}
                 </p>
               </div>
             </div>
@@ -1042,17 +1108,18 @@ export function AdminPage() {
               <button
                 onClick={() => {
                   fetchEvals()
+                  fetchRagSignals()
                   fetchQualityFeedback()
                 }}
-                disabled={evalLoading || evalRunning || qualityLoading}
+                disabled={evalLoading || evalRunning || qualityLoading || signalsLoading}
                 className="flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50"
               >
-                <RefreshCw className={`h-3.5 w-3.5 ${evalLoading || qualityLoading ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`h-3.5 w-3.5 ${evalLoading || qualityLoading || signalsLoading ? 'animate-spin' : ''}`} />
                 Refresh
               </button>
               <button
                 onClick={handleRunEval}
-                disabled={evalRunning || evalCases.length === 0}
+                disabled={evalRunning || runnableEvalCases.length === 0}
                 className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
               >
                 <ClipboardCheck className="h-3.5 w-3.5" />
@@ -1079,6 +1146,21 @@ export function AdminPage() {
                   Eval Runs
                 </button>
                 <button
+                  onClick={() => setEvalWorkspaceView('signals')}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    evalWorkspaceView === 'signals'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                  }`}
+                >
+                  RAG Signals
+                  {ragSignals && (
+                    <span className="ml-1 text-[10px] opacity-80">
+                      ({ragSignals.signals.filter((signal) => signal.status !== 'ok').length})
+                    </span>
+                  )}
+                </button>
+                <button
                   onClick={() => setEvalWorkspaceView('feedback')}
                   className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
                     evalWorkspaceView === 'feedback'
@@ -1100,7 +1182,7 @@ export function AdminPage() {
                   <h2 className="text-sm font-semibold text-foreground">
                     {editingEvalCaseId ? 'Edit Eval Case' : 'Eval Cases'}
                   </h2>
-                  <span className="text-[10px] text-muted-foreground">{evalCases.filter((c) => c.enabled).length} enabled</span>
+                  <span className="text-[10px] text-muted-foreground">{runnableEvalCases.length} runnable</span>
                 </div>
                 <div className="mt-3 grid gap-3 md:grid-cols-2">
                   <label className="text-xs text-muted-foreground md:col-span-2">
@@ -1126,15 +1208,37 @@ export function AdminPage() {
                   <SettingInput label="Expected answer" value={evalForm.expectedAnswer} onChange={(v) => setEvalForm((prev) => ({ ...prev, expectedAnswer: v }))} />
                   <SettingInput label="Expected document ID" value={evalForm.expectedDocumentId} onChange={(v) => setEvalForm((prev) => ({ ...prev, expectedDocumentId: v }))} />
                   <SettingInput label="Tags" value={evalForm.tags} onChange={(v) => setEvalForm((prev) => ({ ...prev, tags: v }))} placeholder="billing, policy" />
+                  <label className="text-xs text-muted-foreground">
+                    Status
+                    <select
+                      value={evalForm.status}
+                      onChange={(e) => {
+                        const status = e.target.value as RagEvalCase['status']
+                        setEvalForm((prev) => ({
+                          ...prev,
+                          status,
+                          enabled: status === 'draft' ? false : prev.enabled,
+                        }))
+                      }}
+                      className="mt-1 w-full rounded-md border border-border bg-input px-3 py-2 text-sm text-foreground"
+                    >
+                      <option value="active">Active</option>
+                      <option value="draft">Draft</option>
+                    </select>
+                  </label>
                   <label className="flex items-center gap-2 pt-6 text-xs text-muted-foreground">
                     <input
                       type="checkbox"
                       checked={evalForm.enabled}
+                      disabled={evalForm.status === 'draft'}
                       onChange={(e) => setEvalForm((prev) => ({ ...prev, enabled: e.target.checked }))}
                     />
                     Enabled
                   </label>
                 </div>
+                {editingEvalCase?.source_type && editingEvalCase.source_type !== 'manual' && (
+                  <EvalCaseSourceReview item={editingEvalCase} />
+                )}
                 <div className="mt-3 flex justify-end gap-2">
                   {editingEvalCaseId && (
                     <button
@@ -1156,9 +1260,10 @@ export function AdminPage() {
                 </div>
 
                 <div className="mt-4 overflow-hidden rounded-lg border border-border">
-                  <div className="grid grid-cols-[1fr_240px_80px_150px] gap-3 border-b border-border bg-muted/30 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <div className="grid grid-cols-[1fr_220px_120px_90px_150px] gap-3 border-b border-border bg-muted/30 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                     <span>Question</span>
                     <span>Expected Facts</span>
+                    <span>Source</span>
                     <span>Status</span>
                     <span>Actions</span>
                   </div>
@@ -1168,31 +1273,34 @@ export function AdminPage() {
                     evalCases.map((item) => (
                       <div
                         key={item.id}
-                        className={`grid grid-cols-[1fr_240px_80px_150px] items-center gap-3 border-b border-border/50 px-4 py-3 text-xs ${
+                        className={`grid grid-cols-[1fr_220px_120px_90px_150px] items-center gap-3 border-b border-border/50 px-4 py-3 text-xs ${
                           editingEvalCaseId === item.id ? 'bg-primary/5' : ''
                         }`}
                       >
                         <span className="text-foreground">{item.question}</span>
-                        <span className="truncate text-muted-foreground">{item.expected_facts.join(' · ')}</span>
-                        <span className={item.enabled ? 'text-green-500' : 'text-muted-foreground'}>{item.enabled ? 'Enabled' : 'Off'}</span>
+                        <span className="truncate text-muted-foreground">{item.expected_facts.length ? item.expected_facts.join(' · ') : 'Needs expected facts'}</span>
+                        <span className="truncate text-muted-foreground">{formatEvalCaseSource(item)}</span>
+                        <EvalCaseStatusCell item={item} />
                         <span className="flex items-center gap-1.5">
                           <button
                             onClick={() => handleEditEvalCase(item)}
                             className="rounded-md border border-border bg-background px-2 py-1 text-[10px] font-semibold text-muted-foreground hover:bg-muted hover:text-foreground"
                           >
-                            Edit
+                            {item.status === 'draft' ? 'Review' : 'Edit'}
                           </button>
-                          <button
-                            onClick={() => handleToggleEvalCase(item)}
-                            disabled={evalLoading}
-                            className={`rounded-md px-2 py-1 text-[10px] font-semibold disabled:opacity-50 ${
-                              item.enabled
-                                ? 'bg-muted text-muted-foreground hover:bg-muted/70'
-                                : 'bg-green-500/10 text-green-500 hover:bg-green-500/20'
-                            }`}
-                          >
-                            {item.enabled ? 'Disable' : 'Enable'}
-                          </button>
+                          {item.status !== 'draft' && (
+                            <button
+                              onClick={() => handleToggleEvalCase(item)}
+                              disabled={evalLoading}
+                              className={`rounded-md px-2 py-1 text-[10px] font-semibold disabled:opacity-50 ${
+                                item.enabled
+                                  ? 'bg-muted text-muted-foreground hover:bg-muted/70'
+                                  : 'bg-green-500/10 text-green-500 hover:bg-green-500/20'
+                              }`}
+                            >
+                              {item.enabled ? 'Disable' : 'Enable'}
+                            </button>
+                          )}
                         </span>
                       </div>
                     ))
@@ -1285,6 +1393,13 @@ export function AdminPage() {
                 </div>
               </section>
                 </>
+              ) : evalWorkspaceView === 'signals' ? (
+                <RagSignalsPanel
+                  data={ragSignals}
+                  loading={signalsLoading}
+                  draftCount={qualityLoopDrafts.length}
+                  onReviewDrafts={() => setEvalWorkspaceView('runs')}
+                />
               ) : (
                 <section className="grid gap-5 lg:grid-cols-[380px_1fr]">
                   <div className="rounded-lg border border-border bg-card p-4">
@@ -1357,11 +1472,18 @@ export function AdminPage() {
                             </p>
                           </div>
                           <button
-                            onClick={() => handleSeedEvalCase(selectedQualityFeedback)}
+                            onClick={() => {
+                              if (selectedFeedbackDraft) {
+                                handleEditEvalCase(selectedFeedbackDraft)
+                                setEvalWorkspaceView('runs')
+                              } else {
+                                handleSeedEvalCase(selectedQualityFeedback)
+                              }
+                            }}
                             className="flex flex-shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90"
                           >
                             <Plus className="h-3.5 w-3.5" />
-                            Seed eval case
+                            {selectedFeedbackDraft ? 'Review draft' : 'Seed draft'}
                           </button>
                         </div>
 
@@ -1586,6 +1708,342 @@ function splitFactsInput(value: string): string[] {
 
 function isUuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+}
+
+function EvalCaseSourceReview({ item }: { item: RagEvalCase }) {
+  const metadata = asRecord(item.retrieval_metadata)
+  const feedback = asRecord(metadata.feedback)
+  const fallback = asRecord(metadata.fallback)
+  const conversation = asRecord(metadata.conversation)
+  const answer = asRecord(metadata.answer)
+  const retrieval = asRecord(metadata.retrieval)
+  const summary = asRecord(retrieval.summary)
+  const logs = asRecordArray(retrieval.logs)
+
+  return (
+    <div className="mt-4 rounded-md border border-border bg-background p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-xs font-semibold text-foreground">Quality Loop Source</h3>
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            {sourceTypeLabel(item.source_type)} · {item.source_ref_id || 'no source reference'}
+          </p>
+        </div>
+        <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-500">
+          Draft review
+        </span>
+      </div>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-4">
+        <SummaryTile label="Retrievals" value={displayMetadataValue(summary.retrieval_count ?? fallback.fallback_count)} />
+        <SummaryTile label="Sources" value={displayMetadataValue(summary.source_count)} />
+        <SummaryTile label="Top Score" value={formatMetadataScore(summary.top_score)} />
+        <SummaryTile label="Promoted" value={formatMetadataDate(metadata.promoted_at)} />
+      </div>
+
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        {item.source_type === 'thumbs_down_feedback' && (
+          <div className="rounded-md border border-border bg-card p-3">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Feedback</p>
+            <p className="mt-2 whitespace-pre-wrap text-xs text-foreground">
+              {displayMetadataValue(feedback.comment, 'Thumbs-down without comment')}
+            </p>
+            <p className="mt-2 text-[10px] text-muted-foreground">
+              {displayMetadataValue(feedback.client_email)} · {formatMetadataDate(feedback.created_at)}
+            </p>
+          </div>
+        )}
+        {item.source_type === 'fallback_retrieval' && (
+          <div className="rounded-md border border-border bg-card p-3">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Fallback Group</p>
+            <p className="mt-2 text-xs text-foreground">{displayMetadataValue(fallback.normalized_query)}</p>
+            <p className="mt-2 text-[10px] text-muted-foreground">
+              {displayMetadataValue(fallback.fallback_count)} events · {formatMetadataDate(fallback.first_seen_at)} to {formatMetadataDate(fallback.last_seen_at)}
+            </p>
+          </div>
+        )}
+        <div className="rounded-md border border-border bg-card p-3">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Conversation</p>
+          <p className="mt-2 text-xs text-foreground">{displayMetadataValue(conversation.thread_title, item.question)}</p>
+          <p className="mt-2 text-[10px] text-muted-foreground">
+            Thread {displayMetadataValue(conversation.thread_id)} · Answer {displayMetadataValue(conversation.answer_message_id)}
+          </p>
+        </div>
+      </div>
+
+      {Boolean(answer.content) && (
+        <div className="mt-3 rounded-md border border-border bg-card p-3">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Captured Answer</p>
+          <p className="mt-2 max-h-36 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-foreground">
+            {displayMetadataValue(answer.content)}
+          </p>
+        </div>
+      )}
+
+      <div className="mt-3 space-y-2">
+        <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Retrieval Metadata</p>
+        {logs.length === 0 ? (
+          <div className="rounded-md border border-border bg-card p-3 text-xs text-muted-foreground">No captured retrieval logs</div>
+        ) : (
+          logs.slice(0, 3).map((log, index) => {
+            const sources = asRecordArray(log.sources)
+            const diagnostics = asRecord(log.diagnostics)
+            return (
+              <div key={`${displayMetadataValue(log.id, 'log')}-${index}`} className="rounded-md border border-border bg-card p-3">
+                <div className="flex items-center justify-between gap-3 text-[10px] text-muted-foreground">
+                  <span className="truncate">{displayMetadataValue(log.query)}</span>
+                  <span className="flex-shrink-0">{displayMetadataValue(log.retrieval_mode)} · {formatMetadataScore(log.top_score)}</span>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                    {displayMetadataValue(log.source_count, '0')} source{displayMetadataValue(log.source_count, '0') === '1' ? '' : 's'}
+                  </span>
+                  {Boolean(log.retrieval_quality) && (
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{displayMetadataValue(log.retrieval_quality)}</span>
+                  )}
+                  {Boolean(diagnostics.fallback_reason) && (
+                    <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-500">
+                      {displayMetadataValue(diagnostics.fallback_reason)}
+                    </span>
+                  )}
+                  {diagnostics.web_result_count !== undefined && (
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                      {displayMetadataValue(diagnostics.web_result_count)} web
+                    </span>
+                  )}
+                </div>
+                {sources.length > 0 && (
+                  <div className="mt-2 space-y-1.5">
+                    {sources.slice(0, 3).map((source, sourceIndex) => (
+                      <div key={`${displayMetadataValue(source.chunk_id, 'source')}-${sourceIndex}`} className="rounded border border-border/70 bg-muted/20 px-2 py-1.5">
+                        <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                          <span className="truncate">{displayMetadataValue(source.filename, displayMetadataValue(source.document_id, 'Unknown document'))}</span>
+                          <span>{formatMetadataScore(source.score)}</span>
+                        </div>
+                        <p className="mt-1 line-clamp-2 text-[11px] text-foreground">
+                          {displayMetadataValue(source.snippet ?? source.content, 'No snippet captured')}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })
+        )}
+      </div>
+    </div>
+  )
+}
+
+function EvalCaseStatusCell({ item }: { item: RagEvalCase }) {
+  if (item.status === 'draft') {
+    return <span className="text-amber-500">Draft</span>
+  }
+  return <span className={item.enabled ? 'text-green-500' : 'text-muted-foreground'}>{item.enabled ? 'Enabled' : 'Off'}</span>
+}
+
+function formatEvalCaseSource(item: RagEvalCase): string {
+  if (!item.source_type || item.source_type === 'manual') return 'Manual'
+  return sourceTypeLabel(item.source_type)
+}
+
+function sourceTypeLabel(sourceType?: string | null): string {
+  if (sourceType === 'thumbs_down_feedback') return 'Thumbs-down'
+  if (sourceType === 'fallback_retrieval') return 'Fallback-heavy'
+  return sourceType || 'Manual'
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+}
+
+function asRecordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+    : []
+}
+
+function displayMetadataValue(value: unknown, fallback = 'n/a'): string {
+  if (value === null || value === undefined || value === '') return fallback
+  return String(value)
+}
+
+function formatMetadataScore(value: unknown): string {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric.toFixed(3) : 'n/a'
+}
+
+function formatMetadataDate(value: unknown): string {
+  if (!value) return 'n/a'
+  const date = new Date(String(value))
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString()
+}
+
+function RagSignalsPanel({
+  data,
+  loading,
+  draftCount,
+  onReviewDrafts,
+}: {
+  data: RagQualitySignalsResponse | null
+  loading: boolean
+  draftCount: number
+  onReviewDrafts: () => void
+}) {
+  if (loading && !data) {
+    return (
+      <section className="rounded-lg border border-border bg-card p-8 text-center text-xs text-muted-foreground">
+        <RefreshCw className="mx-auto h-5 w-5 animate-spin" />
+        <p className="mt-2">Loading RAG signals...</p>
+      </section>
+    )
+  }
+
+  if (!data) {
+    return (
+      <section className="rounded-lg border border-border bg-card p-8 text-center text-xs text-muted-foreground">
+        No signal data available
+      </section>
+    )
+  }
+
+  const flagged = data.signals.filter((signal) => signal.status !== 'ok')
+
+  return (
+    <section className="space-y-4">
+      <div className="rounded-lg border border-border bg-card p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-foreground">RAG Signals</h2>
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              Last {data.window_hours}h - {data.totals.retrieval_count ?? 0} retrievals - {flagged.length} signal{flagged.length !== 1 ? 's' : ''} flagged
+            </p>
+          </div>
+          <div className="grid grid-cols-4 gap-4 text-right text-[10px] text-muted-foreground">
+            <div>
+              <p className="font-semibold uppercase tracking-wider">Feedback</p>
+              <p className="mt-1 text-sm font-bold text-foreground">{data.totals.feedback_count ?? 0}</p>
+            </div>
+            <div>
+              <p className="font-semibold uppercase tracking-wider">Fallbacks</p>
+              <p className="mt-1 text-sm font-bold text-foreground">{data.totals.fallback_count ?? 0}</p>
+            </div>
+            <div>
+              <p className="font-semibold uppercase tracking-wider">P95</p>
+              <p className="mt-1 text-sm font-bold text-foreground">{formatLatency(data.totals.latency_p95_ms)}</p>
+            </div>
+            <button
+              type="button"
+              onClick={onReviewDrafts}
+              className="rounded-md border border-border bg-background px-3 py-2 text-right hover:bg-muted"
+            >
+              <p className="font-semibold uppercase tracking-wider">Drafts</p>
+              <p className="mt-1 text-sm font-bold text-foreground">{draftCount}</p>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        {data.signals.map((signal) => (
+          <SignalTile key={signal.id} signal={signal} />
+        ))}
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        {data.signals.map((signal) => (
+          <div key={`${signal.id}-examples`} className="rounded-lg border border-border bg-card p-4">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-xs font-semibold text-foreground">{signal.label} Examples</h3>
+              <SignalStatusPill status={signal.status} />
+            </div>
+            <div className="mt-3 space-y-2">
+              {signal.examples.length === 0 ? (
+                <div className="rounded-md border border-border bg-background p-3 text-xs text-muted-foreground">No recent examples</div>
+              ) : (
+                signal.examples.map((example, index) => (
+                  <div key={`${signal.id}-${example.id || index}`} className="rounded-md border border-border bg-background p-3">
+                    <div className="flex items-center justify-between gap-3 text-[10px] text-muted-foreground">
+                      <span className="truncate">{example.retrieval_mode || example.reason}</span>
+                      <span>{example.created_at ? new Date(example.created_at).toLocaleString() : 'recent'}</span>
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-xs font-semibold text-foreground">{example.query || example.reason}</p>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{example.reason}</span>
+                      {example.value !== null && example.value !== undefined && (
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{String(example.value)}</span>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function SignalTile({ signal }: { signal: RagQualitySignal }) {
+  return (
+    <div className={`rounded-lg border p-4 ${signalStatusClass(signal.status)}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider">{signal.label}</p>
+          <p className="mt-2 text-2xl font-bold">{formatSignalPrimary(signal)}</p>
+        </div>
+        {signal.status === 'ok' ? (
+          <CheckCircle className="h-4 w-4 flex-shrink-0" />
+        ) : (
+          <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+        )}
+      </div>
+      <p className="mt-3 min-h-10 text-[11px] leading-relaxed opacity-80">{signal.description}</p>
+      <div className="mt-3 flex items-center justify-between text-[10px] opacity-80">
+        <span>{signal.count} case{signal.count !== 1 ? 's' : ''}</span>
+        <span>{formatSignalRate(signal.rate)}</span>
+      </div>
+    </div>
+  )
+}
+
+function SignalStatusPill({ status }: { status: RagQualitySignal['status'] }) {
+  const label = status === 'ok' ? 'OK' : status === 'watch' ? 'Watch' : 'Critical'
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${signalPillClass(status)}`}>
+      {label}
+    </span>
+  )
+}
+
+function signalStatusClass(status: RagQualitySignal['status']): string {
+  if (status === 'critical') return 'border-destructive/50 bg-destructive/10 text-destructive'
+  if (status === 'watch') return 'border-amber-500/50 bg-amber-500/10 text-amber-500'
+  return 'border-green-500/30 bg-green-500/10 text-green-500'
+}
+
+function signalPillClass(status: RagQualitySignal['status']): string {
+  if (status === 'critical') return 'bg-destructive/10 text-destructive'
+  if (status === 'watch') return 'bg-amber-500/10 text-amber-500'
+  return 'bg-green-500/10 text-green-500'
+}
+
+function formatSignalPrimary(signal: RagQualitySignal): string {
+  if (signal.id === 'completion_latency') return formatLatency(signal.value)
+  return formatSignalRate(signal.rate)
+}
+
+function formatSignalRate(value: number): string {
+  return `${Math.round((value || 0) * 100)}%`
+}
+
+function formatLatency(value?: number | null): string {
+  if (value === null || value === undefined) return 'n/a'
+  return `${Math.round(value)}ms`
 }
 
 function StatusPill({ status }: { status: string }) {

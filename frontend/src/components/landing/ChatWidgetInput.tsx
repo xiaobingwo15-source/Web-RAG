@@ -34,7 +34,7 @@ export function ChatWidgetInput({
         onKeyDown={handleKeyDown}
         disabled={disabled}
         rows={1}
-        placeholder="Type a message"
+        placeholder="Ask about the RAG package"
         className="flex-1 resize-none rounded-lg border-none bg-white px-3 py-2.5 text-[15px] text-[#111B21] placeholder:text-[#8696A0] focus:outline-none disabled:opacity-50 min-h-[42px]"
         style={{ lineHeight: '1.35' }}
       />

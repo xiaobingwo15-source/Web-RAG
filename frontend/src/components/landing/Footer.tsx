@@ -1,122 +1,99 @@
-import { Share2, Mail, Globe, MapPin, Phone, Clock, Award } from 'lucide-react'
+import { ArrowRight, CalendarDays, CheckCircle2, LogIn, MessageCircleQuestion } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { markInteraction } from '@/lib/performance'
+
+const footerLinks = [
+  { label: 'Package', href: '#package' },
+  { label: 'Workflow', href: '#workflow' },
+  { label: 'Capabilities', href: '#capabilities' },
+  { label: 'Quality', href: '#governance' },
+]
+
+const readinessItems = [
+  'Source inventory',
+  'Primary use cases',
+  'Tenant roles',
+  'Evaluation questions',
+]
 
 export function Footer() {
   return (
-    <footer className="bg-surface-container border-t border-outline-variant mt-24">
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 w-full py-16 px-6 md:px-12 max-w-[1440px] mx-auto">
-        {/* Left Brand Column */}
-        <div className="lg:col-span-5">
-          <div className="font-semibold text-xs tracking-[0.2em] text-on-surface uppercase mb-4">
-            IE Industrial Electronics Technology
-          </div>
-          <p className="text-on-surface-variant text-sm leading-relaxed max-w-md mb-4">
-            A premium electronics repair and precision systems engineering facility in Klang. Calibrated for zero-failure industrial vertical markets.
+    <footer id="contact" className="mt-16 border-t border-outline-variant bg-[#0B1B33] text-white">
+      <div className="mx-auto grid w-full max-w-[1440px] grid-cols-1 gap-10 px-6 py-14 md:px-12 lg:grid-cols-[minmax(0,0.95fr)_minmax(320px,0.55fr)] lg:items-center">
+        <div>
+          <span className="mb-3 inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-[#A7F3D0]">
+            <CalendarDays className="h-4 w-4" />
+            Implementation next step
+          </span>
+          <h2 className="max-w-3xl text-3xl font-bold leading-tight md:text-5xl">
+            Ready to turn private knowledge into cited answers?
+          </h2>
+          <p className="mt-5 max-w-2xl text-sm leading-7 text-white/70 md:text-base">
+            Start with one high-value workflow, the source files behind it, and the success criteria your team will use to trust the answers.
           </p>
-          <div className="flex items-center gap-2 mb-6 bg-surface/50 border border-outline-variant rounded px-2.5 py-1.5 w-fit">
-            <Award className="text-secondary h-4 w-4" />
-            <span className="text-xs font-bold text-secondary">5.0</span>
-            <div className="flex text-secondary gap-0.5 text-xs">
-              {"★".repeat(5)}
-            </div>
-            <span className="text-[10px] font-semibold text-on-surface-variant uppercase tracking-wider">
-              5 Google Reviews
-            </span>
-          </div>
-          <div className="flex gap-4">
+          <div className="mt-7 flex flex-col gap-3 sm:flex-row">
             <a
-              href="#"
-              aria-label="Share"
-              className="text-on-surface-variant hover:text-primary transition-colors p-2 border border-outline-variant hover:border-primary rounded-sm bg-surface/50"
+              href="#package"
+              className="inline-flex items-center justify-center gap-2 rounded-sm bg-primary px-5 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-on-primary transition-all hover:bg-primary-container active:scale-95"
             >
-              <Share2 className="h-4 w-4" />
+              Review Package
+              <ArrowRight className="h-4 w-4" />
             </a>
-            <a
-              href="mailto:info@ieindustrial.com"
-              aria-label="Email"
-              className="text-on-surface-variant hover:text-primary transition-colors p-2 border border-outline-variant hover:border-primary rounded-sm bg-surface/50"
+            <Link
+              to="/login"
+              onClick={() => markInteraction('nav.portal')}
+              className="inline-flex items-center justify-center gap-2 rounded-sm border border-white/20 px-5 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-white transition-all hover:bg-white/10 active:scale-95"
             >
-              <Mail className="h-4 w-4" />
-            </a>
-            <a
-              href="#"
-              aria-label="Language"
-              className="text-on-surface-variant hover:text-primary transition-colors p-2 border border-outline-variant hover:border-primary rounded-sm bg-surface/50"
-            >
-              <Globe className="h-4 w-4" />
-            </a>
+              <LogIn className="h-4 w-4" />
+              Portal
+            </Link>
           </div>
         </div>
 
-        {/* Right Columns */}
-        <div className="lg:col-span-7 grid grid-cols-1 sm:grid-cols-3 gap-8">
-          <div>
-            <h5 className="font-semibold text-xs tracking-[0.2em] text-on-surface uppercase mb-4">
-              Navigation
-            </h5>
-            <div className="space-y-3">
-              <a href="#solutions" className="block text-sm text-on-surface-variant hover:text-primary transition-colors">
-                Specializations
-              </a>
-              <a href="#capabilities" className="block text-sm text-on-surface-variant hover:text-primary transition-colors">
-                Capabilities
-              </a>
-              <a href="#compliance" className="block text-sm text-on-surface-variant hover:text-primary transition-colors">
-                Compliance Standards
-              </a>
+        <div className="rounded-lg border border-white/12 bg-white/7 p-6">
+          <div className="flex items-start gap-3">
+            <MessageCircleQuestion className="mt-0.5 h-6 w-6 text-[#F7B267]" />
+            <div>
+              <h3 className="text-base font-bold">Bring to discovery</h3>
+              <p className="mt-2 text-sm leading-6 text-white/65">
+                The package scopes fastest when your first use case and source inventory are clear.
+              </p>
             </div>
           </div>
-
-          <div>
-            <h5 className="font-semibold text-xs tracking-[0.2em] text-on-surface uppercase mb-4">
-              Legal
-            </h5>
-            <div className="space-y-3">
-              <a href="#" className="block text-sm text-on-surface-variant hover:text-primary transition-colors">
-                Terms of Service
-              </a>
-              <a href="#" className="block text-sm text-on-surface-variant hover:text-primary transition-colors">
-                Security Whitepaper
-              </a>
-            </div>
-          </div>
-
-          <div id="contact">
-            <h5 className="font-semibold text-xs tracking-[0.2em] text-on-surface uppercase mb-4">
-              Contact &amp; Location
-            </h5>
-            <div className="space-y-4">
-              <div className="flex gap-2">
-                <MapPin className="h-5 w-5 text-secondary shrink-0 mt-0.5" />
-                <span className="text-xs text-on-surface-variant leading-relaxed">
-                  Duro Metal Industrial (M) Sdn. Bhd., NO.117, BATU, Jalan Kapar, 42100 Klang, Selangor
+          <div className="mt-5 grid gap-3">
+            {readinessItems.map((item) => (
+              <div key={item} className="flex items-center gap-2 rounded-sm border border-white/10 bg-white/6 px-3 py-2">
+                <CheckCircle2 className="h-4 w-4 text-[#A7F3D0]" />
+                <span className="text-xs font-semibold uppercase tracking-[0.1em] text-white/82">
+                  {item}
                 </span>
               </div>
-              <div className="flex items-center gap-2">
-                <Phone className="h-4 w-4 text-secondary shrink-0" />
-                <a href="tel:0163628633" className="text-xs text-on-surface-variant hover:text-primary transition-colors font-mono">
-                  016-362 8633
-                </a>
-              </div>
-              <div className="flex items-center gap-2">
-                <Clock className="h-4 w-4 text-secondary shrink-0" />
-                <span className="text-xs text-on-surface-variant">
-                  Opens 9:30 AM (Thu - Tue)
-                </span>
-              </div>
-              <div className="text-[10px] text-on-surface-variant/70 border-t border-outline-variant/50 pt-2 font-mono">
-                Transit: 21 mins 🚆
-              </div>
-            </div>
+            ))}
           </div>
         </div>
       </div>
 
-      <div className="w-full py-6 border-t border-outline-variant px-6 text-center bg-surface-container-low">
-        <p className="text-xs text-on-surface-variant/60">
-          © 2026 IE Industrial Electronics Technology. All rights reserved.
+      <div className="mx-auto grid w-full max-w-[1440px] grid-cols-1 gap-6 border-t border-white/10 px-6 py-8 md:grid-cols-[minmax(0,1fr)_auto] md:px-12">
+        <div>
+          <div className="text-sm font-bold">Web-RAG</div>
+          <p className="mt-2 max-w-xl text-xs leading-6 text-white/55">
+            A production RAG package with ingestion, retrieval, chat, widget access, admin controls, and quality review loops.
+          </p>
+        </div>
+        <nav className="flex flex-wrap gap-x-5 gap-y-2 text-xs font-semibold uppercase tracking-[0.12em] text-white/65">
+          {footerLinks.map((link) => (
+            <a key={link.href} href={link.href} className="transition-colors hover:text-[#A7F3D0]">
+              {link.label}
+            </a>
+          ))}
+        </nav>
+      </div>
+
+      <div className="border-t border-white/10 px-6 py-5 text-center">
+        <p className="text-xs text-white/45">
+          Copyright 2026 Web-RAG. All rights reserved.
         </p>
       </div>
     </footer>
-  );
+  )
 }
-

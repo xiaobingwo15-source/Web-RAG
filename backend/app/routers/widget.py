@@ -16,6 +16,7 @@ from app.services.database import (
     get_tenant_admin_user_id,
     save_widget_feedback,
     save_widget_message,
+    update_retrieval_logs_for_answer,
 )
 from app.services.widget_tokens import create_widget_token, verify_widget_token
 from app.services.rate_limit import check_rate_limit
@@ -163,6 +164,11 @@ async def chat_stream(
 
     async def event_generator():
         full_response = ""
+        retrieval_log_ids: list[str] = []
+        groundedness_score: float | None = None
+        groundedness_flag = False
+        retrieval_quality: str | None = None
+        rag_diagnostics: dict | None = None
         async for event in agent_execute(
             token="",
             user_id=session_id,
@@ -179,6 +185,12 @@ async def chat_stream(
         ):
             if event["type"] == "token":
                 full_response += event["content"]
+            if event["type"] == "rag_quality":
+                retrieval_log_ids = event.get("retrieval_log_ids", []) or retrieval_log_ids
+                groundedness_score = event.get("groundedness")
+                groundedness_flag = bool(event.get("groundedness_flag"))
+                retrieval_quality = event.get("retrieval_quality")
+                rag_diagnostics = event.get("diagnostics")
             if event["type"] == "error":
                 save_widget_message(tenant_id, session_id, thread_id, "assistant", event["content"])
                 yield {"data": json_lib.dumps({"type": "error", "content": event["content"], "error_code": event.get("error_code", "unknown"), "thread_id": thread_id})}
@@ -187,6 +199,16 @@ async def chat_stream(
 
         saved = save_widget_message(tenant_id, session_id, thread_id, "assistant", full_response)
         saved_id = str(saved["id"]) if saved and "id" in saved else None
+        if saved_id and retrieval_log_ids:
+            update_retrieval_logs_for_answer(
+                tenant_id=tenant_id,
+                retrieval_log_ids=retrieval_log_ids,
+                answer_message_id=saved_id,
+                groundedness_score=groundedness_score,
+                groundedness_flag=groundedness_flag,
+                retrieval_quality=retrieval_quality,
+                diagnostics=rag_diagnostics,
+            )
         yield {"data": json_lib.dumps({"type": "done", "content": "", "thread_id": thread_id, "done": True, "message_id": saved_id})}
 
     return EventSourceResponse(event_generator())

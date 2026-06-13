@@ -1,18 +1,23 @@
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 RetrievalMode = Literal["vector", "fts", "hybrid"]
+RagEvalCaseStatus = Literal["draft", "active"]
 
 
 class RagEvalCaseCreate(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000)
-    expected_facts: list[str] = Field(..., min_length=1)
+    expected_facts: list[str] = Field(default_factory=list)
     expected_answer: Optional[str] = None
     expected_document_id: Optional[UUID] = None
-    tags: list[str] = []
+    tags: list[str] = Field(default_factory=list)
     enabled: bool = True
+    status: RagEvalCaseStatus = "active"
+    source_type: Optional[str] = None
+    source_ref_id: Optional[str] = None
+    retrieval_metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("question")
     @classmethod
@@ -24,14 +29,24 @@ class RagEvalCaseCreate(BaseModel):
     def strip_list(cls, value: list[str]) -> list[str]:
         return [item.strip() for item in value if item and item.strip()]
 
+    @model_validator(mode="after")
+    def active_cases_need_expected_facts(self):
+        if self.status == "active" and self.enabled and not self.expected_facts:
+            raise ValueError("active enabled eval cases need at least one expected fact")
+        return self
+
 
 class RagEvalCaseUpdate(BaseModel):
     question: Optional[str] = Field(None, min_length=1, max_length=2000)
-    expected_facts: Optional[list[str]] = Field(None, min_length=1)
+    expected_facts: Optional[list[str]] = None
     expected_answer: Optional[str] = None
     expected_document_id: Optional[UUID] = None
     tags: Optional[list[str]] = None
     enabled: Optional[bool] = None
+    status: Optional[RagEvalCaseStatus] = None
+    source_type: Optional[str] = None
+    source_ref_id: Optional[str] = None
+    retrieval_metadata: Optional[dict[str, Any]] = None
 
     @field_validator("question")
     @classmethod
@@ -56,6 +71,10 @@ class RagEvalCaseResponse(BaseModel):
     expected_document_id: Optional[str] = None
     tags: list[str]
     enabled: bool
+    status: RagEvalCaseStatus = "active"
+    source_type: Optional[str] = None
+    source_ref_id: Optional[str] = None
+    retrieval_metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: str
     updated_at: str
 

@@ -14,7 +14,7 @@ export function LandingPage() {
   }, [])
 
   return (
-    <div className="min-h-screen bg-background text-foreground select-none">
+    <div className="min-h-screen bg-background text-foreground">
       <Navbar />
       <HeroSection />
       <ServicesSection />
