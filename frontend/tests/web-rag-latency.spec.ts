@@ -35,7 +35,7 @@ test('public route and widget interactions stay responsive', async ({ page }) =>
 
   const route = await measure(async () => {
     await page.goto('/')
-    await expect(page.getByText(/IE Industrial/i).first()).toBeVisible()
+    await expect(page.getByText(/Web-RAG RAG System Package/i).first()).toBeVisible()
   })
   expect(route.duration).toBeLessThan(PUBLIC_INTERACTIVE_MS)
   await expectNoAppCrash(page)
@@ -43,7 +43,7 @@ test('public route and widget interactions stay responsive', async ({ page }) =>
 
   const openDuration = await measureAppInteraction(page, 'widget.open', async () => {
     await page.locator('button.fixed').click()
-    await expect(page.getByText('IE Industrial Technology')).toBeVisible()
+    await expect(page.getByText('Web-RAG Assistant')).toBeVisible()
   })
   expect(openDuration).toBeLessThan(CLICK_FEEDBACK_MS)
 

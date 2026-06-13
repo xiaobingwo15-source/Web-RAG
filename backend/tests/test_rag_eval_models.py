@@ -25,6 +25,22 @@ class RagEvalModelTests(unittest.TestCase):
             "550e8400-e29b-41d4-a716-446655440000",
         )
 
+    def test_active_enabled_case_requires_expected_facts(self):
+        with self.assertRaises(ValidationError):
+            RagEvalCaseCreate(question="What should be covered?")
+
+    def test_draft_case_can_wait_for_expected_facts(self):
+        case = RagEvalCaseCreate(
+            question="What should be covered?",
+            status="draft",
+            enabled=False,
+            source_type="thumbs_down_feedback",
+            source_ref_id="feedback-1",
+        )
+
+        self.assertEqual(case.status, "draft")
+        self.assertEqual(case.expected_facts, [])
+
     def test_update_expected_document_id_must_be_uuid_when_present(self):
         with self.assertRaises(ValidationError):
             RagEvalCaseUpdate(expected_document_id="55555")

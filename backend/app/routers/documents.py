@@ -192,5 +192,7 @@ async def delete_document_endpoint(document_id: str, user=Depends(get_current_us
 
     archived = archive_document(user.access_token, document_id)
     filename = archived["filename"] if archived else doc["filename"]
+    from app.services.semantic_cache import clear_semantic_cache
+    clear_semantic_cache(f"document archived {document_id}")
 
     return {"message": f"Document '{filename}' archived", "filename": filename}

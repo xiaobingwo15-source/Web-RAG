@@ -13,6 +13,7 @@ from app.services.database import (
     list_rag_eval_cases,
     list_rag_eval_results,
     list_rag_eval_runs,
+    list_rag_quality_signals,
     list_rag_quality_thumbs_down,
     get_tenant_admin_invite,
     get_thread_messages_admin,
@@ -32,8 +33,9 @@ from app.models.rag_eval import (
     RagEvalRunDetail,
     RagEvalRunSummary,
 )
-from app.models.rag_quality import RagQualityThumbsDownResponse
+from app.models.rag_quality import RagQualitySignalsResponse, RagQualityThumbsDownResponse
 from app.services.rag_eval import run_rag_eval
+from app.services.rag_quality_loop import sync_quality_loop_eval_drafts
 from app.services.widget_tokens import hash_token
 
 logger = logging.getLogger(__name__)
@@ -227,6 +229,10 @@ async def save_settings(settings: SystemSettingsSchema, user=Depends(get_current
 @router.get("/rag-evals/cases", response_model=list[RagEvalCaseResponse])
 async def get_rag_eval_cases(user=Depends(get_current_user)):
     _verify_admin(user)
+    try:
+        sync_quality_loop_eval_drafts(user.tenant_id)
+    except Exception:
+        logger.exception("Failed to sync RAG quality-loop eval drafts")
     return list_rag_eval_cases(user.tenant_id)
 
 
@@ -282,6 +288,20 @@ async def start_rag_eval_run(request: RagEvalRunCreate, user=Depends(get_current
 async def get_rag_quality_thumbs_down(limit: int = 50, user=Depends(get_current_user)):
     _verify_admin(user)
     return {"items": list_rag_quality_thumbs_down(user.tenant_id, limit=limit)}
+
+
+@router.get("/rag-quality/signals", response_model=RagQualitySignalsResponse)
+async def get_rag_quality_signals(
+    window_hours: int = 168,
+    limit: int = 50,
+    user=Depends(get_current_user),
+):
+    _verify_admin(user)
+    return list_rag_quality_signals(
+        user.tenant_id,
+        window_hours=window_hours,
+        limit=limit,
+    )
 
 
 # --- Admin Manual Answer endpoints ---

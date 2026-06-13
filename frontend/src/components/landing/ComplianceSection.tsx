@@ -1,78 +1,74 @@
-import { CheckCircle2 } from 'lucide-react'
+import { CheckCircle2, ClipboardCheck, LockKeyhole, MessageSquareWarning, ShieldCheck } from 'lucide-react'
+import outcomeStory from '@/assets/rag-outcome-story.png'
+
+const governanceItems = [
+  {
+    icon: ShieldCheck,
+    title: 'Tenant-aware access',
+    body: 'Public widget sessions, client chat, admin review, and owner approvals stay separated by tenant and role.',
+  },
+  {
+    icon: ClipboardCheck,
+    title: 'Evaluation-ready answers',
+    body: 'Admins can seed RAG eval cases, run quality checks, and inspect answer relevance, context relevance, and groundedness.',
+  },
+  {
+    icon: MessageSquareWarning,
+    title: 'Feedback review',
+    body: 'Thumbs-down answers resolve back to retrieval logs, source chunks, and failure signals for targeted fixes.',
+  },
+  {
+    icon: LockKeyhole,
+    title: 'Controlled configuration',
+    body: 'Provider keys, OCR limits, parser choices, embeddings, rerankers, and web fallback settings live behind admin controls.',
+  },
+]
 
 export function ComplianceSection() {
   return (
-    <section id="compliance" className="py-24 px-6 md:px-12 max-w-[1440px] mx-auto overflow-hidden scroll-mt-20">
-      <div className="grid grid-cols-1 md:grid-cols-3 items-center gap-12">
-        <div className="md:col-span-1">
-          <h2 className="text-2xl md:text-3xl font-bold text-on-surface mb-6">
-            Compliance &amp; Global Standards
+    <section id="governance" className="scroll-mt-24 overflow-hidden px-6 py-20 md:px-12 md:py-24">
+      <div className="mx-auto grid max-w-[1440px] grid-cols-1 gap-12 lg:grid-cols-[minmax(0,0.95fr)_minmax(420px,1.05fr)] lg:items-center">
+        <div>
+          <span className="mb-3 block text-xs font-semibold uppercase tracking-[0.2em] text-primary">
+            Quality and governance
+          </span>
+          <h2 className="text-3xl font-bold leading-tight text-on-surface md:text-5xl">
+            Built for answers your team can inspect and improve.
           </h2>
-          <p className="text-on-surface-variant text-sm md:text-base leading-relaxed mb-8">
-            Every component leaving our facility undergoes a 42-point automated optical inspection (AOI) to ensure total compliance with international industrial safety and quality standards.
+          <p className="mt-6 text-sm leading-7 text-on-surface-variant md:text-base">
+            RAG failures are operational problems, not mysteries. Web-RAG keeps retrieval evidence, user feedback, eval cases, and admin responses close to the conversations that need review.
           </p>
-          <div className="flex flex-wrap gap-4">
-            <div className="flex items-center gap-2 bg-surface-container-high px-4 py-2 border border-outline-variant rounded-sm">
-              <CheckCircle2 className="text-primary h-4 w-4" />
-              <span className="font-semibold text-xs tracking-wider uppercase text-on-surface">
-                ISO 9001:2015
-              </span>
-            </div>
-            <div className="flex items-center gap-2 bg-surface-container-high px-4 py-2 border border-outline-variant rounded-sm">
-              <CheckCircle2 className="text-primary h-4 w-4" />
-              <span className="font-semibold text-xs tracking-wider uppercase text-on-surface">
-                IPC-A-610 CLASS 3
-              </span>
-            </div>
+          <div className="mt-8 grid gap-3 sm:grid-cols-2">
+            {governanceItems.map(({ icon: Icon, title, body }) => (
+              <article key={title} className="rounded-lg border border-outline-variant bg-surface p-5 shadow-sm">
+                <Icon className="mb-4 h-7 w-7 text-primary" />
+                <h3 className="text-sm font-bold text-on-surface">{title}</h3>
+                <p className="mt-2 text-sm leading-6 text-on-surface-variant">{body}</p>
+              </article>
+            ))}
           </div>
         </div>
 
-        <div className="md:col-span-2 relative">
-          <div className="relative w-full h-64 bg-surface-container border border-outline-variant flex items-center justify-center group overflow-hidden rounded-sm">
-            {/* Tech aesthetic background grid */}
-            <div 
-              className="absolute inset-0 opacity-[0.03] pointer-events-none" 
-              style={{
-                backgroundImage: 'radial-gradient(#fff 1px, transparent 1px)',
-                backgroundSize: '20px 20px'
-              }}
-            ></div>
-            
-            <div className="z-10 flex gap-8 md:gap-12 flex-wrap justify-center items-center">
-              <div className="text-center opacity-50 group-hover:opacity-100 transition-opacity duration-300">
-                <div className="w-16 h-16 border border-outline-variant mb-2 flex items-center justify-center font-bold text-base md:text-lg text-on-surface rounded-sm bg-surface/50">
-                  RoHS
-                </div>
-                <span className="text-[10px] tracking-wider uppercase font-semibold text-on-surface-variant">
-                  Compliant
+        <div className="relative">
+          <figure className="overflow-hidden rounded-lg border border-outline-variant bg-surface shadow-xl">
+            <img
+              className="h-full w-full object-cover"
+              src={outcomeStory}
+              alt="RAG system outcomes across support triage, sales analysis, and policy questions"
+            />
+          </figure>
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            {['Sources captured', 'Feedback linked', 'Eval cases ready'].map((item) => (
+              <div key={item} className="flex items-center gap-2 rounded-sm border border-outline-variant bg-surface-container-low px-3 py-2">
+                <CheckCircle2 className="h-4 w-4 text-primary" />
+                <span className="text-xs font-semibold uppercase tracking-[0.1em] text-on-surface">
+                  {item}
                 </span>
               </div>
-              <div className="text-center opacity-50 group-hover:opacity-100 transition-opacity duration-300">
-                <div className="w-16 h-16 border border-outline-variant mb-2 flex items-center justify-center font-bold text-base md:text-lg text-on-surface rounded-sm bg-surface/50">
-                  UL
-                </div>
-                <span className="text-[10px] tracking-wider uppercase font-semibold text-on-surface-variant">
-                  Certified
-                </span>
-              </div>
-              <div className="text-center opacity-50 group-hover:opacity-100 transition-opacity duration-300">
-                <div className="w-16 h-16 border border-outline-variant mb-2 flex items-center justify-center font-bold text-base md:text-lg text-on-surface rounded-sm bg-surface/50">
-                  CE
-                </div>
-                <span className="text-[10px] tracking-wider uppercase font-semibold text-on-surface-variant">
-                  Standard
-                </span>
-              </div>
-            </div>
-
-            {/* Crosshair decorations */}
-            <div className="absolute top-4 left-4 w-4 h-4 border-t border-l border-primary/40"></div>
-            <div className="absolute top-4 right-4 w-4 h-4 border-t border-r border-primary/40"></div>
-            <div className="absolute bottom-4 left-4 w-4 h-4 border-b border-l border-primary/40"></div>
-            <div className="absolute bottom-4 right-4 w-4 h-4 border-b border-r border-primary/40"></div>
+            ))}
           </div>
         </div>
       </div>
     </section>
-  );
+  )
 }

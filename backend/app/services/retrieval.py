@@ -253,6 +253,7 @@ async def retrieve_context(
     target_user_id: str | None = None,
     tenant_id: str | None = None,
     thread_id: str | None = None,
+    diagnostics: dict | None = None,
 ) -> dict:
     """Retrieve context chunks with source metadata.
 
@@ -271,6 +272,10 @@ async def retrieve_context(
 
     # For vector/hybrid modes, we'll populate the cache after retrieval
     # For FTS mode, skip caching (no embedding available)
+    retrieval_diagnostics = {
+        "match_count": match_count,
+        **(diagnostics or {}),
+    }
 
     if target_user_id is None:
         target_user_id = user_id
@@ -327,6 +332,12 @@ async def retrieve_context(
                 sources=log_sources,
                 chunks=log_chunks,
                 retrieval_quality=retrieval_quality,
+                diagnostics={
+                    **retrieval_diagnostics,
+                    "chunk_count": len(chunks),
+                    "source_count": len(sources),
+                    "cache_hit": bool(retrieval_diagnostics.get("cache_hit")),
+                },
             )
             if log_row and log_row.get("id"):
                 result["retrieval_log_ids"] = [log_row["id"]]
@@ -340,6 +351,7 @@ async def retrieve_context(
     if mode == "fts":
         fts_start = monotonic_ms()
         chunks = await asyncio.to_thread(search_chunks_fts, token, target_user_id, message, match_count, tenant_id)
+        retrieval_diagnostics["fts_result_count"] = len(chunks)
         log_latency(
             "retrieval.fts",
             elapsed_ms(fts_start),
@@ -400,6 +412,7 @@ async def retrieve_context(
         # Check semantic cache after we have the embedding
         cached = cache.lookup(query_embedding, namespace=cache_namespace)
         if cached is not None:
+            retrieval_diagnostics["cache_hit"] = True
             logger.info("Semantic cache hit — returning cached retrieval result")
             log_latency(
                 "retrieval.cache_hit",
@@ -421,6 +434,8 @@ async def retrieve_context(
             similarity_threshold=VECTOR_SIMILARITY_THRESHOLD,
             tenant_id=tenant_id,
         )
+        retrieval_diagnostics["vector_result_count"] = len(vector_results)
+        retrieval_diagnostics["fts_result_count"] = len(fts_results)
         log_latency(
             "retrieval.qdrant_vector",
             elapsed_ms(vector_start),
@@ -436,6 +451,7 @@ async def retrieve_context(
         logger.info(f"Hybrid retrieval: vector={len(vector_results)} results, fts={len(fts_results)} results")
 
         if not vector_results and not fts_results:
+            retrieval_diagnostics["fallback_reason"] = "no_retrieval_results"
             print(f"[RETRIEVAL] WARNING: NO results from Qdrant or FTS. Documents may not be indexed for user_id={target_user_id}")
             logger.warning("Hybrid retrieval: NO results from either Qdrant vector search or Supabase FTS. Check if documents are properly indexed.")
             return _empty()
@@ -447,6 +463,7 @@ async def retrieve_context(
             w_vector, w_fts = 0.3, 0.7
         else:
             w_vector, w_fts = 0.7, 0.3
+        retrieval_diagnostics["query_type"] = query_type
         logger.info(f"RRF query_type={query_type}, w_vector={w_vector}, w_fts={w_fts}")
         combined: dict[str, dict] = {}
 
@@ -467,12 +484,14 @@ async def retrieve_context(
         diverse_results = _mmr_diversify(sorted_results, lambda_param=MMR_LAMBDA, top_n=match_count * 2)
         candidates = [r["content"] for r in diverse_results]
         candidate_metas = diverse_results
+        retrieval_diagnostics["candidate_count"] = len(candidates)
         logger.info(f"Hybrid RRF merge: {len(combined)} unique -> {len(candidates)} after MMR diversification")
 
         if candidates:
             rerank_start = monotonic_ms()
             candidate_scores = [m.get("score", 0) for m in candidate_metas]
             scored = await rerank_with_cohere(message, candidates, top_n=match_count, fallback_scores=candidate_scores)
+            retrieval_diagnostics["rerank_result_count"] = len(scored)
             log_latency(
                 "retrieval.rerank",
                 elapsed_ms(rerank_start),
@@ -507,6 +526,7 @@ async def retrieve_context(
 
         # Fallback to vector-only
         logger.warning("Hybrid: RRF merge produced 0 candidates, falling back to vector-only")
+        retrieval_diagnostics["fallback_reason"] = "hybrid_no_candidates"
         fallback_vector_start = monotonic_ms()
         chunks = await search_similar_chunks(
             target_user_id or "",
@@ -515,6 +535,7 @@ async def retrieve_context(
             similarity_threshold=VECTOR_SIMILARITY_THRESHOLD,
             tenant_id=tenant_id,
         )
+        retrieval_diagnostics["vector_fallback_result_count"] = len(chunks)
         log_latency(
             "retrieval.qdrant_vector_fallback",
             elapsed_ms(fallback_vector_start),
@@ -549,6 +570,7 @@ async def retrieve_context(
     # Check semantic cache
     cached = cache.lookup(query_embedding, namespace=cache_namespace)
     if cached is not None:
+        retrieval_diagnostics["cache_hit"] = True
         logger.info("Semantic cache hit (vector mode) — returning cached result")
         log_latency(
             "retrieval.cache_hit",
@@ -569,6 +591,7 @@ async def retrieve_context(
         similarity_threshold=VECTOR_SIMILARITY_THRESHOLD,
         tenant_id=tenant_id,
     )
+    retrieval_diagnostics["vector_result_count"] = len(chunks)
     log_latency(
         "retrieval.qdrant_vector",
         elapsed_ms(vector_start),

@@ -722,6 +722,10 @@ export interface RagEvalCase {
   expected_document_id?: string | null
   tags: string[]
   enabled: boolean
+  status: 'draft' | 'active'
+  source_type?: string | null
+  source_ref_id?: string | null
+  retrieval_metadata?: Record<string, unknown> | null
   created_at: string
   updated_at: string
 }
@@ -733,6 +737,10 @@ export interface RagEvalCaseCreate {
   expected_document_id?: string | null
   tags?: string[]
   enabled?: boolean
+  status?: 'draft' | 'active'
+  source_type?: string | null
+  source_ref_id?: string | null
+  retrieval_metadata?: Record<string, unknown> | null
 }
 
 export type RagEvalCaseUpdate = Partial<RagEvalCaseCreate>
@@ -803,6 +811,7 @@ export interface RagQualityRetrievalLog {
   groundedness_score?: number | null
   groundedness_flag: boolean
   retrieval_quality?: string | null
+  diagnostics?: Record<string, unknown> | null
 }
 
 export interface RagQualitySummary {
@@ -836,6 +845,37 @@ export interface RagQualityFeedbackItem {
 
 export interface RagQualityThumbsDownResponse {
   items: RagQualityFeedbackItem[]
+}
+
+export type RagQualitySignalStatus = 'ok' | 'watch' | 'critical'
+
+export interface RagQualitySignalExample {
+  id?: string | null
+  query?: string | null
+  created_at?: string | null
+  retrieval_mode?: string | null
+  value?: string | number | null
+  reason: string
+  details: Record<string, unknown>
+}
+
+export interface RagQualitySignal {
+  id: string
+  label: string
+  description: string
+  status: RagQualitySignalStatus
+  count: number
+  rate: number
+  threshold: number
+  value?: number | null
+  examples: RagQualitySignalExample[]
+}
+
+export interface RagQualitySignalsResponse {
+  window_hours: number
+  limit: number
+  totals: Record<string, number | null>
+  signals: RagQualitySignal[]
 }
 
 export async function getRagEvalCases(token: string): Promise<RagEvalCase[]> {
@@ -913,6 +953,21 @@ export async function getRagQualityThumbsDown(
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!response.ok) throw new Error(`Fetch RAG quality feedback failed: ${response.status}`)
+  return response.json()
+}
+
+export async function getRagQualitySignals(
+  token: string,
+  params: { window_hours?: number; limit?: number } = {},
+): Promise<RagQualitySignalsResponse> {
+  const search = new URLSearchParams({
+    window_hours: String(params.window_hours || 168),
+    limit: String(params.limit || 50),
+  })
+  const response = await fetch(`/api/admin/rag-quality/signals?${search.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Fetch RAG quality signals failed: ${response.status}`)
   return response.json()
 }
 

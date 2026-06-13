@@ -1,6 +1,6 @@
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from supabase import Client
 from app.services.supabase import get_supabase_client, get_supabase_client_with_token
 
@@ -848,13 +848,17 @@ def list_rag_eval_cases(tenant_id: str, enabled_only: bool = False) -> list[dict
         .order("created_at", desc=True)
     )
     if enabled_only:
-        query = query.eq("enabled", True)
-    return query.execute().data
+        query = query.eq("enabled", True).eq("status", "active")
+    rows = query.execute().data or []
+    if enabled_only:
+        return [row for row in rows if row.get("expected_facts")]
+    return rows
 
 
 def create_rag_eval_case(tenant_id: str, payload: dict) -> dict:
     db = get_db()
     suite = get_or_create_default_eval_suite(tenant_id)
+    status = payload.get("status") or "active"
     row = {
         "tenant_id": tenant_id,
         "suite_id": suite["id"],
@@ -863,7 +867,11 @@ def create_rag_eval_case(tenant_id: str, payload: dict) -> dict:
         "expected_answer": payload.get("expected_answer"),
         "expected_document_id": payload.get("expected_document_id") or None,
         "tags": payload.get("tags") or [],
-        "enabled": payload.get("enabled", True),
+        "enabled": payload.get("enabled", status != "draft"),
+        "status": status,
+        "source_type": payload.get("source_type") or None,
+        "source_ref_id": payload.get("source_ref_id") or None,
+        "retrieval_metadata": payload.get("retrieval_metadata") or {},
     }
     result = db.table("rag_eval_cases").insert(row).execute()
     return result.data[0]
@@ -878,6 +886,10 @@ def update_rag_eval_case(tenant_id: str, case_id: str, payload: dict) -> dict | 
         "expected_document_id",
         "tags",
         "enabled",
+        "status",
+        "source_type",
+        "source_ref_id",
+        "retrieval_metadata",
     }
     updates = {key: value for key, value in payload.items() if key in allowed}
     if not updates:
@@ -1123,6 +1135,7 @@ def log_retrieval(
     sources: list[dict] | None = None,
     chunks: list[str] | None = None,
     retrieval_quality: str | None = None,
+    diagnostics: dict | None = None,
 ) -> dict | None:
     """Log a retrieval request for analytics. Fire-and-forget — returns None on error."""
     try:
@@ -1134,6 +1147,7 @@ def log_retrieval(
             "source_count": source_count,
             "sources": sources or [],
             "chunks": chunks or [],
+            "diagnostics": diagnostics or {},
             **({"top_score": top_score} if top_score is not None else {}),
             **({"duration_ms": duration_ms} if duration_ms is not None else {}),
             **({"user_id": user_id} if user_id else {}),
@@ -1167,6 +1181,30 @@ def get_retrieval_logs(
     return query.execute().data
 
 
+def list_recent_retrieval_logs(
+    tenant_id: str,
+    window_hours: int = 168,
+    limit: int = 200,
+) -> list[dict]:
+    """Fetch recent retrieval logs for quality-loop promotion."""
+    db = get_db()
+    window_hours = min(max(int(window_hours or 168), 1), 24 * 30)
+    limit = min(max(int(limit or 200), 1), 500)
+    cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
+    cutoff_iso = cutoff.isoformat().replace("+00:00", "Z")
+    return (
+        db.table("retrieval_logs")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .gte("created_at", cutoff_iso)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+        .data
+        or []
+    )
+
+
 def update_retrieval_logs_for_answer(
     tenant_id: str,
     retrieval_log_ids: list[str],
@@ -1174,6 +1212,7 @@ def update_retrieval_logs_for_answer(
     groundedness_score: float | None = None,
     groundedness_flag: bool = False,
     retrieval_quality: str | None = None,
+    diagnostics: dict | None = None,
 ) -> None:
     """Attach retrieval evidence rows to the saved assistant message."""
     ids = [log_id for log_id in retrieval_log_ids if log_id]
@@ -1187,17 +1226,88 @@ def update_retrieval_logs_for_answer(
         updates["groundedness_score"] = groundedness_score
     if retrieval_quality:
         updates["retrieval_quality"] = retrieval_quality
+    if diagnostics is not None:
+        updates["diagnostics"] = diagnostics
     try:
         db = get_db()
-        (
+        if diagnostics is None:
+            (
+                db.table("retrieval_logs")
+                .update(updates)
+                .eq("tenant_id", tenant_id)
+                .in_("id", ids)
+                .execute()
+            )
+            return
+
+        existing_rows = (
             db.table("retrieval_logs")
-            .update(updates)
+            .select("id, diagnostics")
             .eq("tenant_id", tenant_id)
             .in_("id", ids)
             .execute()
+            .data
+            or []
         )
+        for row in existing_rows:
+            merged = {
+                **(row.get("diagnostics") or {}),
+                **diagnostics,
+            }
+            (
+                db.table("retrieval_logs")
+                .update({**updates, "diagnostics": merged})
+                .eq("tenant_id", tenant_id)
+                .eq("id", row["id"])
+                .execute()
+            )
     except Exception as e:
         logger.warning("Failed to attach retrieval logs to answer: %s", e)
+
+
+def list_rag_quality_signals(
+    tenant_id: str,
+    window_hours: int = 168,
+    limit: int = 50,
+) -> dict:
+    """Aggregate recent retrieval and feedback evidence into quality signals."""
+    from app.services.rag_quality_policy import build_rag_quality_signals
+
+    db = get_db()
+    window_hours = min(max(int(window_hours or 168), 1), 24 * 30)
+    limit = min(max(int(limit or 50), 1), 200)
+    cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
+    cutoff_iso = cutoff.isoformat().replace("+00:00", "Z")
+
+    retrieval_logs = (
+        db.table("retrieval_logs")
+        .select("*")
+        .eq("tenant_id", tenant_id)
+        .gte("created_at", cutoff_iso)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+        .data
+        or []
+    )
+    feedback_rows = (
+        db.table("message_feedback")
+        .select("id, thread_id, message_id, rating, comment, created_at, client_session_id, user_id")
+        .eq("tenant_id", tenant_id)
+        .gte("created_at", cutoff_iso)
+        .order("created_at", desc=True)
+        .limit(max(limit, 50))
+        .execute()
+        .data
+        or []
+    )
+
+    return build_rag_quality_signals(
+        retrieval_logs=retrieval_logs,
+        feedback_rows=feedback_rows,
+        window_hours=window_hours,
+        limit=limit,
+    )
 
 
 def _resolve_feedback_answer_message(db, tenant_id: str, feedback: dict) -> dict | None:

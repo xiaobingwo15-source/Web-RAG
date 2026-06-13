@@ -184,7 +184,7 @@ async def execute(
             async for event in react_agent.execute(token, user_id, message, history, target_user_id=effective_target_user_id, images=images, tenant_id=tenant_id, thread_id=thread_id):
                 yield event
         elif route == "doc_rag" and use_documents:
-            async for event in doc_rag_agent.execute(token, user_id, message, history, retrieval_mode, target_user_id=effective_target_user_id, images=images, tenant_id=tenant_id, thread_id=thread_id):
+            async for event in doc_rag_agent.execute(token, user_id, message, history, retrieval_mode, target_user_id=effective_target_user_id, images=images, tenant_id=tenant_id, thread_id=thread_id, allow_web_fallback=enable_web_search):
                 yield event
         else:
             from app.services.gemini import generate_chat_response_stream
