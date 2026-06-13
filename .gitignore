@@ -40,3 +40,4 @@ dev-server-*.log
 
 # Upload chunks (temporary chunked upload storage)
 uploaded_chunks/
+.tmp/
