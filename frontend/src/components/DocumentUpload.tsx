@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, type DragEvent } from 'react'
+import { useRef, useState, type DragEvent } from 'react'
 import { Upload, FileText, CheckCircle, XCircle, Loader2, AlertTriangle, Trash2, Eye, RotateCcw, X, SquareCheck, Square } from 'lucide-react'
 import type { DocumentStatus, PdfParserMode, DocumentUploadResponse } from '@/lib/api'
 import type { ChunkedUploadProgress, PendingResume } from '@/hooks/useChunkedUpload'
