@@ -17,8 +17,8 @@ class ChatRequest(BaseModel):
     thread_id: Optional[str] = None
     use_documents: bool = True
     retrieval_mode: Literal["vector", "fts", "hybrid"] = "hybrid"
-    enable_web_search: bool = True
-    enable_sql: bool = True
+    enable_web_search: bool = False
+    enable_sql: bool = False
     images: Optional[list[str]] = None  # base64 data URLs
     reply_to: Optional[str] = None  # message ID being replied to
 

@@ -10,6 +10,10 @@ class ChunkMetadata:
     heading_level: int = 0
     chunk_type: str = "text"  # "text", "table", "code", "list"
     position: int = 0
+    page_start: int | None = None
+    page_end: int | None = None
+    table_id: str | None = None
+    breadcrumb_path: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -31,11 +35,14 @@ def _parse_blocks(text: str) -> list[dict]:
         lines: list[str]
         heading: str  (current section heading)
         heading_level: int
+        page_number: int | None  (current page, extracted from ## Page N markers)
     """
     lines = text.split("\n")
     blocks: list[dict] = []
+    current_page: int | None = None
     current_block: dict = {
         "type": "text", "lines": [], "heading": "", "heading_level": 0,
+        "page_number": current_page,
     }
 
     i = 0
@@ -49,15 +56,23 @@ def _parse_blocks(text: str) -> list[dict]:
                 blocks.append(current_block)
             level = len(heading_match.group(1))
             heading_text = heading_match.group(2).strip()
+
+            # Extract page number from "Page N" headings (injected by PDF parser)
+            page_match = re.match(r"^Page\s+(\d+)$", heading_text, re.IGNORECASE)
+            if page_match:
+                current_page = int(page_match.group(1))
+
             blocks.append({
                 "type": "heading",
                 "lines": [line],
                 "heading": heading_text,
                 "heading_level": level,
+                "page_number": current_page,
             })
             current_block = {
                 "type": "text", "lines": [],
                 "heading": heading_text, "heading_level": level,
+                "page_number": current_page,
             }
             i += 1
             continue
@@ -80,11 +95,13 @@ def _parse_blocks(text: str) -> list[dict]:
                 "lines": code_lines,
                 "heading": current_block.get("heading", ""),
                 "heading_level": current_block.get("heading_level", 0),
+                "page_number": current_page,
             })
             current_block = {
                 "type": "text", "lines": [],
                 "heading": current_block.get("heading", ""),
                 "heading_level": current_block.get("heading_level", 0),
+                "page_number": current_page,
             }
             continue
 
@@ -97,6 +114,7 @@ def _parse_blocks(text: str) -> list[dict]:
                     "type": "table", "lines": [],
                     "heading": current_block.get("heading", ""),
                     "heading_level": current_block.get("heading_level", 0),
+                    "page_number": current_page,
                 }
             current_block["lines"].append(line)
             i += 1
@@ -111,6 +129,7 @@ def _parse_blocks(text: str) -> list[dict]:
                     "type": "list", "lines": [],
                     "heading": current_block.get("heading", ""),
                     "heading_level": current_block.get("heading_level", 0),
+                    "page_number": current_page,
                 }
             current_block["lines"].append(line)
             i += 1
@@ -124,6 +143,7 @@ def _parse_blocks(text: str) -> list[dict]:
                 "type": "text", "lines": [],
                 "heading": current_block.get("heading", ""),
                 "heading_level": current_block.get("heading_level", 0),
+                "page_number": current_page,
             }
         current_block["lines"].append(line)
         i += 1
@@ -317,7 +337,7 @@ def _sliding_window_chunk(text: str, chunk_size: int, overlap: int) -> list[str]
 # ---------------------------------------------------------------------------
 
 def _chunk_blocks(
-    blocks: list[dict], chunk_size: int, overlap: int,
+    blocks: list[dict], chunk_size: int, overlap: int, doc_title: str = "",
 ) -> list[ChunkResult]:
     """Combine structural blocks into sized chunks.
 
@@ -325,23 +345,59 @@ def _chunk_blocks(
     - Atomic blocks (table, code, list) are never split mid-block.
     - A new heading always flushes the buffer (starts a new chunk).
     - Text blocks are split with sliding-window when they exceed chunk_size.
+
+    Phase 1 enhancements:
+    - Page numbers extracted from ## Page N markers and tracked per chunk.
+    - Table-type chunks get sequential table_id values.
+    - Breadcrumb path stored as structured list.
     """
     results: list[ChunkResult] = []
-    buffer: list[tuple[str, str, str, int]] = []  # (text, type, heading, level)
+    # buffer items: (text, type, heading, level, page_number)
+    buffer: list[tuple[str, str, str, int, int | None]] = []
     buffer_len = 0
+    table_counter = 0
+
+    def _build_breadcrumb(heading: str) -> list[str]:
+        """Build structured breadcrumb path from doc title and heading."""
+        parts: list[str] = []
+        if doc_title:
+            parts.append(doc_title)
+        if heading and heading.strip():
+            parts.append(heading.strip())
+        return parts
+
+    def _extract_page_range(buf: list[tuple]) -> tuple[int | None, int | None]:
+        """Get min/max page numbers from buffer items."""
+        pages = [item[4] for item in buf if item[4] is not None]
+        if not pages:
+            return None, None
+        return min(pages), max(pages)
 
     def _flush():
-        nonlocal buffer, buffer_len
+        nonlocal buffer, buffer_len, table_counter
         if not buffer:
             return
-        combined = "\n".join(t for t, _, _, _ in buffer)
+        combined = "\n".join(t for t, _, _, _, _ in buffer)
         # chunk_type = dominant type; if mixed, call it "text"
-        types = {bt for _, bt, _, _ in buffer}
+        types = {bt for _, bt, _, _, _ in buffer}
         chunk_type = (types.pop() if len(types) == 1 else "text")
-        _, _, h, hl = buffer[0]
+        _, _, h, hl, _ = buffer[0]
+        page_start, page_end = _extract_page_range(buffer)
+
+        # Assign table_id for table-type chunks
+        tbl_id = None
+        if chunk_type == "table":
+            table_counter += 1
+            tbl_id = f"table_{table_counter}"
+
         results.append(ChunkResult(
             text=combined.strip(),
-            metadata=ChunkMetadata(heading=h, heading_level=hl, chunk_type=chunk_type),
+            metadata=ChunkMetadata(
+                heading=h, heading_level=hl, chunk_type=chunk_type,
+                page_start=page_start, page_end=page_end,
+                table_id=tbl_id,
+                breadcrumb_path=_build_breadcrumb(h),
+            ),
         ))
         buffer = []
         buffer_len = 0
@@ -354,11 +410,12 @@ def _chunk_blocks(
         block_type: str = block["type"]
         heading: str = block.get("heading", "")
         heading_level: int = block.get("heading_level", 0)
+        page_number: int | None = block.get("page_number")
 
         # New heading always flushes previous content
         if block_type == "heading":
             _flush()
-            buffer.append((block_text, "heading", heading, heading_level))
+            buffer.append((block_text, "heading", heading, heading_level, page_number))
             buffer_len = len(block_text)
             continue
 
@@ -367,11 +424,18 @@ def _chunk_blocks(
             # Oversized atomic block: flush buffer, emit as its own chunk
             if len(block_text) > chunk_size:
                 _flush()
+                tbl_id = None
+                if block_type == "table":
+                    table_counter += 1
+                    tbl_id = f"table_{table_counter}"
                 results.append(ChunkResult(
                     text=block_text,
                     metadata=ChunkMetadata(
                         heading=heading, heading_level=heading_level,
                         chunk_type=block_type,
+                        page_start=page_number, page_end=page_number,
+                        table_id=tbl_id,
+                        breadcrumb_path=_build_breadcrumb(heading),
                     ),
                 ))
                 continue
@@ -380,7 +444,7 @@ def _chunk_blocks(
             if buffer_len + len(block_text) + (1 if buffer_len else 0) > chunk_size:
                 _flush()
 
-            buffer.append((block_text, block_type, heading, heading_level))
+            buffer.append((block_text, block_type, heading, heading_level, page_number))
             buffer_len += len(block_text) + (1 if buffer_len > len(block_text) else 0)
             continue
 
@@ -388,7 +452,7 @@ def _chunk_blocks(
         if len(block_text) <= chunk_size:
             if buffer_len + len(block_text) + (1 if buffer_len else 0) > chunk_size:
                 _flush()
-            buffer.append((block_text, "text", heading, heading_level))
+            buffer.append((block_text, "text", heading, heading_level, page_number))
             buffer_len += len(block_text) + (1 if buffer_len > len(block_text) else 0)
             continue
 
@@ -400,6 +464,8 @@ def _chunk_blocks(
                 metadata=ChunkMetadata(
                     heading=heading, heading_level=heading_level,
                     chunk_type="text",
+                    page_start=page_number, page_end=page_number,
+                    breadcrumb_path=_build_breadcrumb(heading),
                 ),
             ))
 
@@ -420,6 +486,7 @@ def chunk_text_structured(
     text: str,
     chunk_size: int | None = None,
     overlap: int | None = None,
+    doc_title: str = "",
 ) -> list[ChunkResult]:
     """Structure-aware chunking.  Returns chunks with metadata."""
     if chunk_size is None:
@@ -435,7 +502,7 @@ def chunk_text_structured(
     text = text.strip()
 
     blocks = _parse_blocks(text)
-    return _chunk_blocks(blocks, chunk_size, overlap)
+    return _chunk_blocks(blocks, chunk_size, overlap, doc_title=doc_title)
 
 
 def chunk_text(
@@ -546,6 +613,10 @@ def create_parent_child_chunks(
     structural context, targeting a significant reduction in retrieval
     failure rate per Anthropic's contextual retrieval research.
 
+    Phase 1: Each chunk also carries structural metadata (heading, heading_level,
+    structural_type, page_start, page_end, table_id, breadcrumb_path) for
+    downstream storage in Supabase and Qdrant.
+
     Args:
         text: Full document text to chunk.
         parent_chunk_size: Character size for parent chunks (default from Settings).
@@ -556,11 +627,17 @@ def create_parent_child_chunks(
     Returns:
         {
             "parents": [
-                {"id": str, "text": str, "child_ids": [str, ...]},
+                {"id": str, "text": str, "child_ids": [str, ...],
+                 "heading": str, "heading_level": int, "structural_type": str,
+                 "page_start": int|None, "page_end": int|None,
+                 "table_id": str|None, "breadcrumb_path": [str, ...]},
                 ...
             ],
             "children": [
-                {"text": str, "parent_id": str, "position_in_parent": int},
+                {"id": str, "text": str, "parent_id": str, "position_in_parent": int,
+                 "heading": str, "heading_level": int, "structural_type": str,
+                 "page_start": int|None, "page_end": int|None,
+                 "table_id": str|None, "breadcrumb_path": [str, ...]},
                 ...
             ],
         }
@@ -579,10 +656,11 @@ def create_parent_child_chunks(
         return {"parents": [], "children": []}
 
     # Step 1: create parent chunks using structured chunker (preserves headings)
-    parent_results = chunk_text_structured(text, chunk_size=parent_chunk_size, overlap=overlap)
+    parent_results = chunk_text_structured(text, chunk_size=parent_chunk_size, overlap=overlap, doc_title=doc_title)
 
     parents = []
     children = []
+    global_table_counter = 0
 
     for parent_result in parent_results:
         parent_id = str(uuid.uuid4())
@@ -596,35 +674,74 @@ def create_parent_child_chunks(
 
         # Step 2: split each parent into child chunks using structured chunker
         child_results = chunk_text_structured(
-            parent_result.text, chunk_size=child_chunk_size, overlap=overlap,
+            parent_result.text, chunk_size=child_chunk_size, overlap=overlap, doc_title=doc_title,
         )
 
         # Edge case: if parent is short enough to be a single child, keep it as-is
         if not child_results:
             child_texts_bread = [parent_text]
-        else:
-            child_texts_bread = [
-                prepend_breadcrumb(
-                    cr.text, parent_heading, parent_heading_level, doc_title,
-                )
-                for cr in child_results
-            ]
-
-        child_ids = []
-        for position, child_text in enumerate(child_texts_bread):
+            # Create a single child with parent's metadata
             child_id = str(uuid.uuid4())
-            child_ids.append(child_id)
             children.append({
                 "id": child_id,
-                "text": child_text,
+                "text": parent_text,
                 "parent_id": parent_id,
-                "position_in_parent": position,
+                "position_in_parent": 0,
+                "heading": parent_heading,
+                "heading_level": parent_heading_level,
+                "structural_type": parent_result.metadata.chunk_type,
+                "page_start": parent_result.metadata.page_start,
+                "page_end": parent_result.metadata.page_end,
+                "table_id": parent_result.metadata.table_id,
+                "breadcrumb_path": parent_result.metadata.breadcrumb_path,
             })
+            child_ids = [child_id]
+        else:
+            child_ids = []
+            for position, cr in enumerate(child_results):
+                child_id = str(uuid.uuid4())
+                child_ids.append(child_id)
+
+                # Assign global table_id for table-type chunks
+                tbl_id = cr.metadata.table_id
+                if cr.metadata.chunk_type == "table" and tbl_id:
+                    global_table_counter += 1
+                    tbl_id = f"table_{global_table_counter}"
+
+                child_text = prepend_breadcrumb(
+                    cr.text, parent_heading, parent_heading_level, doc_title,
+                )
+                children.append({
+                    "id": child_id,
+                    "text": child_text,
+                    "parent_id": parent_id,
+                    "position_in_parent": position,
+                    "heading": cr.metadata.heading,
+                    "heading_level": cr.metadata.heading_level,
+                    "structural_type": cr.metadata.chunk_type,
+                    "page_start": cr.metadata.page_start,
+                    "page_end": cr.metadata.page_end,
+                    "table_id": tbl_id,
+                    "breadcrumb_path": cr.metadata.breadcrumb_path,
+                })
+
+        # Assign global table_id for parent if it's a table type
+        parent_tbl_id = parent_result.metadata.table_id
+        if parent_result.metadata.chunk_type == "table" and parent_tbl_id:
+            global_table_counter += 1
+            parent_tbl_id = f"table_{global_table_counter}"
 
         parents.append({
             "id": parent_id,
             "text": parent_text,
             "child_ids": child_ids,
+            "heading": parent_heading,
+            "heading_level": parent_heading_level,
+            "structural_type": parent_result.metadata.chunk_type,
+            "page_start": parent_result.metadata.page_start,
+            "page_end": parent_result.metadata.page_end,
+            "table_id": parent_tbl_id,
+            "breadcrumb_path": parent_result.metadata.breadcrumb_path,
         })
 
     return {"parents": parents, "children": children}
@@ -647,6 +764,8 @@ async def create_parent_child_chunks_semantic(
     Each chunk's text is prefixed with a breadcrumb path (e.g.
     "Doc Title > Section: original text") so that embeddings carry
     structural context.
+
+    Phase 1: Each chunk also carries structural metadata for downstream storage.
 
     Args:
         text: Full document text.
@@ -687,48 +806,89 @@ async def create_parent_child_chunks_semantic(
 
     parents = []
     children = []
+    global_table_counter = 0
 
-    for parent_text in semantic_chunks:
+    for parent_text_raw in semantic_chunks:
         parent_id = str(uuid.uuid4())
 
         # Extract heading from the parent text via structural parsing
-        parent_results = chunk_text_structured(parent_text, chunk_size=parent_chunk_size)
+        parent_results = chunk_text_structured(parent_text_raw, chunk_size=parent_chunk_size, doc_title=doc_title)
         parent_heading = parent_results[0].metadata.heading if parent_results else ""
         parent_heading_level = parent_results[0].metadata.heading_level if parent_results else 0
+        parent_page_start = parent_results[0].metadata.page_start if parent_results else None
+        parent_page_end = parent_results[0].metadata.page_end if parent_results else None
+        parent_breadcrumb = parent_results[0].metadata.breadcrumb_path if parent_results else []
+        parent_structural_type = parent_results[0].metadata.chunk_type if parent_results else "text"
 
         # Prepend breadcrumb to parent text
         parent_text_bread = prepend_breadcrumb(
-            parent_text, parent_heading, parent_heading_level, doc_title,
+            parent_text_raw, parent_heading, parent_heading_level, doc_title,
         )
 
         # Step 2: Split each semantic parent into fixed-size child chunks
-        child_results = chunk_text_structured(parent_text, chunk_size=child_chunk_size)
+        child_results = chunk_text_structured(parent_text_raw, chunk_size=child_chunk_size, doc_title=doc_title)
 
         if not child_results:
             child_texts_bread = [parent_text_bread]
-        else:
-            child_texts_bread = [
-                prepend_breadcrumb(
-                    cr.text, parent_heading, parent_heading_level, doc_title,
-                )
-                for cr in child_results
-            ]
-
-        child_ids = []
-        for position, child_text in enumerate(child_texts_bread):
             child_id = str(uuid.uuid4())
-            child_ids.append(child_id)
             children.append({
                 "id": child_id,
-                "text": child_text,
+                "text": parent_text_bread,
                 "parent_id": parent_id,
-                "position_in_parent": position,
+                "position_in_parent": 0,
+                "heading": parent_heading,
+                "heading_level": parent_heading_level,
+                "structural_type": parent_structural_type,
+                "page_start": parent_page_start,
+                "page_end": parent_page_end,
+                "table_id": None,
+                "breadcrumb_path": parent_breadcrumb,
             })
+            child_ids = [child_id]
+        else:
+            child_ids = []
+            for position, cr in enumerate(child_results):
+                child_id = str(uuid.uuid4())
+                child_ids.append(child_id)
+
+                tbl_id = cr.metadata.table_id
+                if cr.metadata.chunk_type == "table" and tbl_id:
+                    global_table_counter += 1
+                    tbl_id = f"table_{global_table_counter}"
+
+                child_text = prepend_breadcrumb(
+                    cr.text, parent_heading, parent_heading_level, doc_title,
+                )
+                children.append({
+                    "id": child_id,
+                    "text": child_text,
+                    "parent_id": parent_id,
+                    "position_in_parent": position,
+                    "heading": cr.metadata.heading,
+                    "heading_level": cr.metadata.heading_level,
+                    "structural_type": cr.metadata.chunk_type,
+                    "page_start": cr.metadata.page_start,
+                    "page_end": cr.metadata.page_end,
+                    "table_id": tbl_id,
+                    "breadcrumb_path": cr.metadata.breadcrumb_path,
+                })
+
+        parent_tbl_id = None
+        if parent_structural_type == "table":
+            global_table_counter += 1
+            parent_tbl_id = f"table_{global_table_counter}"
 
         parents.append({
             "id": parent_id,
             "text": parent_text_bread,
             "child_ids": child_ids,
+            "heading": parent_heading,
+            "heading_level": parent_heading_level,
+            "structural_type": parent_structural_type,
+            "page_start": parent_page_start,
+            "page_end": parent_page_end,
+            "table_id": parent_tbl_id,
+            "breadcrumb_path": parent_breadcrumb,
         })
 
     return {"parents": parents, "children": children}

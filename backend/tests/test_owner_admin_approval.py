@@ -26,6 +26,10 @@ class _Query:
         self.filters.append((key, value))
         return self
 
+    def neq(self, key, value):
+        self.filters.append((key, f"neq:{value}"))
+        return self
+
     def update(self, payload):
         self.updated = payload
         return self
@@ -43,12 +47,22 @@ class _Query:
 
 
 class OwnerAdminApprovalTests(unittest.IsolatedAsyncioTestCase):
-    async def test_owner_admin_list_requires_owner_key(self):
-        with patch.object(owner, "Settings", return_value=SimpleNamespace(owner_api_key="expected")):
+    async def test_owner_admin_list_requires_owner_email_allowlist(self):
+        user = SimpleNamespace(email="not-owner@example.com")
+        with patch.object(owner, "Settings", return_value=SimpleNamespace(owner_email_set={"owner@example.com"})):
             with self.assertRaises(HTTPException) as ctx:
-                await owner.list_admins_endpoint(x_owner_key="wrong")
+                await owner.list_admins_endpoint(user=user)
 
         self.assertEqual(ctx.exception.status_code, 403)
+
+    async def test_owner_admin_list_accepts_owner_email(self):
+        user = SimpleNamespace(email="owner@example.com")
+        expected = {"admins": [], "page": 1, "limit": 50, "total": 0}
+        with patch.object(owner, "Settings", return_value=SimpleNamespace(owner_email_set={"owner@example.com"})):
+            with patch.object(owner, "list_owner_admins", return_value=expected):
+                result = await owner.list_admins_endpoint(user=user)
+
+        self.assertEqual(result, expected)
 
     def test_owner_admin_list_filters_and_paginates_admin_profiles(self):
         rows = [
@@ -118,6 +132,19 @@ class OwnerAdminApprovalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile_query.updated["role"], "admin")
         self.assertEqual(profile_query.updated["status"], "pending")
         self.assertEqual(invite_query.updated, {"accepted_at": "now()"})
+
+    def test_disable_tenant_marks_tenant_disabled_without_deleting_rows(self):
+        tenants = _Query([{"id": "tenant-a", "status": "disabled"}])
+        db = Mock()
+        db.table.return_value = tenants
+
+        with patch.object(database, "get_db", return_value=db):
+            result = database.disable_tenant("tenant-a")
+
+        self.assertTrue(result)
+        self.assertEqual(tenants.updated, {"status": "disabled"})
+        self.assertIn(("id", "tenant-a"), tenants.filters)
+        self.assertIn(("status", "neq:disabled"), tenants.filters)
 
     def test_pending_admin_cannot_access_admin_or_document_admin_endpoints(self):
         user = SimpleNamespace(role="admin", tenant_id="tenant-a", status="pending")

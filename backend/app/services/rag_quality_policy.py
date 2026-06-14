@@ -199,7 +199,11 @@ def build_rag_quality_signals(
         and score < older_avg * STALENESS_DEGRADATION_RATIO
     ]
 
-    groundedness_logs = [row for row in retrieval_logs if bool(row.get("groundedness_flag"))]
+    groundedness_logs = [
+        row for row in retrieval_logs
+        if bool(row.get("groundedness_flag"))
+        or row.get("grounding_status") in {"low_confidence", "ungrounded"}
+    ]
 
     duration_values = [
         _safe_int(row.get("duration_ms"))

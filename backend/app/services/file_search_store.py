@@ -15,9 +15,65 @@ from app.services.database import (
 )
 from app.services.qdrant_db import insert_chunks, update_chunks_metadata
 from app.services.contextual_retrieval import add_contextual_prefixes
-from app.services.semantic_cache import clear_semantic_cache
+from app.services.semantic_cache import clear_semantic_cache, invalidate_cache_for_document
 
 logger = logging.getLogger(__name__)
+
+
+def _compute_quality_score(
+    extraction_meta: dict,
+    doc_meta: dict,
+    text_length: int,
+    chunk_count: int,
+) -> float:
+    """Compute a 0.0-1.0 quality score for an ingested document.
+
+    Phase 6.1: Document quality scoring during ingestion.
+
+    Factors:
+    - Text extraction confidence (length vs expected)
+    - Table detection (presence of structured data)
+    - OCR usage flag (scanned docs are lower quality)
+    - Page count (more pages = more content)
+    - Chunk count relative to content
+    """
+    score = 0.5  # base score
+
+    # Text length bonus (more extracted text = better extraction)
+    if text_length > 10000:
+        score += 0.15
+    elif text_length > 3000:
+        score += 0.10
+    elif text_length > 1000:
+        score += 0.05
+    elif text_length < 100:
+        score -= 0.20  # very little text extracted = bad
+
+    # Table detection bonus
+    tables_detected = extraction_meta.get("tables_detected", 0)
+    if tables_detected and tables_detected > 0:
+        score += 0.10
+
+    # OCR penalty (scanned docs have lower extraction quality)
+    ocr_used = extraction_meta.get("ocr_used", False)
+    if ocr_used:
+        score -= 0.10
+
+    # Page count bonus (more content)
+    page_count = extraction_meta.get("pdf_page_count", 0)
+    if page_count and page_count > 5:
+        score += 0.05
+
+    # Chunk density (reasonable number of chunks relative to text)
+    if text_length > 0 and chunk_count > 0:
+        avg_chunk_size = text_length / chunk_count
+        if 200 <= avg_chunk_size <= 2000:
+            score += 0.10  # good chunk density
+        elif avg_chunk_size < 100:
+            score -= 0.05  # too fragmented
+
+    # Clamp to [0.0, 1.0]
+    return max(0.0, min(1.0, round(score, 2)))
 
 
 def _log_document_stage(
@@ -183,7 +239,7 @@ async def process_document(
             embeddings=len(embeddings),
         )
 
-        # Build child chunk data with parent_id and chunk_type
+        # Build child chunk data with parent_id, chunk_type, and structural metadata
         child_chunk_data = []
         for i, (child, embedding) in enumerate(zip(children, embeddings)):
             child_chunk_data.append({
@@ -193,6 +249,14 @@ async def process_document(
                 "parent_id": child["parent_id"],
                 "chunk_type": "child",
                 "metadata": metadata,
+                # Phase 1: per-chunk structural metadata
+                "heading": child.get("heading", ""),
+                "heading_level": child.get("heading_level", 0),
+                "structural_type": child.get("structural_type", "text"),
+                "page_start": child.get("page_start"),
+                "page_end": child.get("page_end"),
+                "table_id": child.get("table_id"),
+                "breadcrumb_path": child.get("breadcrumb_path", []),
             })
 
         # Build parent chunk data with zero-vector embeddings
@@ -205,6 +269,14 @@ async def process_document(
                 "chunk_index": len(children) + i,
                 "chunk_type": "parent",
                 "metadata": metadata,
+                # Phase 1: per-chunk structural metadata
+                "heading": parent.get("heading", ""),
+                "heading_level": parent.get("heading_level", 0),
+                "structural_type": parent.get("structural_type", "text"),
+                "page_start": parent.get("page_start"),
+                "page_end": parent.get("page_end"),
+                "table_id": parent.get("table_id"),
+                "breadcrumb_path": parent.get("breadcrumb_path", []),
             })
 
         store_started_at = time.perf_counter()
@@ -247,8 +319,25 @@ async def process_document(
 
         total_chunks = len(child_chunk_data) + len(parent_chunk_data)
         update_document_chunk_count(access_token, document_id, total_chunks)
+
+        # Phase 6.1: Compute document quality score
+        quality_score = _compute_quality_score(
+            extraction.metadata, metadata, len(text), total_chunks,
+        )
+        metadata["quality_score"] = quality_score
+        update_document_metadata(access_token, document_id, {"quality_score": quality_score})
+        _log_document_stage(
+            document_id,
+            "quality",
+            "scored",
+            quality_score=quality_score,
+        )
+
         update_document_status(access_token, document_id, "processed")
-        clear_semantic_cache(f"document processed {document_id}")
+        # Phase 5.1: Targeted invalidation instead of full cache clear
+        invalidated = invalidate_cache_for_document(document_id)
+        if invalidated:
+            _log_document_stage(document_id, "cache", "invalidated", entries=invalidated)
         _log_document_stage(
             document_id,
             "store",

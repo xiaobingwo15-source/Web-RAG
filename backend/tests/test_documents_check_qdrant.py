@@ -7,7 +7,7 @@ from app.routers import documents
 
 class CheckQdrantEndpointTests(unittest.IsolatedAsyncioTestCase):
     async def test_check_qdrant_filters_by_document_id(self):
-        user = SimpleNamespace(id="admin-a", tenant_id="tenant-a")
+        user = SimpleNamespace(id="admin-a", tenant_id="tenant-a", role="admin", status="approved")
 
         with (
             patch("app.services.qdrant_db.count_user_chunks", new=AsyncMock(return_value=1)) as count,

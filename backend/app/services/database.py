@@ -1,10 +1,22 @@
 import logging
 import re
+import asyncio
 from datetime import UTC, datetime, timedelta
+from collections.abc import Coroutine
+from typing import Any
 from supabase import Client
 from app.services.supabase import get_supabase_client, get_supabase_client_with_token
 
 logger = logging.getLogger(__name__)
+
+
+def _run_async_cleanup(coro: Coroutine[Any, Any, Any]) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(coro)
+        return
+    loop.create_task(coro)
 
 
 def get_db() -> Client:
@@ -62,37 +74,22 @@ def create_tenant(name: str, slug: str, allowed_origins: list[str]) -> dict:
     return result.data[0]
 
 
-def delete_tenant(tenant_id: str) -> bool:
-    """Delete a tenant and all its associated data. Returns True if deleted."""
+def disable_tenant(tenant_id: str) -> bool:
+    """Soft-disable a tenant without deleting its records."""
     db = get_db()
-
-    # 1. Delete document chunks
-    db.table("document_chunks").delete().eq("tenant_id", tenant_id).execute()
-
-    # 2. Delete documents
-    db.table("documents").delete().eq("tenant_id", tenant_id).execute()
-
-    # 3. Delete file search stores
-    db.table("file_search_stores").delete().eq("tenant_id", tenant_id).execute()
-
-    # 4. Delete threads (CASCADE will delete messages)
-    db.table("threads").delete().eq("tenant_id", tenant_id).execute()
-
-    # 5. Delete agent traces
-    db.table("agent_traces").delete().eq("tenant_id", tenant_id).execute()
-
-    # 6. Delete system settings
-    db.table("system_settings").delete().eq("tenant_id", tenant_id).execute()
-
-    # 7. Delete admin invites
-    db.table("tenant_admin_invites").delete().eq("tenant_id", tenant_id).execute()
-
-    # 8. Unlink profiles from this tenant (users keep their auth account)
-    db.table("profiles").update({"tenant_id": None, "role": "client", "status": "pending"}).eq("tenant_id", tenant_id).execute()
-
-    # 9. Delete the tenant
-    result = db.table("tenants").delete().eq("id", tenant_id).execute()
+    result = (
+        db.table("tenants")
+        .update({"status": "disabled"})
+        .eq("id", tenant_id)
+        .neq("status", "disabled")
+        .execute()
+    )
     return len(result.data) > 0
+
+
+def delete_tenant(tenant_id: str) -> bool:
+    """Deprecated compatibility wrapper. Use disable_tenant for soft disables."""
+    return disable_tenant(tenant_id)
 
 
 def create_tenant_admin_invite(tenant_id: str, email: str, token_hash: str, expires_at: str) -> dict:
@@ -531,6 +528,21 @@ def insert_chunks_for_fts(access_token: str, user_id: str, document_id: str, chu
             row["chunk_type"] = chunk["chunk_type"]
         if chunk.get("metadata"):
             row["metadata"] = chunk["metadata"]
+        # Phase 1: per-chunk structural metadata
+        if chunk.get("heading"):
+            row["heading"] = chunk["heading"]
+        if chunk.get("heading_level") is not None:
+            row["heading_level"] = chunk["heading_level"]
+        if chunk.get("structural_type"):
+            row["structural_type"] = chunk["structural_type"]
+        if chunk.get("page_start") is not None:
+            row["page_start"] = chunk["page_start"]
+        if chunk.get("page_end") is not None:
+            row["page_end"] = chunk["page_end"]
+        if chunk.get("table_id"):
+            row["table_id"] = chunk["table_id"]
+        if chunk.get("breadcrumb_path"):
+            row["breadcrumb_path"] = chunk["breadcrumb_path"]
         rows.append(row)
     result = db.table("document_chunks").insert(rows).execute()
     return result.data
@@ -547,6 +559,64 @@ def get_document_chunks(access_token: str, document_id: str) -> list[dict]:
         .execute()
     )
     return result.data or []
+
+
+def get_chunks_by_page(access_token: str, document_id: str, page_number: int) -> list[dict]:
+    """Fetch all chunks for a specific page of a document, ordered by chunk_index.
+
+    Phase 3.3: Page-level retrieval tool support.
+    """
+    db = get_user_db(access_token)
+    result = (
+        db.table("document_chunks")
+        .select("content, chunk_index, heading, structural_type, page_start, page_end, breadcrumb_path")
+        .eq("document_id", document_id)
+        .lte("page_start", page_number)
+        .gte("page_end", page_number)
+        .order("chunk_index")
+        .execute()
+    )
+    # Also include chunks where page_start matches exactly
+    if not result.data:
+        result = (
+            db.table("document_chunks")
+            .select("content, chunk_index, heading, structural_type, page_start, page_end, breadcrumb_path")
+            .eq("document_id", document_id)
+            .eq("page_start", page_number)
+            .order("chunk_index")
+            .execute()
+        )
+    return result.data or []
+
+
+def get_chunks_by_table_id(access_token: str, document_id: str, table_id: str) -> list[dict]:
+    """Fetch all chunks belonging to a specific table, ordered by chunk_index.
+
+    Phase 3.4: Table extraction tool support.
+    """
+    db = get_user_db(access_token)
+    result = (
+        db.table("document_chunks")
+        .select("content, chunk_index, heading, page_start, breadcrumb_path")
+        .eq("document_id", document_id)
+        .eq("table_id", table_id)
+        .eq("structural_type", "table")
+        .order("chunk_index")
+        .execute()
+    )
+    return result.data or []
+
+
+def get_document_info(access_token: str, document_id: str) -> dict | None:
+    """Fetch document-level metadata for the info tool."""
+    db = get_user_db(access_token)
+    result = (
+        db.table("documents")
+        .select("id, filename, mime_type, status, chunk_count, metadata, created_at")
+        .eq("id", document_id)
+        .execute()
+    )
+    return result.data[0] if result.data else None
 
 
 def delete_document_chunks(access_token: str, document_id: str) -> None:
@@ -582,12 +652,7 @@ def archive_document(access_token: str, document_id: str) -> dict | None:
         # Clean up Qdrant vectors for archived document (fire-and-forget)
         try:
             from app.services.qdrant_db import delete_chunks_by_document
-            import asyncio
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(delete_chunks_by_document(document_id))
-            else:
-                loop.run_until_complete(delete_chunks_by_document(document_id))
+            _run_async_cleanup(delete_chunks_by_document(document_id))
         except Exception as e:
             logger.warning("Failed to clean up Qdrant vectors for archived document %s: %s", document_id, e)
         # Clean up FTS chunks for archived document
@@ -971,24 +1036,28 @@ def insert_rag_eval_result(
     score,
 ) -> dict:
     db = get_db()
-    result = (
-        db.table("rag_eval_results")
-        .insert({
-            "tenant_id": tenant_id,
-            "run_id": run_id,
-            "case_id": case.get("id"),
-            "question": case["question"],
-            "expected_facts": case.get("expected_facts") or [],
-            "answer": answer,
-            "sources": sources,
-            "context_relevance_score": score.context_relevance_score,
-            "groundedness_score": score.groundedness_score,
-            "answer_relevance_score": score.answer_relevance_score,
-            "passed": score.passed,
-            "failure_reason": score.failure_reason,
-        })
-        .execute()
-    )
+    result_status = "passed" if bool(score.passed) else "failed"
+    row = {
+        "tenant_id": tenant_id,
+        "run_id": run_id,
+        "case_id": case.get("id"),
+        "question": case["question"],
+        "expected_facts": case.get("expected_facts") or [],
+        "answer": answer,
+        "sources": sources,
+        "context_relevance_score": score.context_relevance_score,
+        "groundedness_score": score.groundedness_score,
+        "answer_relevance_score": score.answer_relevance_score,
+        "passed": score.passed,
+        "result_status": result_status,
+        "failure_reason": score.failure_reason,
+    }
+    # Phase 4.2/4.4: New metrics
+    if score.citation_accuracy_score is not None:
+        row["citation_accuracy_score"] = score.citation_accuracy_score
+    if score.recall_at_k is not None:
+        row["recall_at_k"] = score.recall_at_k
+    result = db.table("rag_eval_results").insert(row).execute()
     return result.data[0]
 
 
@@ -1060,8 +1129,8 @@ def get_flagged_messages(tenant_id: str) -> list[dict]:
     result = (
         db.table("messages")
         .select("*, threads(id, title, user_id)")
-        .eq("needs_attention", True)
         .eq("tenant_id", tenant_id)
+        .or_("attention_status.eq.needs_admin,needs_attention.eq.true")
         .order("created_at", desc=True)
         .execute()
     )
@@ -1114,19 +1183,19 @@ def get_flagged_count(tenant_id: str) -> int:
     result = (
         db.table("messages")
         .select("id", count="exact")
-        .eq("needs_attention", True)
         .eq("tenant_id", tenant_id)
+        .or_("attention_status.eq.needs_admin,needs_attention.eq.true")
         .execute()
     )
     return result.count or 0
 
 
 def clear_attention_flag(message_id: str) -> dict:
-    """Clear the needs_attention flag on a message."""
+    """Clear the admin-attention status on a message."""
     db = get_db()
     result = (
         db.table("messages")
-        .update({"needs_attention": False})
+        .update({"needs_attention": False, "attention_status": "dismissed"})
         .eq("id", message_id)
         .execute()
     )
@@ -1134,12 +1203,32 @@ def clear_attention_flag(message_id: str) -> dict:
 
 
 def clear_thread_attention_flags(tenant_id: str, thread_id: str) -> None:
-    """Clear all needs_attention flags in a thread."""
+    """Clear all admin-attention statuses in a thread after an admin response."""
     db = get_db()
-    db.table("messages").update({"needs_attention": False}).eq("thread_id", thread_id).eq("tenant_id", tenant_id).eq("needs_attention", True).execute()
+    (
+        db.table("messages")
+        .update({"needs_attention": False, "attention_status": "responded"})
+        .eq("thread_id", thread_id)
+        .eq("tenant_id", tenant_id)
+        .or_("attention_status.eq.needs_admin,needs_attention.eq.true")
+        .execute()
+    )
 
 
 # --- Retrieval logging ---
+
+def _grounding_status_from_result(
+    groundedness_score: float | None,
+    groundedness_flag: bool,
+) -> str:
+    if groundedness_flag:
+        return "ungrounded"
+    if groundedness_score is None:
+        return "not_checked"
+    if groundedness_score < 0.7:
+        return "low_confidence"
+    return "ok"
+
 
 def log_retrieval(
     query: str,
@@ -1167,6 +1256,7 @@ def log_retrieval(
             "sources": sources or [],
             "chunks": chunks or [],
             "diagnostics": diagnostics or {},
+            "grounding_status": "not_checked",
             **({"top_score": top_score} if top_score is not None else {}),
             **({"duration_ms": duration_ms} if duration_ms is not None else {}),
             **({"user_id": user_id} if user_id else {}),
@@ -1237,9 +1327,11 @@ def update_retrieval_logs_for_answer(
     ids = [log_id for log_id in retrieval_log_ids if log_id]
     if not ids:
         return
+    grounding_status = _grounding_status_from_result(groundedness_score, groundedness_flag)
     updates: dict = {
         "answer_message_id": answer_message_id,
         "groundedness_flag": groundedness_flag,
+        "grounding_status": grounding_status,
     }
     if groundedness_score is not None:
         updates["groundedness_score"] = groundedness_score
@@ -1491,7 +1583,11 @@ def list_rag_quality_thumbs_down(tenant_id: str, limit: int = 50) -> list[dict]:
                 "source_count": sum(int(log.get("source_count") or 0) for log in logs),
                 "top_score": max(top_scores) if top_scores else None,
                 "groundedness_score": min(grounded_scores) if grounded_scores else None,
-                "groundedness_flag": any(bool(log.get("groundedness_flag")) for log in logs),
+                "groundedness_flag": any(
+                    bool(log.get("groundedness_flag"))
+                    or log.get("grounding_status") in {"low_confidence", "ungrounded"}
+                    for log in logs
+                ),
                 "zero_source": any(int(log.get("source_count") or 0) == 0 for log in logs),
             },
         })

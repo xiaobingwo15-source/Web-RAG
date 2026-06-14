@@ -2,7 +2,7 @@
 
 import logging
 from datetime import UTC, datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from app.middleware.auth import get_current_user
 from app.services.database import (
@@ -36,6 +36,7 @@ from app.models.rag_eval import (
 from app.models.rag_quality import RagQualitySignalsResponse, RagQualityThumbsDownResponse
 from app.services.rag_eval import run_rag_eval
 from app.services.rag_quality_loop import sync_quality_loop_eval_drafts
+from app.services.audit import log_operation
 from app.services.widget_tokens import hash_token
 
 logger = logging.getLogger(__name__)
@@ -97,8 +98,8 @@ class AcceptInviteRequest(BaseModel):
 
 
 @router.post("/invites/accept")
-async def accept_invite(request: AcceptInviteRequest, user=Depends(get_current_user)):
-    invite = get_tenant_admin_invite(hash_token(request.token))
+async def accept_invite(request_body: AcceptInviteRequest, request: Request, user=Depends(get_current_user)):
+    invite = get_tenant_admin_invite(hash_token(request_body.token))
     if not invite:
         raise HTTPException(status_code=404, detail="Invite not found or already accepted")
     expires_at = datetime.fromisoformat(invite["expires_at"].replace("Z", "+00:00"))
@@ -107,6 +108,17 @@ async def accept_invite(request: AcceptInviteRequest, user=Depends(get_current_u
     if invite["email"].lower() != user.email.lower():
         raise HTTPException(status_code=403, detail="Invite email does not match signed-in user")
     profile = accept_tenant_admin_invite(invite["id"], invite["tenant_id"], user.id, user.email.lower())
+    log_operation(
+        tenant_id=invite["tenant_id"],
+        actor_user_id=user.id,
+        actor_email=getattr(user, "email", None),
+        actor_role=user.role,
+        action="tenant_admin_invite.accept",
+        resource_type="tenant_admin_invite",
+        resource_id=invite["id"],
+        after=profile,
+        request=request,
+    )
     return {"status": "accepted", "profile": profile}
 
 
@@ -157,7 +169,7 @@ async def get_settings(user=Depends(get_current_user)):
 
 
 @router.post("/settings")
-async def save_settings(settings: SystemSettingsSchema, user=Depends(get_current_user)):
+async def save_settings(settings: SystemSettingsSchema, request: Request, user=Depends(get_current_user)):
     """Save or update system settings."""
     _verify_admin(user)
     
@@ -165,9 +177,12 @@ async def save_settings(settings: SystemSettingsSchema, user=Depends(get_current
     db = get_user_db(user.access_token)
     
     updates = settings.model_dump(exclude_unset=True)
+    applied_keys: list[str] = []
     
     for key, value in updates.items():
         if value is None:
+            continue
+        if value.strip() in {"[redacted]", "********"} or value.strip().startswith("[redacted"):
             continue
         
         # If value is redacted (contains bullet points), skip updating it
@@ -208,6 +223,7 @@ async def save_settings(settings: SystemSettingsSchema, user=Depends(get_current
                 "description": f"Admin configured {key}",
                 "updated_at": "now()"
             }).execute()
+            applied_keys.append(key)
         except Exception as e:
             logger.error(f"Failed to upsert setting {key}: {e}", exc_info=True)
             raise HTTPException(
@@ -220,6 +236,19 @@ async def save_settings(settings: SystemSettingsSchema, user=Depends(get_current
     from app.services.gemini import _llm_clients
     _get_cached_setting.cache_clear()
     _llm_clients.clear()
+
+    if applied_keys:
+        log_operation(
+            tenant_id=user.tenant_id,
+            actor_user_id=user.id,
+            actor_email=getattr(user, "email", None),
+            actor_role=user.role,
+            action="system_settings.update",
+            resource_type="system_settings",
+            resource_id=user.tenant_id,
+            after={"updated_keys": applied_keys},
+            request=request,
+        )
 
     return {"status": "success"}
 
@@ -237,21 +266,44 @@ async def get_rag_eval_cases(user=Depends(get_current_user)):
 
 
 @router.post("/rag-evals/cases", response_model=RagEvalCaseResponse)
-async def create_rag_eval_case_endpoint(request: RagEvalCaseCreate, user=Depends(get_current_user)):
+async def create_rag_eval_case_endpoint(request_body: RagEvalCaseCreate, request: Request, user=Depends(get_current_user)):
     _verify_admin(user)
-    return create_rag_eval_case(user.tenant_id, request.model_dump(mode="json"))
+    created = create_rag_eval_case(user.tenant_id, request_body.model_dump(mode="json"))
+    log_operation(
+        tenant_id=user.tenant_id,
+        actor_user_id=user.id,
+        actor_email=getattr(user, "email", None),
+        actor_role=user.role,
+        action="rag_eval_case.create",
+        resource_type="rag_eval_case",
+        resource_id=created.get("id"),
+        after=created,
+        request=request,
+    )
+    return created
 
 
 @router.patch("/rag-evals/cases/{case_id}", response_model=RagEvalCaseResponse)
-async def update_rag_eval_case_endpoint(case_id: str, request: RagEvalCaseUpdate, user=Depends(get_current_user)):
+async def update_rag_eval_case_endpoint(case_id: str, request_body: RagEvalCaseUpdate, request: Request, user=Depends(get_current_user)):
     _verify_admin(user)
     updated = update_rag_eval_case(
         user.tenant_id,
         case_id,
-        request.model_dump(mode="json", exclude_unset=True),
+        request_body.model_dump(mode="json", exclude_unset=True),
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Eval case not found")
+    log_operation(
+        tenant_id=user.tenant_id,
+        actor_user_id=user.id,
+        actor_email=getattr(user, "email", None),
+        actor_role=user.role,
+        action="rag_eval_case.update",
+        resource_type="rag_eval_case",
+        resource_id=case_id,
+        after=updated,
+        request=request,
+    )
     return updated
 
 
@@ -274,14 +326,27 @@ async def get_rag_eval_run_detail(run_id: str, user=Depends(get_current_user)):
 
 
 @router.post("/rag-evals/runs", response_model=RagEvalRunDetail)
-async def start_rag_eval_run(request: RagEvalRunCreate, user=Depends(get_current_user)):
+async def start_rag_eval_run(request_body: RagEvalRunCreate, request: Request, user=Depends(get_current_user)):
     _verify_admin(user)
-    return await run_rag_eval(
+    result = await run_rag_eval(
         tenant_id=user.tenant_id,
         admin_user_id=user.id,
         access_token=user.access_token,
-        retrieval_mode=request.retrieval_mode,
+        retrieval_mode=request_body.retrieval_mode,
     )
+    run = result.get("run") or {}
+    log_operation(
+        tenant_id=user.tenant_id,
+        actor_user_id=user.id,
+        actor_email=getattr(user, "email", None),
+        actor_role=user.role,
+        action="rag_eval_run.execute",
+        resource_type="rag_eval_run",
+        resource_id=run.get("id"),
+        after={"run_id": run.get("id"), "status": run.get("status"), "total_cases": run.get("total_cases")},
+        request=request,
+    )
+    return result
 
 
 @router.get("/rag-quality/thumbs-down", response_model=RagQualityThumbsDownResponse)
@@ -327,11 +392,11 @@ async def get_flagged_count_endpoint(user=Depends(get_current_user)):
 
 
 @router.post("/conversations/{thread_id}/respond")
-async def respond_to_thread(thread_id: str, request: AdminRespondRequest, user=Depends(get_current_user)):
+async def respond_to_thread(thread_id: str, request_body: AdminRespondRequest, request: Request, user=Depends(get_current_user)):
     """Admin submits a manual response to a client's flagged thread."""
     _verify_admin(user)
 
-    if not request.content.strip():
+    if not request_body.content.strip():
         raise HTTPException(status_code=400, detail="Response content cannot be empty")
 
     # Look up the thread to get the client's user_id
@@ -343,10 +408,21 @@ async def respond_to_thread(thread_id: str, request: AdminRespondRequest, user=D
     client_user_id = thread.get("user_id")
 
     # Save admin message (user_id set to client for RLS compatibility)
-    saved = save_admin_message(user.tenant_id, thread_id, user.id, client_user_id, request.content.strip())
+    saved = save_admin_message(user.tenant_id, thread_id, user.id, client_user_id, request_body.content.strip())
 
     # Clear all attention flags in this thread
     clear_thread_attention_flags(user.tenant_id, thread_id)
+    log_operation(
+        tenant_id=user.tenant_id,
+        actor_user_id=user.id,
+        actor_email=getattr(user, "email", None),
+        actor_role=user.role,
+        action="admin_response.create",
+        resource_type="message",
+        resource_id=saved["id"],
+        after={"thread_id": thread_id, "message_id": saved["id"]},
+        request=request,
+    )
 
     return {"status": "success", "message_id": saved["id"]}
 
@@ -362,17 +438,28 @@ async def list_tenant_users(user=Depends(get_current_user)):
 
 
 @router.post("/users/{user_id}/approve")
-async def approve_user(user_id: str, user=Depends(get_current_user)):
+async def approve_user(user_id: str, request: Request, user=Depends(get_current_user)):
     """Approve a pending user."""
     _verify_admin(user)
     result = update_user_status(user.tenant_id, user_id, "approved")
     if not result:
         raise HTTPException(status_code=404, detail="User not found in this tenant")
+    log_operation(
+        tenant_id=user.tenant_id,
+        actor_user_id=user.id,
+        actor_email=getattr(user, "email", None),
+        actor_role=user.role,
+        action="tenant_user.approve",
+        resource_type="profile",
+        resource_id=user_id,
+        after=result,
+        request=request,
+    )
     return {"status": "approved"}
 
 
 @router.post("/users/{user_id}/suspend")
-async def suspend_user(user_id: str, user=Depends(get_current_user)):
+async def suspend_user(user_id: str, request: Request, user=Depends(get_current_user)):
     """Suspend a user."""
     _verify_admin(user)
     if user_id == user.id:
@@ -380,4 +467,15 @@ async def suspend_user(user_id: str, user=Depends(get_current_user)):
     result = update_user_status(user.tenant_id, user_id, "suspended")
     if not result:
         raise HTTPException(status_code=404, detail="User not found in this tenant")
+    log_operation(
+        tenant_id=user.tenant_id,
+        actor_user_id=user.id,
+        actor_email=getattr(user, "email", None),
+        actor_role=user.role,
+        action="tenant_user.suspend",
+        resource_type="profile",
+        resource_id=user_id,
+        after=result,
+        request=request,
+    )
     return {"status": "suspended"}

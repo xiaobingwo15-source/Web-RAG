@@ -48,8 +48,8 @@ def _resolve_target_user_id(token: str, user_id: str, tenant_id: str | None = No
 async def route_query(
     message: str,
     use_documents: bool,
-    enable_sql: bool = True,
-    enable_web_search: bool = True,
+    enable_sql: bool = False,
+    enable_web_search: bool = False,
 ) -> str:
     lower = message.lower()
     if use_documents:
@@ -67,8 +67,8 @@ async def route_query(
 
 async def route_query_llm(
     message: str,
-    enable_sql: bool = True,
-    enable_web_search: bool = True,
+    enable_sql: bool = False,
+    enable_web_search: bool = False,
 ) -> str:
     """LLM-based intent classification with keyword fallback."""
     try:
@@ -119,8 +119,8 @@ async def execute(
     thread_id: str,
     use_documents: bool = False,
     retrieval_mode: str = "hybrid",
-    enable_web_search: bool = True,
-    enable_sql: bool = True,
+    enable_web_search: bool = False,
+    enable_sql: bool = False,
     images: list[str] | None = None,
     tenant_id: str | None = None,
     target_user_id: str | None = None,
@@ -150,7 +150,6 @@ async def execute(
         route = "doc_rag"
     else:
         route = await route_query_llm(message, enable_sql, enable_web_search)
-    print(f"[AGENT] Routed to: {route} (use_documents={use_documents}, enable_sql={enable_sql}, enable_web_search={enable_web_search})")
     logger.info(f"Routed to: {route} (use_documents={use_documents}, enable_sql={enable_sql}, enable_web_search={enable_web_search})")
 
     route_labels = {

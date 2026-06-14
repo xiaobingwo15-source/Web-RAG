@@ -35,6 +35,7 @@ def test_upload_form_options_reach_ingestion_worker(monkeypatch):
     monkeypatch.setattr(documents, "compute_content_hash", lambda file_bytes: "hash-1")
     monkeypatch.setattr(documents, "get_document_by_hash", lambda *args, **kwargs: None)
     monkeypatch.setattr(documents, "get_user_store", lambda *args, **kwargs: {"id": "store-1"})
+    monkeypatch.setattr(documents, "log_operation", lambda **_kwargs: None)
     monkeypatch.setattr(
         documents,
         "create_document",

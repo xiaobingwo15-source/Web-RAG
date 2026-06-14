@@ -100,6 +100,7 @@ def _compact_log(log: dict) -> dict:
         "answer_message_id": log.get("answer_message_id"),
         "groundedness_score": _safe_float(log.get("groundedness_score")),
         "groundedness_flag": bool(log.get("groundedness_flag")),
+        "grounding_status": log.get("grounding_status") or "not_checked",
         "retrieval_quality": log.get("retrieval_quality"),
         "diagnostics": log.get("diagnostics") or {},
         "sources": [

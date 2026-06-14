@@ -42,7 +42,11 @@ RAG_SYSTEM_PROMPT = (
     "3. Sources section\n\n"
     "Do not mention \"documents\", \"uploaded files\", or \"retrieval\" — speak naturally.\n\n"
     "When making claims, reference which source supports them using [1], [2], etc. "
-    "At the end of your answer, include a 'Sources' section listing each reference you used.\n\n"
+    "Each reference tag includes source metadata — use it for precise citations. "
+    "Format citations as [N] (Source: filename, p.X, §Section) when page and section info is available. "
+    "If page or section info is not provided for a source, just use [N] (Source: filename).\n\n"
+    "At the end of your answer, include a 'Sources' section listing each reference you used "
+    "with page numbers and section names when available.\n\n"
     "Use natural Markdown formatting as appropriate (headings, bullet points, bold for emphasis). "
     "Keep answers well-structured but not overly rigid."
 )
@@ -192,15 +196,28 @@ def _build_messages(
     if use_rag:
         max_tok = _settings.max_context_tokens
         bounded_chunks = _truncate_context(context_chunks, max_tok)
-        # Build numbered context with optional filename tags for source attribution
+        # Build numbered context with optional filename, page, and section tags for source attribution
         numbered_chunks = []
         for i, chunk in enumerate(bounded_chunks):
             prefix = f"[{i+1}]"
             # If we have source metadata, include the filename so the LLM can cite by document name
             if context_sources and i < len(context_sources):
-                filename = context_sources[i].get("filename") or context_sources[i].get("title") or ""
+                src = context_sources[i]
+                filename = src.get("filename") or src.get("title") or ""
                 if filename:
-                    prefix = f"[{i+1}] (Source: {filename})"
+                    # Build rich citation prefix with page and section when available
+                    parts = [filename]
+                    page_start = src.get("page_start")
+                    page_end = src.get("page_end")
+                    if page_start is not None:
+                        if page_end is not None and page_end != page_start:
+                            parts.append(f"p.{page_start}-{page_end}")
+                        else:
+                            parts.append(f"p.{page_start}")
+                    heading = src.get("heading")
+                    if heading and heading.strip():
+                        parts.append(f"§{heading.strip()}")
+                    prefix = f"[{i+1}] (Source: {', '.join(parts)})"
             numbered_chunks.append(f"{prefix} {chunk}")
         context = "\n\n".join(numbered_chunks)
         prompt_text = (

@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 RetrievalMode = Literal["vector", "fts", "hybrid"]
 RagEvalCaseStatus = Literal["draft", "active"]
+RagEvalResultStatus = Literal["passed", "failed", "warning", "skipped"]
 
 
 class RagEvalCaseCreate(BaseModel):
@@ -115,6 +116,7 @@ class RagEvalResultResponse(BaseModel):
     groundedness_score: float
     answer_relevance_score: float
     passed: bool
+    result_status: RagEvalResultStatus | None = None
     failure_reason: Optional[str] = None
     created_at: str
 

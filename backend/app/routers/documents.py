@@ -1,10 +1,9 @@
-import mimetypes
-import uuid
-from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File, Form, HTTPException, Request
 from app.middleware.auth import get_current_user
 from app.models.documents import DocumentUploadResponse, DocumentStatus, DocumentListResponse, DocumentMetadataResponse
 from app.services.file_search_store import compute_content_hash
 from app.services.ingestion_worker import process_document_async
+from app.services.audit import log_operation
 from app.services.database import (
     create_document, get_user_documents, get_document, get_user_store, create_store,
     get_document_by_hash, get_user_document_metadata, archive_document,
@@ -12,19 +11,13 @@ from app.services.database import (
 )
 from app.services.rate_limit import check_rate_limit
 from app.services.pdf_parser import normalize_pdf_parser_mode
+from app.services.upload_validation import (
+    resolve_upload_mime_type,
+    sanitize_upload_filename,
+    validate_upload_bytes,
+)
 
 router = APIRouter()
-
-MAX_UPLOAD_BYTES = 25 * 1024 * 1024
-
-ALLOWED_MIME_TYPES = {
-    "application/pdf",
-    "text/plain",
-    "text/markdown",
-    "text/csv",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "application/vnd.ms-excel",
-}
 
 
 def _verify_admin(user) -> None:
@@ -35,6 +28,7 @@ def _verify_admin(user) -> None:
 @router.post("/upload", response_model=DocumentUploadResponse)
 async def upload(
     background_tasks: BackgroundTasks,
+    request: Request,
     file: UploadFile = File(...),
     use_ocr: bool = Form(False),
     pdf_parser_mode: str = Form("auto"),
@@ -44,32 +38,11 @@ async def upload(
     check_rate_limit(f"upload:{user.id}", limit=10, window_seconds=60)
     token = user.access_token
     parser_mode = normalize_pdf_parser_mode(pdf_parser_mode)
-
-    filename_lower = (file.filename or "").lower()
-    if filename_lower.endswith(".csv"):
-        mime_type = "text/csv"
-    elif filename_lower.endswith(".xlsx"):
-        mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    elif filename_lower.endswith(".xls"):
-        mime_type = "application/vnd.ms-excel"
-    elif filename_lower.endswith(".pdf"):
-        mime_type = "application/pdf"
-    elif filename_lower.endswith((".md", ".markdown")):
-        mime_type = "text/markdown"
-    elif filename_lower.endswith((".txt", ".text")):
-        mime_type = "text/plain"
-    else:
-        mime_type = file.content_type or "text/plain"
-        if mime_type not in ALLOWED_MIME_TYPES:
-            guessed, _ = mimetypes.guess_type(file.filename or "")
-            if guessed in ALLOWED_MIME_TYPES:
-                mime_type = guessed
-            else:
-                mime_type = "text/plain"
+    safe_filename = sanitize_upload_filename(file.filename)
+    mime_type = resolve_upload_mime_type(safe_filename, file.content_type)
 
     file_bytes = await file.read()
-    if len(file_bytes) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="File is too large. Maximum upload size is 25 MB.")
+    validate_upload_bytes(file_bytes, mime_type)
 
     content_hash = compute_content_hash(file_bytes)
     existing = get_document_by_hash(token, user.id, content_hash, tenant_id=user.tenant_id)
@@ -88,12 +61,24 @@ async def upload(
         store = create_store(token, user.id, "", "local-qdrant", tenant_id=user.tenant_id)
 
     if existing:
-        doc = mark_document_retrying(token, existing["id"], file.filename or "unnamed", mime_type)
+        doc = mark_document_retrying(token, existing["id"], safe_filename, mime_type)
     else:
         doc = create_document(
             token, user.id, store["id"],
-            file.filename or "unnamed", mime_type, "", tenant_id=user.tenant_id,
+            safe_filename, mime_type, "", tenant_id=user.tenant_id,
         )
+    log_operation(
+        tenant_id=user.tenant_id,
+        actor_user_id=user.id,
+        actor_email=getattr(user, "email", None),
+        actor_role=user.role,
+        action="document.upload",
+        resource_type="document",
+        resource_id=doc["id"],
+        after={"filename": safe_filename, "mime_type": mime_type, "status": doc.get("status", "pending")},
+        metadata={"use_ocr": use_ocr, "pdf_parser_mode": parser_mode, "size_bytes": len(file_bytes)},
+        request=request,
+    )
 
     # Kick off processing in background and return immediately
     background_tasks.add_task(
@@ -101,7 +86,7 @@ async def upload(
         token, user.id, doc["id"], file_bytes, mime_type,
         use_ocr=use_ocr,
         pdf_parser_mode=parser_mode,
-        filename=file.filename or "unnamed",
+        filename=safe_filename,
         tenant_id=user.tenant_id,
     )
 
@@ -146,12 +131,12 @@ async def get_metadata(user=Depends(get_current_user)):
 
 @router.get("/check-qdrant")
 async def check_qdrant(document_id: str | None = None, user=Depends(get_current_user)):
+    _verify_admin(user)
     from app.services.qdrant_db import count_user_chunks, get_sample_chunks
     target_user_id = user.id
 
     chunk_count = await count_user_chunks(target_user_id, tenant_id=user.tenant_id, document_id=document_id)
     samples = await get_sample_chunks(target_user_id, limit=3, tenant_id=user.tenant_id, document_id=document_id)
-    print(f"[DEBUG] check-qdrant: user_id={target_user_id}, document_id={document_id}, chunks={chunk_count}")
     return {
         "user_id": target_user_id,
         "document_id": document_id,
@@ -182,7 +167,7 @@ async def get_chunks(document_id: str, user=Depends(get_current_user)):
 
 
 @router.delete("/{document_id}")
-async def delete_document_endpoint(document_id: str, user=Depends(get_current_user)):
+async def delete_document_endpoint(document_id: str, request: Request, user=Depends(get_current_user)):
     """Archive a document without deleting stored chunks or uploaded records."""
     _verify_admin(user)
 
@@ -194,5 +179,17 @@ async def delete_document_endpoint(document_id: str, user=Depends(get_current_us
     filename = archived["filename"] if archived else doc["filename"]
     from app.services.semantic_cache import clear_semantic_cache
     clear_semantic_cache(f"document archived {document_id}")
+    log_operation(
+        tenant_id=user.tenant_id,
+        actor_user_id=user.id,
+        actor_email=getattr(user, "email", None),
+        actor_role=user.role,
+        action="document.archive",
+        resource_type="document",
+        resource_id=document_id,
+        before=doc,
+        after=archived or {"status": "archived"},
+        request=request,
+    )
 
     return {"message": f"Document '{filename}' archived", "filename": filename}

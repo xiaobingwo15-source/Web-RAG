@@ -1,6 +1,43 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 Fully-managed Agentic RAG application. Features a clean client-facing chat layout and an automated file ingestion deck. System operates without complex admin panels and is driven via environment variables.
+
+## Development Commands
+
+### Backend (Python / FastAPI)
+```powershell
+cd backend
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+pip install -r requirements.txt
+
+# Run dev server (from project root)
+uvicorn app.main:app --reload --port 8000   # from backend/
+
+# Run tests
+pytest tests/ -v                             # all tests
+pytest tests/test_admin_settings.py -v       # single file
+pytest tests/test_admin_settings.py::test_fn -k "test_name"  # single test
+```
+
+### Frontend (React / Vite)
+```powershell
+cd frontend
+npm install
+npm run dev        # dev server on :5173
+npm run build      # production build (tsc -b && vite build)
+npm run lint       # eslint
+```
+
+**Windows gotcha**: VS Code injects `NODE_ENV=production` at the process level, causing `npm` to skip devDependencies (vite not found). Always clear it before npm commands:
+```powershell
+$env:NODE_ENV = ""; npm run dev
+```
+
+### Supabase Migrations
+Migrations live in `backend/supabase/migrations/`. Apply via Supabase MCP (`mcp__supabase__apply_migration`) or the Supabase dashboard. The project uses Supabase MCP for all project management when 2FA dashboard lockout is active.
 
 ## Technical Stack
 - Frontend: React + TypeScript + Vite + Tailwind + shadcn/ui
@@ -10,6 +47,35 @@ Fully-managed Agentic RAG application. Features a clean client-facing chat layou
 - Chat LLM: **OpenRouter** (DeepSeek model via `openai`-compatible SDK at `https://openrouter.ai/api/v1`)
 - Embeddings: `google-genai` SDK (`gemini-embedding-001`, 768 dimensions)
 - Observability: Langfuse Tracing (free tier: 50k observations/month)
+
+## Multi-Tenant Auth Model
+
+Three roles with distinct access patterns:
+
+| Role | Identified By | Access Scope |
+|------|--------------|--------------|
+| **Owner** | `OWNER_USER_EMAILS` env var (comma-separated) | Cross-tenant: approve/reject admins, create/disable tenants. Uses service-role client (bypasses RLS). |
+| **Admin** | `profiles.role='admin'` + `status='approved'` | Tenant-scoped: manage documents, run evals, view conversations, use SQL/web-search tools. |
+| **Client** | `profiles.role='client'` + `status='approved'` | Tenant-scoped: chat only. New signups require admin approval. |
+
+Key auth files:
+- `backend/app/middleware/auth.py` — `get_current_user` dependency (JWT → profile lookup)
+- `backend/app/routers/owner.py` — `_verify_owner` checks email allowlist
+- `backend/app/routers/admin.py` — `_verify_admin` checks role + status
+- `backend/app/routers/chat.py` — `_is_approved_admin` gates tool access
+
+**Known gap**: `disable_tenant` sets `tenants.status='disabled'` but no RLS policy or middleware checks tenant status. Disabled-tenant users retain full access.
+
+## Security Hardening
+
+New in migration 033 — `backend/app/services/environment_guard.py`, `audit.py`, `upload_validation.py`:
+
+- **Environment guard**: `validate_environment_isolation()` runs at startup. Prevents non-production from pointing at production Supabase. Requires `SUPABASE_PROJECT_REF` and `PRODUCTION_SUPABASE_PROJECT_REF` env vars.
+- **Audit logging**: `log_operation()` in `audit.py` records admin actions (settings changes, user approvals, eval runs, tool usage). Silently catches failures to avoid crashing on audit issues.
+- **Upload validation**: `sanitize_upload_filename()` + `resolve_upload_mime_type()` + `validate_upload_bytes()` in `upload_validation.py`. Enforces filename safety, MIME type allowlist, and file signature checks.
+- **CORS**: Restricted to `["GET", "POST", "PATCH", "DELETE", "OPTIONS"]` methods and `["Authorization", "Content-Type"]` headers.
+- **Security headers**: HSTS (production only), X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy.
+- **API docs toggle**: `ENABLE_API_DOCS=false` (default) hides `/docs`, `/scalar`, `/openapi.json`.
 
 ## RAG Pipeline Architecture
 
@@ -39,6 +105,13 @@ Fully-managed Agentic RAG application. Features a clean client-facing chat layou
   - Groundedness check (token-overlap + LLM) with retry on low scores
   - Source dedup uses separate tracking sets for chunks vs sources (aligned 1:1 via `context_sources`)
 - Hardcoded refusal when 0 chunks found (LLM cannot be trusted to refuse on its own)
+
+### SQL Tool (`backend/app/services/sql_engine.py`)
+- Gated by `SQL_TOOLS_ENABLED` env var (default: false) — also gates web search tool endpoint
+- Table allowlist: `ALLOWED_TABLES = {"ie_sales", "ie_employees"}` — adding new tables requires a code change
+- Validation: `TABLE_REF_RE` regex extracts `FROM`/`JOIN` table refs, `BLOCKED_KEYWORDS` regex blocks DML
+- **Known gap**: regex only captures `FROM`/`JOIN` — subqueries, CTEs, and UNION can reference disallowed tables
+- Executes via Supabase RPC `exec_readonly_sql` (PL/pgSQL function with its own validation layer)
 
 ### System Prompts (all language-aware)
 - `RAG_SYSTEM_PROMPT` — Standard doc RAG (in `gemini.py`)
@@ -101,8 +174,3 @@ Before planning, implementing, debugging, reviewing, or executing any task — *
 
 ## Progress
 Reference `PROGRESS.md` to see exactly which module layers are locked in or currently under active development.
-
-<!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan
-<!-- SPECKIT END -->

@@ -4,7 +4,6 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  KeyRound,
   Lock,
   RefreshCw,
   ShieldCheck,
@@ -19,8 +18,8 @@ import {
   type OwnerAdminProfile,
   type OwnerAdminStatus,
 } from '@/lib/api'
+import { useAuth } from '@/hooks/useAuth'
 
-const OWNER_KEY_STORAGE = 'owner_api_key'
 const PAGE_LIMIT = 50
 
 const filters: Array<{ value: OwnerAdminStatus; label: string }> = [
@@ -48,8 +47,7 @@ function formatDate(value: string) {
 }
 
 export function OwnerLockPage() {
-  const [ownerKey, setOwnerKey] = useState(() => sessionStorage.getItem(OWNER_KEY_STORAGE) || '')
-  const [keyInput, setKeyInput] = useState(ownerKey)
+  const { session, loading: authLoading, signOut } = useAuth()
   const [status, setStatus] = useState<OwnerAdminStatus>('pending')
   const [page, setPage] = useState(1)
   const [admins, setAdmins] = useState<OwnerAdminProfile[]>([])
@@ -59,62 +57,44 @@ export function OwnerLockPage() {
   const [mutating, setMutating] = useState<string | null>(null)
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(total / PAGE_LIMIT)), [total])
+  const token = session?.access_token || ''
 
-  const lockPage = () => {
-    sessionStorage.removeItem(OWNER_KEY_STORAGE)
-    setOwnerKey('')
-    setKeyInput('')
+  const lockPage = async () => {
+    await signOut()
     setAdmins([])
     setTotal(0)
     setError(null)
   }
 
   const loadAdmins = useCallback(async () => {
-    if (!ownerKey) return
+    if (!token) return
     setLoading(true)
     setError(null)
     try {
-      const data = await getOwnerAdmins(ownerKey, { status, page, limit: PAGE_LIMIT })
+      const data = await getOwnerAdmins(token, { status, page, limit: PAGE_LIMIT })
       setAdmins(data.admins)
       setTotal(data.total)
     } catch (err) {
       const message = (err as Error).message || 'Failed to load owner admin approvals'
       setError(message)
-      if (message.toLowerCase().includes('owner access')) {
-        sessionStorage.removeItem(OWNER_KEY_STORAGE)
-        setOwnerKey('')
-      }
     } finally {
       setLoading(false)
     }
-  }, [ownerKey, page, status])
+  }, [page, status, token])
 
   useEffect(() => {
     loadAdmins()
   }, [loadAdmins])
 
-  const unlock = (event: React.FormEvent) => {
-    event.preventDefault()
-    const trimmed = keyInput.trim()
-    if (!trimmed) {
-      setError('Owner key is required.')
-      return
-    }
-    sessionStorage.setItem(OWNER_KEY_STORAGE, trimmed)
-    setOwnerKey(trimmed)
-    setPage(1)
-    setError(null)
-  }
-
   const runAction = async (admin: OwnerAdminProfile, action: 'approve' | 'reject') => {
-    if (!ownerKey) return
+    if (!token) return
     setMutating(`${admin.id}:${action}`)
     setError(null)
     try {
       if (action === 'approve') {
-        await approveOwnerAdmin(ownerKey, admin.id)
+        await approveOwnerAdmin(token, admin.id)
       } else {
-        await rejectOwnerAdmin(ownerKey, admin.id)
+        await rejectOwnerAdmin(token, admin.id)
       }
       await loadAdmins()
     } catch (err) {
@@ -124,17 +104,25 @@ export function OwnerLockPage() {
     }
   }
 
-  if (!ownerKey) {
+  if (authLoading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-background text-foreground">
+        <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+      </main>
+    )
+  }
+
+  if (!token) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-background px-4 text-foreground">
-        <form onSubmit={unlock} className="w-full max-w-sm rounded-lg border border-border bg-card p-5 shadow-sm">
+        <div className="w-full max-w-sm rounded-lg border border-border bg-card p-5 shadow-sm">
           <div className="mb-5 flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-md bg-primary/10">
               <Lock className="h-5 w-5 text-primary" />
             </div>
             <div>
               <h1 className="text-base font-semibold">Owner Approval Lock</h1>
-              <p className="text-xs text-muted-foreground">Enter the owner key to review admin access.</p>
+              <p className="text-xs text-muted-foreground">Sign in with an owner account to review admin access.</p>
             </div>
           </div>
           {error && (
@@ -143,25 +131,14 @@ export function OwnerLockPage() {
               <span>{error}</span>
             </div>
           )}
-          <label className="mb-1.5 block text-xs font-semibold text-muted-foreground">OWNER_API_KEY</label>
-          <div className="relative">
-            <KeyRound className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-            <input
-              type="password"
-              value={keyInput}
-              onChange={(event) => setKeyInput(event.target.value)}
-              className="w-full rounded-md border border-border bg-input py-2 pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-              autoComplete="off"
-            />
-          </div>
-          <button
-            type="submit"
+          <a
+            href="/login"
             className="mt-4 flex w-full items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-95"
           >
             <ShieldCheck className="h-4 w-4" />
-            Unlock
-          </button>
-        </form>
+            Sign in
+          </a>
+        </div>
       </main>
     )
   }

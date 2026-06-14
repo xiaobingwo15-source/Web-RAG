@@ -52,7 +52,14 @@ class Settings(BaseSettings):
     backend_url: str = "http://localhost:8000"
     frontend_url: str = "http://localhost:5173"
     owner_api_key: str = ""
+    owner_user_emails: str = ""
     widget_token_secret: str = ""
+    app_env: str = "local"
+    supabase_project_ref: str = ""
+    production_supabase_project_ref: str = ""
+    allow_nonprod_production_supabase: bool = False
+    sql_tools_enabled: bool = False
+    enable_api_docs: bool = False
 
     # Optional MinerU agent parser for complex PDF layout/table/formula extraction.
     mineru_agent_enabled: bool = False
@@ -108,6 +115,19 @@ class Settings(BaseSettings):
     def cors_origins(self) -> list[str]:
         """Parse comma-separated FRONTEND_URL into a list of allowed origins."""
         return [o.strip() for o in self.frontend_url.split(",") if o.strip()]
+
+    @property
+    def owner_email_set(self) -> set[str]:
+        """Lowercased owner allowlist parsed from OWNER_USER_EMAILS."""
+        return {
+            email.strip().lower()
+            for email in self.owner_user_emails.split(",")
+            if email.strip()
+        }
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.strip().lower() == "production"
 
     model_config = {
         "env_file": "../.env",

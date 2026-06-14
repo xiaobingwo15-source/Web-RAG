@@ -27,7 +27,7 @@ export function useFlaggedNotifications() {
           event: 'INSERT',
           schema: 'public',
           table: 'messages',
-          filter: 'needs_attention=eq.true',
+          filter: 'attention_status=eq.needs_admin',
         },
         () => {
           setFlaggedCount((prev) => prev + 1)
@@ -39,7 +39,7 @@ export function useFlaggedNotifications() {
           event: 'UPDATE',
           schema: 'public',
           table: 'messages',
-          filter: 'needs_attention=eq.false',
+          filter: 'attention_status=neq.needs_admin',
         },
         () => {
           setFlaggedCount((prev) => Math.max(0, prev - 1))

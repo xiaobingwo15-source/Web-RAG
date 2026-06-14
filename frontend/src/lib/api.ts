@@ -777,6 +777,7 @@ export interface RagEvalResult {
   groundedness_score: number
   answer_relevance_score: number
   passed: boolean
+  result_status?: 'passed' | 'failed' | 'warning' | 'skipped' | null
   failure_reason?: string | null
   created_at: string
 }
@@ -810,6 +811,7 @@ export interface RagQualityRetrievalLog {
   answer_message_id?: string | null
   groundedness_score?: number | null
   groundedness_flag: boolean
+  grounding_status?: 'not_checked' | 'ok' | 'low_confidence' | 'ungrounded' | null
   retrieval_quality?: string | null
   diagnostics?: Record<string, unknown> | null
 }
@@ -821,6 +823,7 @@ export interface RagQualitySummary {
   top_score?: number | null
   groundedness_score?: number | null
   groundedness_flag: boolean
+  grounding_status?: 'not_checked' | 'ok' | 'low_confidence' | 'ungrounded' | null
   zero_source: boolean
 }
 
@@ -1112,9 +1115,9 @@ export interface OwnerAdminsResponse {
   total: number
 }
 
-const ownerHeaders = (ownerKey: string) => ({
+const ownerHeaders = (token: string) => ({
   'Content-Type': 'application/json',
-  'X-Owner-Key': ownerKey,
+  Authorization: `Bearer ${token}`,
 })
 
 async function parseOwnerError(response: Response, fallback: string): Promise<Error> {
@@ -1127,7 +1130,7 @@ async function parseOwnerError(response: Response, fallback: string): Promise<Er
 }
 
 export async function getOwnerAdmins(
-  ownerKey: string,
+  token: string,
   params: { status?: OwnerAdminStatus; page?: number; limit?: number } = {},
 ): Promise<OwnerAdminsResponse> {
   const search = new URLSearchParams({
@@ -1136,31 +1139,31 @@ export async function getOwnerAdmins(
     limit: String(params.limit || 50),
   })
   const response = await fetch(`/api/owner/admins?${search.toString()}`, {
-    headers: ownerHeaders(ownerKey),
+    headers: ownerHeaders(token),
   })
   if (!response.ok) throw await parseOwnerError(response, `Fetch owner admins failed: ${response.status}`)
   return response.json()
 }
 
 export async function approveOwnerAdmin(
-  ownerKey: string,
+  token: string,
   userId: string,
 ): Promise<{ status: string; admin: OwnerAdminProfile }> {
   const response = await fetch(`/api/owner/admins/${encodeURIComponent(userId)}/approve`, {
     method: 'POST',
-    headers: ownerHeaders(ownerKey),
+    headers: ownerHeaders(token),
   })
   if (!response.ok) throw await parseOwnerError(response, `Approve owner admin failed: ${response.status}`)
   return response.json()
 }
 
 export async function rejectOwnerAdmin(
-  ownerKey: string,
+  token: string,
   userId: string,
 ): Promise<{ status: string; admin: OwnerAdminProfile }> {
   const response = await fetch(`/api/owner/admins/${encodeURIComponent(userId)}/reject`, {
     method: 'POST',
-    headers: ownerHeaders(ownerKey),
+    headers: ownerHeaders(token),
   })
   if (!response.ok) throw await parseOwnerError(response, `Reject owner admin failed: ${response.status}`)
   return response.json()

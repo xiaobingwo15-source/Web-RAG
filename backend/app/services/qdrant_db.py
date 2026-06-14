@@ -66,6 +66,23 @@ async def _ensure_collection_inner():
             COLLECTION_NAME, field_name="chunk_type",
             field_schema=models.PayloadSchemaType.KEYWORD,
         )
+        # Phase 1: structural metadata indexes
+        await client.create_payload_index(
+            COLLECTION_NAME, field_name="structural_type",
+            field_schema=models.PayloadSchemaType.KEYWORD,
+        )
+        await client.create_payload_index(
+            COLLECTION_NAME, field_name="heading",
+            field_schema=models.PayloadSchemaType.KEYWORD,
+        )
+        await client.create_payload_index(
+            COLLECTION_NAME, field_name="table_id",
+            field_schema=models.PayloadSchemaType.KEYWORD,
+        )
+        await client.create_payload_index(
+            COLLECTION_NAME, field_name="page_start",
+            field_schema=models.PayloadSchemaType.INTEGER,
+        )
         logger.info("Created Qdrant collection '%s' with payload indexes", COLLECTION_NAME)
     else:
         await _validate_collection_dimension(client, settings.get_embedding_dimension)
@@ -76,6 +93,19 @@ async def _ensure_collection_inner():
             )
         except Exception:
             pass
+        # Phase 1: ensure structural metadata indexes exist on existing collections
+        for field, schema in [
+            ("structural_type", models.PayloadSchemaType.KEYWORD),
+            ("heading", models.PayloadSchemaType.KEYWORD),
+            ("table_id", models.PayloadSchemaType.KEYWORD),
+            ("page_start", models.PayloadSchemaType.INTEGER),
+        ]:
+            try:
+                await client.create_payload_index(
+                    COLLECTION_NAME, field_name=field, field_schema=schema,
+                )
+            except Exception:
+                pass
         logger.info(
             "Qdrant collection '%s' already exists; embedding provider=%s model=%s dimension=%s",
             COLLECTION_NAME,
@@ -139,6 +169,21 @@ async def insert_chunks(
             payload["chunk_type"] = chunk["chunk_type"]
         if chunk.get("metadata"):
             payload["metadata"] = chunk["metadata"]
+        # Phase 1: per-chunk structural metadata
+        if chunk.get("heading"):
+            payload["heading"] = chunk["heading"]
+        if chunk.get("heading_level") is not None:
+            payload["heading_level"] = chunk["heading_level"]
+        if chunk.get("structural_type"):
+            payload["structural_type"] = chunk["structural_type"]
+        if chunk.get("page_start") is not None:
+            payload["page_start"] = chunk["page_start"]
+        if chunk.get("page_end") is not None:
+            payload["page_end"] = chunk["page_end"]
+        if chunk.get("table_id"):
+            payload["table_id"] = chunk["table_id"]
+        if chunk.get("breadcrumb_path"):
+            payload["breadcrumb_path"] = chunk["breadcrumb_path"]
         points.append(
             models.PointStruct(id=point_ids[i], vector=embedding, payload=payload)
         )
@@ -222,17 +267,23 @@ async def search_similar_chunks(
         score_threshold=similarity_threshold,
         with_payload=True,
     )
-    hits = [
-        {
+    hits = []
+    for r in results.points:
+        hit = {
             "id": str(r.id),
             "document_id": r.payload.get("document_id"),
             "content": r.payload.get("content"),
             "similarity": r.score,
             "metadata": r.payload.get("metadata", {}),
-            **({"parent_id": r.payload["parent_id"]} if r.payload.get("parent_id") else {}),
         }
-        for r in results.points
-    ]
+        if r.payload.get("parent_id"):
+            hit["parent_id"] = r.payload["parent_id"]
+        # Phase 1: include structural metadata from payload
+        for field in ("heading", "heading_level", "structural_type", "page_start", "page_end", "table_id", "breadcrumb_path"):
+            val = r.payload.get(field)
+            if val is not None:
+                hit[field] = val
+        hits.append(hit)
     if hits:
         scores = [f"{h['similarity']:.4f}" for h in hits]
         print(f"[QDRANT] Vector search: {len(hits)} results, scores=[{', '.join(scores)}], threshold={similarity_threshold}")
@@ -258,14 +309,20 @@ async def get_parent_chunks_by_ids(parent_ids: list[str]) -> dict[str, dict]:
         with_payload=True,
         with_vectors=False,
     )
-    return {
-        str(point.id): {
+    parent_map = {}
+    for point in results:
+        entry = {
             "content": point.payload.get("content", ""),
             "document_id": point.payload.get("document_id", ""),
             "metadata": point.payload.get("metadata", {}),
         }
-        for point in results
-    }
+        # Phase 1: include structural metadata from parent payload
+        for field in ("heading", "heading_level", "structural_type", "page_start", "page_end", "table_id", "breadcrumb_path"):
+            val = point.payload.get(field)
+            if val is not None:
+                entry[field] = val
+        parent_map[str(point.id)] = entry
+    return parent_map
 
 
 async def search_similar_chunks_filtered(
@@ -308,16 +365,22 @@ async def search_similar_chunks_filtered(
         score_threshold=similarity_threshold,
         with_payload=True,
     )
-    return [
-        {
+    hits = []
+    for r in results.points:
+        hit = {
             "id": str(r.id),
             "document_id": r.payload.get("document_id"),
             "content": r.payload.get("content"),
             "similarity": r.score,
             "metadata": r.payload.get("metadata", {}),
         }
-        for r in results.points
-    ]
+        # Phase 1: include structural metadata from payload
+        for field in ("heading", "heading_level", "structural_type", "page_start", "page_end", "table_id", "breadcrumb_path"):
+            val = r.payload.get(field)
+            if val is not None:
+                hit[field] = val
+        hits.append(hit)
+    return hits
 
 
 async def delete_document_chunks(document_id: str) -> None:
