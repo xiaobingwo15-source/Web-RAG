@@ -9,7 +9,7 @@ Provides:
 
 import logging
 from datetime import UTC, datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.config import Settings
@@ -24,6 +24,7 @@ from app.services.eval_pipeline import (
     EvalTestCase,
 )
 from app.services.database import get_user_documents, get_document_chunks
+from app.services.audit import log_operation
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ router = APIRouter()
 
 
 def _verify_admin(user) -> None:
-    if user.role != "admin" or not user.tenant_id:
+    if user.role != "admin" or not user.tenant_id or user.status != "approved":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",
@@ -75,28 +76,39 @@ class TestSetResponse(BaseModel):
 # --- Endpoints ---
 
 @router.post("/generate-test-set", response_model=TestSetResponse)
-async def generate_test_set_endpoint(request: GenerateTestSetRequest, user=Depends(get_current_user)):
+async def generate_test_set_endpoint(request_body: GenerateTestSetRequest, request: Request, user=Depends(get_current_user)):
     """Generate a golden test set from a document's chunks using LLM."""
     _verify_admin(user)
 
     # Fetch document chunks
-    chunks = get_document_chunks(user.access_token, request.document_id)
+    chunks = get_document_chunks(user.access_token, request_body.document_id)
     if not chunks:
         raise HTTPException(status_code=404, detail="Document not found or has no chunks")
 
     # Generate test cases
-    chunk_dicts = [{"content": c["content"], "document_id": request.document_id} for c in chunks]
-    test_cases = await create_golden_test_set(chunk_dicts, request.num_questions_per_chunk)
+    chunk_dicts = [{"content": c["content"], "document_id": request_body.document_id} for c in chunks]
+    test_cases = await create_golden_test_set(chunk_dicts, request_body.num_questions_per_chunk)
 
     if not test_cases:
         raise HTTPException(status_code=422, detail="Failed to generate test cases from document")
 
     # Persist test set
-    saved = save_eval_test_set(user.tenant_id, request.document_id, test_cases)
+    saved = save_eval_test_set(user.tenant_id, request_body.document_id, test_cases)
+    log_operation(
+        tenant_id=user.tenant_id,
+        actor_user_id=user.id,
+        actor_email=getattr(user, "email", None),
+        actor_role=user.role,
+        action="eval_test_set.create",
+        resource_type="eval_test_set",
+        resource_id=saved.get("id"),
+        after={"id": saved.get("id"), "document_id": request_body.document_id, "case_count": len(test_cases)},
+        request=request,
+    )
 
     return TestSetResponse(
         id=saved.get("id", ""),
-        document_id=request.document_id,
+        document_id=request_body.document_id,
         case_count=len(test_cases),
         test_cases=[
             TestCaseResponse(question=tc.question, expected_answer=tc.expected_answer, context=tc.context, tags=tc.tags)
@@ -107,7 +119,7 @@ async def generate_test_set_endpoint(request: GenerateTestSetRequest, user=Depen
 
 
 @router.post("/run")
-async def run_eval_endpoint(request: RunEvalRequest, user=Depends(get_current_user)):
+async def run_eval_endpoint(request_body: RunEvalRequest, request: Request, user=Depends(get_current_user)):
     """Run a RAGAS-style evaluation suite.
 
     Either provide test_set_id for an existing test set, or document_id to
@@ -121,12 +133,12 @@ async def run_eval_endpoint(request: RunEvalRequest, user=Depends(get_current_us
     test_cases: list[EvalTestCase] = []
     test_set_id = ""
 
-    if request.test_set_id:
+    if request_body.test_set_id:
         # Load existing test set
         result = (
             db.table("eval_test_sets")
             .select("*")
-            .eq("id", request.test_set_id)
+            .eq("id", request_body.test_set_id)
             .eq("tenant_id", user.tenant_id)
             .limit(1)
             .execute()
@@ -143,15 +155,15 @@ async def run_eval_endpoint(request: RunEvalRequest, user=Depends(get_current_us
                 tags=tc.get("tags", []),
             ))
 
-    elif request.document_id:
+    elif request_body.document_id:
         # Auto-generate from a single document
-        chunks = get_document_chunks(user.access_token, request.document_id)
+        chunks = get_document_chunks(user.access_token, request_body.document_id)
         if not chunks:
             raise HTTPException(status_code=404, detail="Document not found or has no chunks")
-        chunk_dicts = [{"content": c["content"], "document_id": request.document_id} for c in chunks]
+        chunk_dicts = [{"content": c["content"], "document_id": request_body.document_id} for c in chunks]
         test_cases = await create_golden_test_set(chunk_dicts)
         if test_cases:
-            saved = save_eval_test_set(user.tenant_id, request.document_id, test_cases)
+            saved = save_eval_test_set(user.tenant_id, request_body.document_id, test_cases)
             test_set_id = saved.get("id", "")
 
     else:
@@ -177,19 +189,19 @@ async def run_eval_endpoint(request: RunEvalRequest, user=Depends(get_current_us
     # Build experiment config for tracking
     settings = Settings()
     config_json = {
-        "retrieval_mode": request.retrieval_mode,
-        "chunk_size": request.chunk_size if request.chunk_size is not None else settings.child_chunk_size,
-        "top_k": request.top_k if request.top_k is not None else 5,
-        "reranker_model": request.reranker_model or "rerank-v3.5",
-        "embedding_model": request.embedding_model or settings.embedding_model,
-        "notes": request.notes,
+        "retrieval_mode": request_body.retrieval_mode,
+        "chunk_size": request_body.chunk_size if request_body.chunk_size is not None else settings.child_chunk_size,
+        "top_k": request_body.top_k if request_body.top_k is not None else 5,
+        "reranker_model": request_body.reranker_model or "rerank-v3.5",
+        "embedding_model": request_body.embedding_model or settings.embedding_model,
+        "notes": request_body.notes,
         "timestamp": datetime.now(UTC).isoformat(),
     }
 
     # Run evaluation
     suite_result = await run_eval_suite(
         test_cases=test_cases,
-        retrieval_mode=request.retrieval_mode,
+        retrieval_mode=request_body.retrieval_mode,
         access_token=user.access_token,
         user_id=user.id,
         tenant_id=user.tenant_id,
@@ -199,6 +211,17 @@ async def run_eval_endpoint(request: RunEvalRequest, user=Depends(get_current_us
     # Persist results
     run_record = save_eval_run(user.tenant_id, suite_result, test_set_id)
     suite_result.run_id = run_record.get("id", "")
+    log_operation(
+        tenant_id=user.tenant_id,
+        actor_user_id=user.id,
+        actor_email=getattr(user, "email", None),
+        actor_role=user.role,
+        action="eval_run.execute",
+        resource_type="eval_run",
+        resource_id=suite_result.run_id,
+        after={"run_id": suite_result.run_id, "test_set_id": test_set_id},
+        request=request,
+    )
 
     return suite_result.to_dict()
 

@@ -25,6 +25,7 @@ class RagQualityRetrievalLog(BaseModel):
     answer_message_id: str | None = None
     groundedness_score: float | None = None
     groundedness_flag: bool = False
+    grounding_status: str = "not_checked"
     retrieval_quality: str | None = None
     diagnostics: dict | None = None
 
@@ -36,6 +37,7 @@ class RagQualitySummary(BaseModel):
     top_score: float | None = None
     groundedness_score: float | None = None
     groundedness_flag: bool = False
+    grounding_status: str | None = None
     zero_source: bool = False
 
 

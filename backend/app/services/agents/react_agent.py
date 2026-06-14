@@ -30,13 +30,19 @@ THINK_SYSTEM_PROMPT = (
     "Given the user's question and the context gathered so far, decide the NEXT action.\n\n"
     "Possible actions:\n"
     "- 'retrieve': search the knowledge base with a new query\n"
+    "- 'read_page': retrieve all content from a specific page of a document (requires document_id and page_number)\n"
+    "- 'extract_table': retrieve a specific table from a document (requires document_id and table_id)\n"
     "- 'web_search': search the web for information\n"
+    "- 'get_document_metadata': get info about a document (requires document_id)\n"
     "- 'generate': you have enough context to answer\n"
     "- 'done': the question is answered or cannot be answered\n\n"
     "Return a JSON object with:\n"
     "- 'type': one of the action types above\n"
     "- 'reasoning': brief explanation of why you chose this action\n"
-    "- 'query': (for retrieve/web_search) the search query to use\n\n"
+    "- 'query': (for retrieve/web_search) the search query to use\n"
+    "- 'document_id': (for read_page/extract_table/get_document_metadata) the document ID\n"
+    "- 'page_number': (for read_page) the page number\n"
+    "- 'table_id': (for extract_table) the table identifier\n\n"
     "Return ONLY valid JSON, no markdown wrapping."
 )
 
@@ -235,6 +241,91 @@ async def execute(
                 "action_source": "react",
                 "action_data": {"added": added, "total": len(context_chunks)},
             }
+
+        elif action_type == "read_page":
+            from app.services.agents.tools import execute_tool, ToolContext
+            ctx = ToolContext(token=token, user_id=user_id, target_user_id=target_user_id, tenant_id=tenant_id, thread_id=thread_id)
+            tool_result = await execute_tool("read_page", {
+                "document_id": action.get("document_id", ""),
+                "page_number": action.get("page_number"),
+            }, ctx)
+            if tool_result.success and tool_result.chunks:
+                for chunk in tool_result.chunks:
+                    if len(context_chunks) < MAX_CONTEXT_CHUNKS:
+                        key = chunk[:200].strip().lower()
+                        if key not in seen_keys:
+                            seen_keys.add(key)
+                            context_chunks.append(chunk)
+                all_sources.extend(tool_result.sources)
+                yield {
+                    "type": "thought",
+                    "content": f"Read page {action.get('page_number')}: {len(tool_result.chunks)} section(s) retrieved.",
+                    "action_type": "searching",
+                    "action_source": "react",
+                }
+            else:
+                yield {
+                    "type": "thought",
+                    "content": f"Page read failed: {tool_result.error or 'no data found'}",
+                    "action_type": "searching",
+                    "action_source": "react",
+                }
+
+        elif action_type == "extract_table":
+            from app.services.agents.tools import execute_tool, ToolContext
+            ctx = ToolContext(token=token, user_id=user_id, target_user_id=target_user_id, tenant_id=tenant_id, thread_id=thread_id)
+            tool_result = await execute_tool("extract_table", {
+                "document_id": action.get("document_id", ""),
+                "table_id": action.get("table_id", ""),
+            }, ctx)
+            if tool_result.success and tool_result.chunks:
+                for chunk in tool_result.chunks:
+                    if len(context_chunks) < MAX_CONTEXT_CHUNKS:
+                        key = chunk[:200].strip().lower()
+                        if key not in seen_keys:
+                            seen_keys.add(key)
+                            context_chunks.append(chunk)
+                all_sources.extend(tool_result.sources)
+                yield {
+                    "type": "thought",
+                    "content": f"Extracted table '{action.get('table_id')}': {len(tool_result.chunks)} section(s).",
+                    "action_type": "searching",
+                    "action_source": "react",
+                }
+            else:
+                yield {
+                    "type": "thought",
+                    "content": f"Table extraction failed: {tool_result.error or 'table not found'}",
+                    "action_type": "searching",
+                    "action_source": "react",
+                }
+
+        elif action_type == "get_document_metadata":
+            from app.services.agents.tools import execute_tool, ToolContext
+            ctx = ToolContext(token=token, user_id=user_id, target_user_id=target_user_id, tenant_id=tenant_id, thread_id=thread_id)
+            tool_result = await execute_tool("get_document_metadata", {
+                "document_id": action.get("document_id", ""),
+            }, ctx)
+            if tool_result.success and tool_result.data:
+                meta = tool_result.data
+                info_chunk = f"Document: {meta.get('filename', 'unknown')}, Status: {meta.get('status')}, Chunks: {meta.get('chunk_count', 0)}"
+                key = info_chunk[:200].strip().lower()
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    context_chunks.append(info_chunk)
+                yield {
+                    "type": "thought",
+                    "content": f"Document info: {meta.get('filename')} ({meta.get('chunk_count', 0)} chunks)",
+                    "action_type": "searching",
+                    "action_source": "react",
+                }
+            else:
+                yield {
+                    "type": "thought",
+                    "content": f"Document lookup failed: {tool_result.error or 'not found'}",
+                    "action_type": "searching",
+                    "action_source": "react",
+                }
 
         elif action_type == "generate":
             if not context_chunks:

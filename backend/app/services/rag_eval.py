@@ -17,6 +17,10 @@ class EvalScore:
     answer_relevance_score: float
     passed: bool
     failure_reason: str | None = None
+    # Phase 4.2: Citation accuracy — % of [N] citations that map to real sources
+    citation_accuracy_score: float | None = None
+    # Phase 4.4: Deterministic recall — was the expected document retrieved?
+    recall_at_k: float | None = None
 
 
 def _normalize(text: str) -> str:
@@ -29,6 +33,26 @@ def _contains_fact(text: str, fact: str) -> bool:
 
 def _valid_sources(sources: list[dict]) -> list[dict]:
     return [source for source in sources if source.get("status") != "archived"]
+
+
+def _compute_citation_accuracy(answer: str, sources: list[dict]) -> float | None:
+    """Phase 4.2: Compute citation accuracy — % of [N] citations that map to real sources.
+
+    Parses [N] references from the answer. The LLM is instructed to use
+    [1], [2], etc. for source citations. References with N > len(sources)
+    are counted as citation errors (hallucinated source references).
+    References with N in valid range are correct citations.
+    """
+    if not sources:
+        return None
+
+    all_refs = re.findall(r"\[(\d+)\]", answer)
+    if not all_refs:
+        return None
+
+    valid_indices = set(range(1, len(sources) + 1))
+    correct = sum(1 for c in all_refs if int(c) in valid_indices)
+    return round(correct / len(all_refs), 4)
 
 
 def score_eval_case(
@@ -59,6 +83,15 @@ def score_eval_case(
         groundedness = source_hits / len(facts) if valid_sources else 0.0
         missing_facts = [fact for fact in facts if not _contains_fact(answer, fact)]
 
+    # Phase 4.4: Deterministic recall@k
+    recall_at_k = None
+    if expected_document_id:
+        retrieved_doc_ids = {str(s.get("document_id")) for s in valid_sources}
+        recall_at_k = 1.0 if expected_document_id in retrieved_doc_ids else 0.0
+
+    # Phase 4.2: Citation accuracy
+    citation_accuracy = _compute_citation_accuracy(answer, valid_sources)
+
     failures = []
     if not valid_sources:
         failures.append("no sources returned")
@@ -70,6 +103,8 @@ def score_eval_case(
         failures.append(f"groundedness below threshold: {groundedness:.2f}")
     if answer_relevance < 0.7:
         failures.append(f"answer relevance below threshold: {answer_relevance:.2f}")
+    if citation_accuracy is not None and citation_accuracy < 0.8:
+        failures.append(f"citation accuracy below threshold: {citation_accuracy:.2f}")
 
     return EvalScore(
         context_relevance_score=round(context_relevance, 4),
@@ -77,6 +112,8 @@ def score_eval_case(
         answer_relevance_score=round(answer_relevance, 4),
         passed=not failures,
         failure_reason="; ".join(failures) if failures else None,
+        citation_accuracy_score=citation_accuracy,
+        recall_at_k=recall_at_k,
     )
 
 
@@ -160,6 +197,13 @@ async def run_rag_eval(
         avg_context = sum(float(r.get("context_relevance_score") or 0) for r in results) / total
         avg_grounded = sum(float(r.get("groundedness_score") or 0) for r in results) / total
         avg_answer = sum(float(r.get("answer_relevance_score") or 0) for r in results) / total
+
+        # Phase 4.2/4.4: Compute averages for new metrics
+        citation_scores = [float(r["citation_accuracy_score"]) for r in results if r.get("citation_accuracy_score") is not None]
+        recall_scores = [float(r["recall_at_k"]) for r in results if r.get("recall_at_k") is not None]
+        avg_citation = round(sum(citation_scores) / len(citation_scores), 4) if citation_scores else 0
+        avg_recall = round(sum(recall_scores) / len(recall_scores), 4) if recall_scores else 0
+
         run = database.update_rag_eval_run(
             tenant_id,
             run["id"],
@@ -169,6 +213,8 @@ async def run_rag_eval(
                 "avg_context_relevance_score": round(avg_context, 4),
                 "avg_groundedness_score": round(avg_grounded, 4),
                 "avg_answer_relevance_score": round(avg_answer, 4),
+                "avg_citation_accuracy_score": avg_citation,
+                "avg_recall_at_k": avg_recall,
                 "completed_at": _now_iso(),
             },
         )

@@ -8,15 +8,17 @@ files into small chunks, each uploaded as a separate request.
 import hashlib
 import logging
 import math
+import re
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from app.middleware.auth import get_current_user
 from app.models.documents import DocumentUploadResponse
-from app.routers.documents import ALLOWED_MIME_TYPES, MAX_UPLOAD_BYTES, _verify_admin
+from app.routers.documents import _verify_admin
+from app.services.audit import log_operation
 from app.services.database import (
     create_document,
     create_upload_session,
@@ -31,6 +33,12 @@ from app.services.file_search_store import compute_content_hash
 from app.services.ingestion_worker import process_document_async
 from app.services.pdf_parser import normalize_pdf_parser_mode
 from app.services.rate_limit import check_rate_limit
+from app.services.upload_validation import (
+    MAX_UPLOAD_BYTES,
+    resolve_upload_mime_type,
+    sanitize_upload_filename,
+    validate_upload_bytes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +47,8 @@ router = APIRouter()
 CHUNK_DIR = Path(__file__).resolve().parent.parent.parent / "uploaded_chunks"
 
 DEFAULT_CHUNK_SIZE = 2 * 1024 * 1024  # 2 MB
+SESSION_ID_RE = re.compile(r"^[0-9a-fA-F-]{32,36}$")
+CHECKSUM_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
 # --- Request / response models ---
@@ -79,32 +89,17 @@ class UploadSessionStatusResponse(BaseModel):
 
 def _resolve_mime_type(filename: str, declared: str) -> str:
     """Validate and normalise the declared MIME type."""
-    import mimetypes
-
-    lower = filename.lower()
-    if lower.endswith(".csv"):
-        return "text/csv"
-    if lower.endswith(".xlsx"):
-        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    if lower.endswith(".xls"):
-        return "application/vnd.ms-excel"
-    if lower.endswith(".pdf"):
-        return "application/pdf"
-    if lower.endswith((".md", ".markdown")):
-        return "text/markdown"
-    if lower.endswith((".txt", ".text")):
-        return "text/plain"
-
-    if declared in ALLOWED_MIME_TYPES:
-        return declared
-    guessed, _ = mimetypes.guess_type(filename)
-    if guessed in ALLOWED_MIME_TYPES:
-        return guessed
-    return "text/plain"
+    return resolve_upload_mime_type(filename, declared)
 
 
 def _chunk_dir(session_id: str) -> Path:
-    return CHUNK_DIR / session_id
+    if not SESSION_ID_RE.fullmatch(session_id):
+        raise HTTPException(status_code=400, detail="Invalid upload session id")
+    base = CHUNK_DIR.resolve()
+    target = (base / session_id).resolve()
+    if base != target and base not in target.parents:
+        raise HTTPException(status_code=400, detail="Invalid upload session path")
+    return target
 
 
 def _verify_session_owner(session: dict, user) -> None:
@@ -121,7 +116,8 @@ async def init_upload(body: InitUploadRequest, user=Depends(get_current_user)):
     _verify_admin(user)
     check_rate_limit(f"upload:{user.id}", limit=10, window_seconds=60)
 
-    mime_type = _resolve_mime_type(body.filename, body.mime_type)
+    safe_filename = sanitize_upload_filename(body.filename)
+    mime_type = _resolve_mime_type(safe_filename, body.mime_type)
     if body.total_size <= 0:
         raise HTTPException(status_code=400, detail="total_size must be positive")
     if body.total_size > MAX_UPLOAD_BYTES:
@@ -136,7 +132,7 @@ async def init_upload(body: InitUploadRequest, user=Depends(get_current_user)):
         access_token=user.access_token,
         user_id=user.id,
         tenant_id=user.tenant_id,
-        filename=body.filename,
+        filename=safe_filename,
         mime_type=mime_type,
         total_size=body.total_size,
         chunk_size=body.chunk_size,
@@ -173,6 +169,8 @@ async def upload_chunk(
         raise HTTPException(status_code=409, detail=f"Session is '{session['status']}', not 'uploading'")
     if chunk_index < 0 or chunk_index >= session["total_chunks"]:
         raise HTTPException(status_code=400, detail=f"chunk_index must be 0..{session['total_chunks'] - 1}")
+    if not CHECKSUM_RE.fullmatch(checksum.strip()):
+        raise HTTPException(status_code=400, detail="checksum must be a SHA-256 hex digest")
 
     chunk_bytes = await file.read()
     max_chunk = session["chunk_size"] + 1024  # small tolerance
@@ -204,6 +202,7 @@ async def upload_chunk(
 async def complete_upload(
     session_id: str,
     background_tasks: BackgroundTasks,
+    request: Request,
     user=Depends(get_current_user),
 ):
     """Merge uploaded chunks and kick off document ingestion."""
@@ -238,6 +237,7 @@ async def complete_upload(
         for i in range(total):
             merged.extend((chunk_dir / f"{i:06d}").read_bytes())
         file_bytes = bytes(merged)
+        validate_upload_bytes(file_bytes, session["mime_type"])
 
         # Duplicate detection
         content_hash = compute_content_hash(file_bytes)
@@ -280,6 +280,23 @@ async def complete_upload(
             user.access_token, session_id,
             status="completed",
             document_id=doc["id"],
+        )
+        log_operation(
+            tenant_id=user.tenant_id,
+            actor_user_id=user.id,
+            actor_email=getattr(user, "email", None),
+            actor_role=user.role,
+            action="document.upload",
+            resource_type="document",
+            resource_id=doc["id"],
+            after={"filename": session["filename"], "mime_type": session["mime_type"], "status": doc.get("status", "pending")},
+            metadata={
+                "upload_session_id": session_id,
+                "use_ocr": session["use_ocr"],
+                "pdf_parser_mode": session["pdf_parser_mode"],
+                "size_bytes": len(file_bytes),
+            },
+            request=request,
         )
 
         # Kick off ingestion

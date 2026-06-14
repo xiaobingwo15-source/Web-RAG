@@ -151,7 +151,7 @@ async def _resolve_parents(sources: list[dict]) -> list[dict]:
         pid = s.get("parent_id")
         if pid and pid in parent_map:
             if pid not in grouped or s.get("score", 0) > grouped[pid].get("score", 0):
-                grouped[pid] = {
+                entry = {
                     "chunk_id": pid,
                     "document_id": s.get("document_id") or parent_map[pid].get("document_id", ""),
                     "filename": s.get("filename"),
@@ -162,6 +162,14 @@ async def _resolve_parents(sources: list[dict]) -> list[dict]:
                     "metadata": parent_map[pid].get("metadata", s.get("metadata", {})),
                     "parent_id": pid,
                 }
+                # Phase 1: carry structural metadata (prefer parent's, fall back to child's)
+                for field in ("heading", "heading_level", "structural_type", "page_start", "page_end", "table_id", "breadcrumb_path"):
+                    val = parent_map[pid].get(field)
+                    if val is None:
+                        val = s.get(field)
+                    if val is not None:
+                        entry[field] = val
+                grouped[pid] = entry
         else:
             # No parent_id or parent not found -- keep original child
             key = s.get("id", id(s))
@@ -191,7 +199,7 @@ def _finalize_sources(
         if doc.get("status") == "archived":
             continue
         content = source.get("content", "")
-        sources.append({
+        entry = {
             "chunk_id": str(source.get("id", "")),
             "document_id": document_id,
             "filename": doc.get("filename"),
@@ -201,7 +209,13 @@ def _finalize_sources(
             "content": content,
             "metadata": source.get("metadata", {}),
             **({"parent_id": source["parent_id"]} if source.get("parent_id") else {}),
-        })
+        }
+        # Phase 1: carry through structural metadata for citation enrichment
+        for field in ("heading", "heading_level", "structural_type", "page_start", "page_end", "table_id", "breadcrumb_path"):
+            val = source.get(field)
+            if val is not None:
+                entry[field] = val
+        sources.append(entry)
     return sources
 
 
@@ -484,16 +498,29 @@ async def retrieve_context(
         logger.info(f"RRF query_type={query_type}, w_vector={w_vector}, w_fts={w_fts}")
         combined: dict[str, dict] = {}
 
+        # Structural fields to carry through RRF merge (Phase 1)
+        _STRUCTURAL_FIELDS = ("heading", "heading_level", "structural_type", "page_start", "page_end", "table_id", "breadcrumb_path")
+
+        def _rrf_entry(cid: str, chunk: dict, score: float) -> dict:
+            entry = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": score, "metadata": chunk.get("metadata", {})}
+            if chunk.get("parent_id"):
+                entry["parent_id"] = chunk["parent_id"]
+            for field in _STRUCTURAL_FIELDS:
+                val = chunk.get(field)
+                if val is not None:
+                    entry[field] = val
+            return entry
+
         for rank, chunk in enumerate(vector_results):
             cid = chunk["id"]
-            combined[cid] = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": w_vector / (rrf_k + rank + 1), "metadata": chunk.get("metadata", {}), **({"parent_id": chunk["parent_id"]} if chunk.get("parent_id") else {})}
+            combined[cid] = _rrf_entry(cid, chunk, w_vector / (rrf_k + rank + 1))
 
         for rank, chunk in enumerate(fts_results):
             cid = chunk.get("id", f"fts_{rank}")
             if cid in combined:
                 combined[cid]["score"] += w_fts / (rrf_k + rank + 1)
             else:
-                combined[cid] = {"id": cid, "content": chunk["content"], "document_id": chunk.get("document_id", ""), "score": w_fts / (rrf_k + rank + 1), "metadata": chunk.get("metadata", {}), **({"parent_id": chunk["parent_id"]} if chunk.get("parent_id") else {})}
+                combined[cid] = _rrf_entry(cid, chunk, w_fts / (rrf_k + rank + 1))
 
         sorted_results = sorted(combined.values(), key=lambda x: x["score"], reverse=True)
 

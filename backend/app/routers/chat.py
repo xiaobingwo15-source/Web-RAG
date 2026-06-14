@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _is_approved_admin(user) -> bool:
+    return user.role == "admin" and bool(user.tenant_id) and user.status == "approved"
+
+
 def _public_sources(sources: list[dict]) -> list[dict]:
     return [{key: value for key, value in source.items() if key != "content"} for source in sources]
 
@@ -95,6 +99,7 @@ async def chat(request: ChatRequest, user=Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Your account is pending approval. Please wait for an admin to approve your access.")
     settings = Settings()
     check_rate_limit(f"chat:{user.id}", limit=settings.rate_limit_chat_requests, window_seconds=settings.rate_limit_chat_window)
+    allow_web_search = bool(request.enable_web_search and _is_approved_admin(user))
     client = get_llm_client()
     is_new_thread = not request.thread_id
     thread_id = request.thread_id or str(uuid.uuid4())
@@ -134,7 +139,7 @@ async def chat(request: ChatRequest, user=Depends(get_current_user)):
                 thread_id=thread_id,
                 diagnostics={
                     "channel": "authenticated",
-                    "web_fallback_allowed": request.enable_web_search,
+                    "web_fallback_allowed": allow_web_search,
                     "direct_chat": True,
                 },
             )
@@ -175,6 +180,8 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Your account is pending approval. Please wait for an admin to approve your access.")
     settings = Settings()
     check_rate_limit(f"chat_stream:{user.id}", limit=settings.rate_limit_chat_requests, window_seconds=settings.rate_limit_chat_window)
+    allow_web_search = bool(request.enable_web_search and _is_approved_admin(user))
+    allow_sql = bool(request.enable_sql and settings.sql_tools_enabled and _is_approved_admin(user))
     is_new_thread = not request.thread_id
     thread_id = request.thread_id or str(uuid.uuid4())
     token = user.access_token
@@ -224,8 +231,8 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                     thread_id=thread_id,
                     use_documents=request.use_documents,
                     retrieval_mode=request.retrieval_mode,
-                    enable_web_search=request.enable_web_search,
-                    enable_sql=request.enable_sql,
+                    enable_web_search=allow_web_search,
+                    enable_sql=allow_sql,
                     images=request.images,
                     tenant_id=user.tenant_id,
                 ):

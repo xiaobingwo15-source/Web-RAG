@@ -118,6 +118,46 @@ class SemanticCache:
         self._total_hits = 0
         self._total_misses = 0
 
+    def invalidate_by_document(self, document_id: str) -> int:
+        """Phase 5.1: Invalidate all cached entries that reference a specific document.
+
+        When a document is re-ingested, cached query results that included
+        chunks from the old version must be purged to avoid stale answers.
+
+        Returns:
+            Number of entries invalidated.
+        """
+        invalidated = 0
+        empty_buckets = []
+
+        for bucket_key, entries in self._entries.items():
+            surviving = []
+            for entry in entries:
+                # Check if any source in the cached result references this document
+                sources = entry.result.get("sources", [])
+                has_doc = any(
+                    s.get("document_id") == document_id
+                    for s in sources
+                )
+                if has_doc:
+                    invalidated += 1
+                else:
+                    surviving.append(entry)
+            self._entries[bucket_key] = surviving
+            if not surviving:
+                empty_buckets.append(bucket_key)
+
+        # Clean up empty buckets
+        for key in empty_buckets:
+            del self._entries[key]
+
+        if invalidated:
+            logger.info(
+                "Semantic cache: invalidated %d entries for document %s",
+                invalidated, document_id,
+            )
+        return invalidated
+
     @property
     def stats(self) -> dict:
         total_entries = sum(len(v) for v in self._entries.values())
@@ -148,3 +188,13 @@ def clear_semantic_cache(reason: str | None = None) -> None:
     cache = get_semantic_cache()
     cache.clear()
     logger.info("Semantic cache cleared%s", f": {reason}" if reason else "")
+
+
+def invalidate_cache_for_document(document_id: str) -> int:
+    """Phase 5.1: Invalidate cached entries that reference a specific document.
+
+    Call this when a document is re-ingested to ensure stale results
+    are not served from cache.
+    """
+    cache = get_semantic_cache()
+    return cache.invalidate_by_document(document_id)

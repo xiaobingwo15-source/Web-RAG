@@ -1,13 +1,15 @@
 from datetime import UTC, datetime, timedelta
 import re
-from fastapi import APIRouter, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from app.config import Settings
+from app.middleware.auth import get_current_user
+from app.services.audit import log_operation
 from app.services.database import (
     approve_owner_admin,
     create_tenant,
     create_tenant_admin_invite,
-    delete_tenant,
+    disable_tenant,
     list_owner_admins,
     reject_owner_admin,
 )
@@ -30,9 +32,10 @@ class OwnerAdminListResponse(BaseModel):
     total: int
 
 
-def _verify_owner(x_owner_key: str | None) -> None:
-    expected = Settings().owner_api_key
-    if not expected or x_owner_key != expected:
+def _verify_owner(user) -> None:
+    owner_emails = Settings().owner_email_set
+    user_email = (getattr(user, "email", "") or "").lower()
+    if not owner_emails or user_email not in owner_emails:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Owner access required")
 
 
@@ -41,47 +44,81 @@ async def list_admins_endpoint(
     status_filter: str = Query(default="pending", alias="status", pattern="^(pending|approved|suspended|all)$"),
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=50, ge=1, le=200),
-    x_owner_key: str | None = Header(default=None),
+    user=Depends(get_current_user),
 ):
-    _verify_owner(x_owner_key)
+    _verify_owner(user)
     return list_owner_admins(status_filter=status_filter, page=page, limit=limit)
 
 
 @router.post("/admins/{user_id}/approve")
-async def approve_admin_endpoint(user_id: str, x_owner_key: str | None = Header(default=None)):
-    _verify_owner(x_owner_key)
+async def approve_admin_endpoint(user_id: str, request: Request, user=Depends(get_current_user)):
+    _verify_owner(user)
     updated = approve_owner_admin(user_id)
     if not updated:
         raise HTTPException(status_code=404, detail="Admin profile not found")
+    log_operation(
+        tenant_id=updated.get("tenant_id"),
+        actor_user_id=user.id,
+        actor_email=getattr(user, "email", None),
+        actor_role=user.role,
+        action="owner_admin.approve",
+        resource_type="profile",
+        resource_id=user_id,
+        after=updated,
+        request=request,
+    )
     return {"status": "approved", "admin": updated}
 
 
 @router.post("/admins/{user_id}/reject")
-async def reject_admin_endpoint(user_id: str, x_owner_key: str | None = Header(default=None)):
-    _verify_owner(x_owner_key)
+async def reject_admin_endpoint(user_id: str, request: Request, user=Depends(get_current_user)):
+    _verify_owner(user)
     updated = reject_owner_admin(user_id)
     if not updated:
         raise HTTPException(status_code=404, detail="Admin profile not found")
+    log_operation(
+        tenant_id=updated.get("tenant_id"),
+        actor_user_id=user.id,
+        actor_email=getattr(user, "email", None),
+        actor_role=user.role,
+        action="owner_admin.reject",
+        resource_type="profile",
+        resource_id=user_id,
+        after=updated,
+        request=request,
+    )
     return {"status": "suspended", "admin": updated}
 
 
 @router.post("/tenants")
-async def create_tenant_endpoint(request: CreateTenantRequest, x_owner_key: str | None = Header(default=None)):
-    _verify_owner(x_owner_key)
-    slug = request.slug.strip().lower()
+async def create_tenant_endpoint(body: CreateTenantRequest, request: Request, user=Depends(get_current_user)):
+    _verify_owner(user)
+    slug = body.slug.strip().lower()
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,63}", slug):
         raise HTTPException(status_code=400, detail="Tenant slug must use lowercase letters, numbers, and hyphens")
 
-    origins = [origin.rstrip("/") for origin in request.allowed_origins]
-    tenant = create_tenant(request.name.strip(), slug, origins)
+    origins = [origin.rstrip("/") for origin in body.allowed_origins]
+    tenant = create_tenant(body.name.strip(), slug, origins)
 
     invite_token = new_invite_token()
     expires_at = (datetime.now(UTC) + timedelta(days=7)).isoformat()
     invite = create_tenant_admin_invite(
         tenant["id"],
-        request.admin_email.strip().lower(),
+        body.admin_email.strip().lower(),
         hash_token(invite_token),
         expires_at,
+    )
+    log_operation(
+        tenant_id=tenant.get("id"),
+        actor_user_id=user.id,
+        actor_email=getattr(user, "email", None),
+        actor_role=user.role,
+        action="tenant.create",
+        resource_type="tenant",
+        resource_id=tenant.get("id"),
+        after=tenant,
+        metadata={"admin_email": invite["email"], "invite_id": invite["id"]},
+        request=request,
     )
 
     return {
@@ -95,10 +132,21 @@ async def create_tenant_endpoint(request: CreateTenantRequest, x_owner_key: str 
     }
 
 
-@router.delete("/tenants/{tenant_id}")
-async def delete_tenant_endpoint(tenant_id: str, x_owner_key: str | None = Header(default=None)):
-    _verify_owner(x_owner_key)
-    deleted = delete_tenant(tenant_id)
-    if not deleted:
+@router.post("/tenants/{tenant_id}/disable")
+async def disable_tenant_endpoint(tenant_id: str, request: Request, user=Depends(get_current_user)):
+    _verify_owner(user)
+    disabled = disable_tenant(tenant_id)
+    if not disabled:
         raise HTTPException(status_code=404, detail="Tenant not found")
-    return {"status": "deleted", "tenant_id": tenant_id}
+    log_operation(
+        tenant_id=tenant_id,
+        actor_user_id=user.id,
+        actor_email=getattr(user, "email", None),
+        actor_role=user.role,
+        action="tenant.disable",
+        resource_type="tenant",
+        resource_id=tenant_id,
+        after={"status": "disabled"},
+        request=request,
+    )
+    return {"status": "disabled", "tenant_id": tenant_id}

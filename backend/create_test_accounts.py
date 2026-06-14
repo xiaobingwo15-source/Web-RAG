@@ -2,13 +2,10 @@
 import sys
 sys.path.insert(0, ".")
 
-from supabase import create_client
-from app.config import Settings
-
-settings = Settings()
+from app.services.supabase import get_supabase_anon_client
 
 # Use anon key client (regular sign-up)
-client = create_client(settings.supabase_url, settings.supabase_anon_key)
+client = get_supabase_anon_client()
 
 ACCOUNTS = [
     {"email": "admin@example.com", "password": "admin123456"},

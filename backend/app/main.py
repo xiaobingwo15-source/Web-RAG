@@ -1,9 +1,10 @@
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from scalar_fastapi import get_scalar_api_reference
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import Settings
+from app.services.environment_guard import validate_environment_isolation
 from app.services.langfuse import configure_langfuse, get_langfuse
 from app.services.qdrant_db import ensure_collection
 from app.routers import health, auth, chat, documents, tools, admin, owner, widget, eval, upload_session
@@ -29,6 +30,7 @@ configure_langfuse()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    validate_environment_isolation(settings)
     try:
         await ensure_collection()
     except Exception as e:
@@ -49,15 +51,34 @@ async def lifespan(app: FastAPI):
     langfuse.flush()
 
 
-app = FastAPI(title="Agentic RAG Masterclass API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="Agentic RAG Masterclass API",
+    version="0.1.0",
+    lifespan=lifespan,
+    docs_url="/docs" if settings.enable_api_docs else None,
+    redoc_url=None,
+    openapi_url="/openapi.json" if settings.enable_api_docs else None,
+)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if settings.is_production:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
 
 app.include_router(health.router, prefix="/api", tags=["health"])
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
@@ -71,9 +92,10 @@ app.include_router(widget.router, prefix="/api/widget", tags=["widget"])
 app.include_router(eval.router, prefix="/api/eval", tags=["eval"])
 
 
-@app.get("/scalar", include_in_schema=False)
-async def scalar_html():
-    return get_scalar_api_reference(
-        openapi_url=app.openapi_url,
-        title=app.title,
-    )
+if settings.enable_api_docs:
+    @app.get("/scalar", include_in_schema=False)
+    async def scalar_html():
+        return get_scalar_api_reference(
+            openapi_url=app.openapi_url,
+            title=app.title,
+        )

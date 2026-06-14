@@ -56,6 +56,7 @@ def _client(monkeypatch, fake_db):
         tenant_id="tenant-1",
     )
     monkeypatch.setattr("app.services.database.get_user_db", lambda _token: fake_db)
+    monkeypatch.setattr(admin, "log_operation", lambda **_kwargs: None)
 
     app = FastAPI()
     app.dependency_overrides[get_current_user] = lambda: user
