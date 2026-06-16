@@ -46,7 +46,7 @@ def _compute_citation_accuracy(answer: str, sources: list[dict]) -> float | None
     if not sources:
         return None
 
-    all_refs = re.findall(r"\[(\d+)\]", answer)
+    all_refs = [m for m in re.findall(r"\[(\d+)\]", answer) if not re.search(rf"\[{m}\]\s*[(:]", answer)]
     if not all_refs:
         return None
 
@@ -201,8 +201,8 @@ async def run_rag_eval(
         # Phase 4.2/4.4: Compute averages for new metrics
         citation_scores = [float(r["citation_accuracy_score"]) for r in results if r.get("citation_accuracy_score") is not None]
         recall_scores = [float(r["recall_at_k"]) for r in results if r.get("recall_at_k") is not None]
-        avg_citation = round(sum(citation_scores) / len(citation_scores), 4) if citation_scores else 0
-        avg_recall = round(sum(recall_scores) / len(recall_scores), 4) if recall_scores else 0
+        avg_citation = round(sum(citation_scores) / len(citation_scores), 4) if citation_scores else None
+        avg_recall = round(sum(recall_scores) / len(recall_scores), 4) if recall_scores else None
 
         run = database.update_rag_eval_run(
             tenant_id,

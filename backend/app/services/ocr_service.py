@@ -124,6 +124,8 @@ async def ocr_with_llm(client: AsyncOpenAI, file_bytes: bytes) -> str:
             # Log summary
             success_count = sum(1 for t in all_text if t)
             logger.info(f"OCR completed: {success_count}/{page_count} pages extracted")
+            if success_count == 0:
+                raise RuntimeError(f"OCR failed on all {page_count} pages")
             return "\n\n--- Page Break ---\n\n".join(all_text)
     finally:
         doc.close()

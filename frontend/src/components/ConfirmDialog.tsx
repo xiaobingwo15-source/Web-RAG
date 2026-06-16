@@ -29,7 +29,7 @@ export function ConfirmDialog({
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onCancel()
-      if (e.key === 'Enter') onConfirm()
+      if (e.key === 'Enter' && document.activeElement !== confirmRef.current) onConfirm()
     }
     document.addEventListener('keydown', handleKeyDown)
     confirmRef.current?.focus()

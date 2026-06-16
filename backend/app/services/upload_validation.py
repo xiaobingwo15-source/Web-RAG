@@ -40,6 +40,14 @@ EXTENSION_MIME_TYPES = {
     ".tiff": "image/tiff",
     ".tif": "image/tiff",
     ".webp": "image/webp",
+    ".json": "text/plain",
+    ".xml": "text/plain",
+    ".html": "text/plain",
+    ".htm": "text/plain",
+    ".log": "text/plain",
+    ".sql": "text/plain",
+    ".yaml": "text/plain",
+    ".yml": "text/plain",
 }
 
 OLE_SIGNATURE = bytes.fromhex("D0CF11E0A1B11AE1")
@@ -51,7 +59,7 @@ def sanitize_upload_filename(filename: str | None) -> str:
     name = name.replace("\\", "_").replace("/", "_").strip()
     if not name or name in {".", ".."}:
         raise HTTPException(status_code=400, detail="Filename is required")
-    if name != filename:
+    if filename and name != filename:
         raise HTTPException(status_code=400, detail="Filename must not contain path components")
     return name
 
