@@ -21,17 +21,20 @@ logger = logging.getLogger(__name__)
 _COMPARATIVE_RE = re.compile(
     r"\b(compare|comparison|difference|versus|\bvs\b|pros\s+and\s+cons|"
     r"advantages?\s+and\s+disadvantages?|better\s+than|worse\s+than|"
-    r"trade-?offs?|contrast|distinguish)\b",
+    r"trade-?offs?|contrast|distinguish)\b"
+    r"|比较|对比|区别|差异|优劣|优势和劣势|优点和缺点|哪个更好|权衡",
     re.IGNORECASE,
 )
 _MULTI_CONTEXT_RE = re.compile(
     r"\b(list\s+all|summarize\s+all|overview\s+of|give\s+me\s+all|"
     r"all\s+(?:the\s+)?(?:details?|information|benefits|features|types|"
-    r"steps|ways|methods|reasons|examples)|comprehensive\s+(?:list|overview|summary))\b",
+    r"steps|ways|methods|reasons|examples)|comprehensive\s+(?:list|overview|summary))\b"
+    r"|列出所有|总结所有|概述|全部信息|详细信息|所有类型|所有步骤|综合",
     re.IGNORECASE,
 )
 _SIMPLE_FACTUAL_RE = re.compile(
-    r"^(what|who|when|where|define|definition\s+of|meaning\s+of)\b",
+    r"^(what|who|when|where|define|definition\s+of|meaning\s+of)\b"
+    r"|^(什么是|谁是|何时|哪里|定义|含义)",
     re.IGNORECASE,
 )
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAuth } from './useAuth'
 import {
   uploadDocument as apiUpload,
@@ -31,6 +31,14 @@ export function useDocuments() {
   const [uploadFailure, setUploadFailure] = useState<{ filename: string; error: string } | null>(null)
   const { session } = useAuth()
   const accessToken = session?.access_token
+  const pollingActiveRef = useRef(true)
+
+  useEffect(() => {
+    pollingActiveRef.current = true
+    return () => {
+      pollingActiveRef.current = false
+    }
+  }, [])
 
   const hasProcessed = documents.some((d) => d.status === 'processed')
 
@@ -284,7 +292,7 @@ export function useDocuments() {
       // Start polling
       const deadline = Date.now() + POLL_TIMEOUT_MS
 
-      while (Date.now() < deadline) {
+      while (Date.now() < deadline && pollingActiveRef.current) {
         await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS))
 
         try {

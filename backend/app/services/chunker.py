@@ -445,7 +445,7 @@ def _chunk_blocks(
                 _flush()
 
             buffer.append((block_text, block_type, heading, heading_level, page_number))
-            buffer_len += len(block_text) + (1 if buffer_len > len(block_text) else 0)
+            buffer_len += len(block_text) + (1 if buffer_len > 0 else 0)
             continue
 
         # Text block that fits easily
@@ -453,7 +453,7 @@ def _chunk_blocks(
             if buffer_len + len(block_text) + (1 if buffer_len else 0) > chunk_size:
                 _flush()
             buffer.append((block_text, "text", heading, heading_level, page_number))
-            buffer_len += len(block_text) + (1 if buffer_len > len(block_text) else 0)
+            buffer_len += len(block_text) + (1 if buffer_len > 0 else 0)
             continue
 
         # Large text block: flush buffer then sliding-window split

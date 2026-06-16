@@ -16,7 +16,8 @@ def _run_async_cleanup(coro: Coroutine[Any, Any, Any]) -> None:
     except RuntimeError:
         asyncio.run(coro)
         return
-    loop.create_task(coro)
+    task = loop.create_task(coro)
+    task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
 
 def get_db() -> Client:
@@ -584,6 +585,17 @@ def get_chunks_by_page(access_token: str, document_id: str, page_number: int) ->
             .eq("document_id", document_id)
             .eq("page_start", page_number)
             .order("chunk_index")
+            .execute()
+        )
+    # Final fallback: return chunks with NULL page metadata (unstructured docs)
+    if not result.data:
+        result = (
+            db.table("document_chunks")
+            .select("content, chunk_index, heading, structural_type, page_start, page_end, breadcrumb_path")
+            .eq("document_id", document_id)
+            .is_("page_start", "null")
+            .order("chunk_index")
+            .limit(50)
             .execute()
         )
     return result.data or []

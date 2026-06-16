@@ -39,10 +39,12 @@ export function useFlaggedNotifications() {
           event: 'UPDATE',
           schema: 'public',
           table: 'messages',
-          filter: 'attention_status=neq.needs_admin',
         },
-        () => {
-          setFlaggedCount((prev) => Math.max(0, prev - 1))
+        (payload) => {
+          const old = payload.old as { attention_status?: string }
+          if (old?.attention_status === 'needs_admin') {
+            setFlaggedCount((prev) => Math.max(0, prev - 1))
+          }
         },
       )
       .subscribe()
