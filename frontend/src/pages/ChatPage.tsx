@@ -402,7 +402,7 @@ export function ChatPage() {
                   />
                 ))}
 
-                {isStreaming && !currentAction && (
+                {isStreaming && !currentAction && !(messages.length > 0 && messages[messages.length - 1].role === 'assistant' && messages[messages.length - 1].content) && (
                   <div className="flex items-start gap-2">
                     <div className="bg-bubble-in rounded-lg px-3 py-2 shadow-sm max-w-[65%]">
                       <div className="flex items-center gap-1">
