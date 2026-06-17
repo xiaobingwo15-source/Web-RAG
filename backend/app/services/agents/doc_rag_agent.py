@@ -88,6 +88,9 @@ EXPANSION_SYSTEM_PROMPT = (
     "to improve recall. "
     "IMPORTANT: If the original query contains spelling errors or typos, correct them "
     "in all variants. Use proper domain terminology. "
+    "If the query contains abbreviations or acronyms (e.g., AI, ML, NLP, LLM, RAG, IoT, API, SaaS), "
+    "include at least one variant that spells them out in full (e.g., Artificial Intelligence, Machine Learning). "
+    "Conversely, if the query uses full forms, include at least one variant using the common abbreviation. "
     "Return one query per line, nothing else. No numbering, no bullets."
 )
 
@@ -95,6 +98,7 @@ DECOMPOSITION_SYSTEM_PROMPT = (
     "Given a comparative or multi-faceted query, decompose it into 2-3 focused sub-queries "
     "that each address ONE aspect of the comparison. Each sub-query should be self-contained "
     "and searchable. Correct any spelling errors in the process. "
+    "Spell out abbreviations and acronyms in full (e.g., AI -> Artificial Intelligence). "
     "Return one query per line, nothing else. No numbering, no bullets.\n\n"
     "Example:\n"
     "Query: Compare Python and Java for web development\n"
@@ -113,6 +117,8 @@ HYDE_SYSTEM_PROMPT = (
     "in a knowledge base. Be concrete and use domain-appropriate terminology. "
     "If the question contains spelling errors or typos, interpret the intended meaning "
     "and write the paragraph using correct terminology. "
+    "IMPORTANT: Always spell out abbreviations and acronyms in full at least once "
+    "(e.g., write 'Artificial Intelligence (AI)' instead of just 'AI'). "
     "Return ONLY the hypothetical answer paragraph, nothing else."
 )
 HYDE_MIN_WORD_COUNT = 5

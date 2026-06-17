@@ -156,6 +156,21 @@ export function useChat() {
         if (latencyTimer.current && latencyTimer.current.firstTokenLatency === null) {
           latencyTimer.current.markFirstToken()
         }
+        // Transition the last active action to "completed" on first text token
+        // so the ThoughtTrace spinner stops while the answer renders
+        if (currentActionRef.current) {
+          currentActionRef.current = null
+          setMessages((prev) => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            if (!last || last.role !== 'assistant' || !last.actions?.length) return updated
+            const actions = last.actions.map(a =>
+              a.status === 'active' ? { ...a, status: 'completed' as const } : a
+            )
+            updated[updated.length - 1] = { ...last, actions }
+            return updated
+          })
+        }
         tokenBuffer.current += chunk
         if (rafId.current === null) {
           rafId.current = requestAnimationFrame(flushTokens)
