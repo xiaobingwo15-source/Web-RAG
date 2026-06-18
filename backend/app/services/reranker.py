@@ -11,6 +11,10 @@ logger = logging.getLogger(__name__)
 
 COHERE_MODEL = "rerank-v3.5"
 
+# Abstention threshold: if the highest reranker score is below this value,
+# return an empty list rather than feeding low-relevance context to the LLM.
+RERANK_ABSTENTION_THRESHOLD = 0.25
+
 _STOP_WORDS = frozenset({
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
     "have", "has", "had", "do", "does", "did", "will", "would", "could",
@@ -73,7 +77,7 @@ async def rerank_with_cohere(
         if fallback_scores and len(fallback_scores) == len(documents):
             logger.warning(f"Cohere rerank failed, using provided fallback scores: {e}")
             scored = [
-                {"index": i, "score": fallback_scores[i]}
+                {"index": i, "score": fallback_scores[i], "fallback": True}
                 for i in range(len(documents))
             ]
             scored.sort(key=lambda x: x["score"], reverse=True)
@@ -81,7 +85,7 @@ async def rerank_with_cohere(
 
         logger.warning(f"Cohere rerank failed, using keyword-overlap fallback: {e}")
         scored = [
-            {"index": i, "score": _keyword_overlap_score(query, doc)}
+            {"index": i, "score": _keyword_overlap_score(query, doc), "fallback": True}
             for i, doc in enumerate(documents)
         ]
         scored.sort(key=lambda x: x["score"], reverse=True)
@@ -89,4 +93,14 @@ async def rerank_with_cohere(
 
     scored = [{"index": r.index, "score": r.relevance_score} for r in response.results]
     logger.info(f"Cohere reranked {len(documents)} documents -> top {len(scored)}")
+
+    # Abstention: refuse if no document passes the relevance bar
+    max_score = max((s["score"] for s in scored), default=0.0)
+    if max_score < RERANK_ABSTENTION_THRESHOLD:
+        logger.info(
+            "Reranker abstention: max score %.4f < threshold %.2f, returning empty list",
+            max_score, RERANK_ABSTENTION_THRESHOLD,
+        )
+        return []
+
     return scored

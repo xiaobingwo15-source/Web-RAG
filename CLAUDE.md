@@ -89,22 +89,48 @@ New in migration 033 — `backend/app/services/environment_guard.py`, `audit.py`
 7. Store text in Supabase for FTS → `backend/app/services/database.py` (`insert_chunks_for_fts`)
 
 ### Query Retrieval Flow (default: hybrid mode)
-1. User message → query rewriting (follow-up context) → multi-query expansion (3 variants)
-2. Optional HyDE: generate hypothetical answer, embed it, search for similar chunks
-3. Parallel search: Qdrant vector search + Supabase FTS (`search_chunks_fts` RPC, single version with `match_tenant_id`)
-4. Merge via Reciprocal Rank Fusion (RRF, k=60), dedup by chunk content prefix (first 200 chars)
-5. Cohere reranker (`rerank-v3.5`) → `backend/app/services/reranker.py` (fallback: keyword overlap scorer)
-6. Parent resolution: child chunks replaced by their parent for broader context
-7. Chunks injected into prompt with filename metadata: `[N] (Source: filename) content...`
+1. User message → query rewriting (follow-up context) → multi-query expansion (2 variants, 3 total with original)
+2. Dynamic top-k: `classify_query_complexity()` returns 3/5/8/10 chunks based on query complexity (bilingual EN+ZH)
+3. Optional HyDE: generate hypothetical answer, embed it, search for similar chunks
+4. **HyDE relevance backcheck**: re-verify HyDE chunks against original query embedding (threshold 0.3), reject off-topic chunks
+5. Parallel search: Qdrant vector search + Supabase FTS (`search_chunks_fts` RPC, single version with `match_tenant_id`)
+6. Merge via Reciprocal Rank Fusion (RRF, k=60), dedup by chunk content prefix (first 500 chars)
+7. Cohere reranker (`rerank-v3.5`) → `backend/app/services/reranker.py` (fallback: keyword overlap scorer)
+8. **Reranker abstention**: if max reranker score < 0.25, return empty (refuse rather than hallucinate)
+9. **Hard score threshold**: drop chunks with reranker score < 0.3
+10. Parent resolution: child chunks replaced by their parent for broader context
+11. **Lost-in-the-Middle reorder**: highest-scored chunks at position 0 and N-1 to maximize LLM attention
+12. Chunks injected into prompt with filename metadata: `[N] (Source: filename) content...`
 
 ### Agent Routing
 - `backend/app/services/agent_supervisor.py` — Routes queries to doc_rag, sql, web_search, or general agent
 - When `use_documents=True`, always routes to `doc_rag` first
 - `backend/app/services/agents/doc_rag_agent.py` — Full RAG pipeline:
   - Multi-query expansion + HyDE + corrective RAG (web fallback when docs insufficient)
-  - Groundedness check (token-overlap + LLM) with retry on low scores
-  - Source dedup uses separate tracking sets for chunks vs sources (aligned 1:1 via `context_sources`)
-- Hardcoded refusal when 0 chunks found (LLM cannot be trusted to refuse on its own)
+  - SQL delegation: `_check_delegation()` uses keyword pre-filter + LLM to route SQL queries
+  - Web result relevance filtering: `_compute_keyword_overlap()` drops web results with < 10% keyword overlap
+  - Hardcoded refusal when 0 chunks found (LLM cannot be trusted to refuse on its own)
+
+### Groundedness & Faithfulness (`backend/app/services/groundedness.py`)
+Multi-layer verification to ensure answers are grounded in retrieved context:
+
+1. **Token-overlap check**: `check_groundedness()` — fraction of answer tokens found in context (threshold: 0.5)
+2. **LLM groundedness check**: `check_groundedness_with_llm()` — always runs (fast-path disabled at 0.0)
+   - `web_mode=True`: verifies claims against DOCUMENT chunks specifically, not `[Web]`-tagged content
+   - `use_claim_verification=True`: uses claim-level decomposition instead of token-overlap
+3. **Claim decomposition**: `decompose_into_claims()` — breaks answer into atomic factual claims via LLM
+4. **Per-claim verification**: `verify_claims_against_context()` — parallel LLM verification of each claim
+5. **Sentence attribution**: `sentence_level_attribution()` — maps each sentence to its best supporting chunk
+6. **Chain-of-Verification (CoVe)**: `chain_of_verification()` — generates up to 8 fact-checking questions, verifies each independently against context (not the draft answer), flags if > 30% unsupported
+7. **Confidence scoring**: `compute_confidence_score()` — fuses retrieval (25%), reranker (25%), groundedness (35%), coverage (15%) into a single score
+8. **Confidence routing**: HIGH (>0.8) → return with citations; MEDIUM (0.5-0.8) → log warning; LOW (≤0.5) → uncertainty disclaimer
+9. **Citation verification**: `verify_citations()` — validates `[N]` markers map to real chunks with matching content
+
+**Groundedness retry loop** (max 2 retries):
+- Retry 1: Query reformulation based on weak answer's unsupported claims
+- Retry 2: HyDE-based retrieval using refined hypothetical answer from draft
+
+**Key constants**: `GROUNDEDNESS_THRESHOLD = 0.5`, `GROUNDEDNESS_LLM_HIGH = 0.0`, `RERANK_ABSTENTION_THRESHOLD = 0.25`, `RERANK_SCORE_THRESHOLD = 0.3`, `_WEB_RELEVANCE_THRESHOLD = 0.10`
 
 ### SQL Tool (`backend/app/services/sql_engine.py`)
 - Gated by `SQL_TOOLS_ENABLED` env var (default: false) — also gates web search tool endpoint
@@ -119,6 +145,21 @@ New in migration 033 — `backend/app/services/environment_guard.py`, `audit.py`
 - `HYBRID_SYSTEM_PROMPT` — When external context needed mid-answer (in `doc_rag_agent.py`)
 - All prompts instruct: match user's language, don't fabricate translations, label translated content
 
+### Evaluation Pipeline
+Two evaluation frameworks + production quality monitoring:
+
+**RAGAS-style LLM-as-Judge** (`eval_pipeline.py`): 4 metrics scored 1-5 — faithfulness, answer_relevance, context_precision, context_recall. Runs in parallel via `asyncio.gather`.
+
+**Deterministic fact-based** (`rag_eval.py`): substring matching against expected facts — answer_relevance, context_relevance, groundedness (measures answer hits, not source hits), citation_accuracy, recall@k. Pass thresholds: groundedness >= 0.5, answer_relevance >= 0.5, citation_accuracy >= 0.8.
+
+**Golden test set** (`backend/tests/fixtures/golden_test_set.json`): 25 validated test cases across 5 categories: simple_factual, multi_doc, paraphrased, edge_case, follow_up.
+
+**CI runner** (`scripts/run_eval_ci.py`): Compares eval results against baseline (`tests/fixtures/eval_baseline.json`). Regression threshold configurable via `EVAL_REGRESSION_THRESHOLD` env var (default: 0.5). Exits code 1 when golden test set missing.
+
+**Quality signals** (`rag_quality_policy.py`): 6 production health signals from retrieval logs — zero_sources, weak_sources, groundedness, completion_latency, feedback_fallback, data_staleness.
+
+**Quality loop** (`rag_quality_loop.py`): Auto-drafts eval cases from thumbs-down feedback and web-fallback patterns. Auto-promotes cases with >= 2 negative signals. Skips duplicate queries.
+
 ## Rules
 - Backend runs on Python + FastAPI with Uvicorn servers.
 - Strictly call the direct `google-genai` SDK — zero third-party orchestrators (No LangChain/LlamaIndex).
@@ -130,6 +171,8 @@ New in migration 033 — `backend/app/services/environment_guard.py`, `audit.py`
 - LLM context chunks always include source filename metadata for proper citation attribution.
 - Source dedup must use separate tracking sets for chunks and sources — never share a single `seen` set.
 - System prompts must be language-aware: match user language, never fabricate translations from monolingual source docs.
+- Groundedness verification must always run the LLM check (fast-path disabled) — token overlap alone is unreliable.
+- Web-fallback answers must be verified against DOCUMENT chunks specifically, not just web-sourced content.
 
 ## Planning
 - Save all structural execution plans into the `.agent/plans/` folder.
@@ -173,4 +216,7 @@ Before planning, implementing, debugging, reviewing, or executing any task — *
 - **Custom CSS**: `.crosshair-corner` class for technical bracket decorations on cards
 
 ## Progress
-Reference `PROGRESS.md` to see exactly which module layers are locked in or currently under active development.
+Reference `PROGRESS.md` to see exactly which module layers are locked in or currently under active development. Module 10 (Landing Page + RAG Chat Widget) is complete.
+
+## Performance Tracking
+`backend/app/services/performance.py` provides latency tracking throughout the pipeline via `elapsed_ms()`, `log_latency()`, `monotonic_ms()`. Key tracked operations: `llm.query_rewrite`, `llm.query_expansion`, `llm.hyde_generation`, `llm.first_token`, `llm.completion`, `llm.cove`, `retrieval.web_search`, `retrieval.retry_hyde`.

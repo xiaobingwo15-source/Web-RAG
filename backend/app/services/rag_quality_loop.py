@@ -22,6 +22,7 @@ MAX_SOURCES_PER_LOG = 5
 MAX_CHUNKS_PER_LOG = 3
 MAX_TEXT_CHARS = 1200
 MAX_ANSWER_CHARS = 4000
+AUTO_PROMOTE_MIN_SIGNALS = 2
 
 
 def _now_iso() -> str:
@@ -280,6 +281,59 @@ def _existing_quality_sources(tenant_id: str) -> set[tuple[str, str]]:
     return existing
 
 
+def _existing_query_index(tenant_id: str) -> dict[str, str]:
+    """Build a normalized-query → case-id index for duplicate detection."""
+    index: dict[str, str] = {}
+    for case in database.list_rag_eval_cases(tenant_id):
+        question = _normalize_query(str(case.get("question") or ""))
+        if question and question not in index:
+            index[question] = str(case.get("id") or "")
+    return index
+
+
+def _has_similar_case(normalized_query: str, query_index: dict[str, str]) -> bool:
+    """Check if a similar case already exists by normalized query match."""
+    if not normalized_query:
+        return False
+    return normalized_query in query_index
+
+
+def _count_negative_signals(payload: dict) -> int:
+    """Count distinct negative feedback signals for a draft payload."""
+    source_type = str(payload.get("source_type") or "")
+    metadata = payload.get("retrieval_metadata") or {}
+    if source_type == THUMBS_DOWN_SOURCE:
+        return 1
+    if source_type == FALLBACK_SOURCE:
+        return _safe_int((metadata.get("fallback") or {}).get("fallback_count"))
+    return 1
+
+
+def _auto_promote_case(tenant_id: str, case: dict, reason: str) -> dict | None:
+    """Promote a draft eval case to active and log the promotion."""
+    case_id = str(case.get("id") or "")
+    if not case_id:
+        return None
+    promoted = database.update_rag_eval_case(
+        tenant_id,
+        case_id,
+        {"enabled": True, "status": "active"},
+    )
+    if promoted:
+        logger.info(
+            "Auto-promoted quality-loop eval case to active",
+            extra={
+                "tenant_id": tenant_id,
+                "case_id": case_id,
+                "reason": reason,
+                "question": (case.get("question") or "")[:200],
+                "source_type": case.get("source_type"),
+                "source_ref_id": case.get("source_ref_id"),
+            },
+        )
+    return promoted
+
+
 def sync_quality_loop_eval_drafts(
     tenant_id: str,
     window_hours: int = DEFAULT_WINDOW_HOURS,
@@ -289,10 +343,20 @@ def sync_quality_loop_eval_drafts(
 
     The sync is idempotent per source_type/source_ref_id, so it is safe to run
     whenever the admin RAG evaluation workspace loads.
+
+    Quality gate: cases whose normalized query already exists in the eval suite
+    are skipped to avoid duplicate drafts.
+
+    Auto-promotion: newly created cases with >= 2 negative feedback signals
+    (e.g., multiple thumbs-down or heavy fallback groups) are immediately
+    promoted to enabled=True, status=active.
     """
     existing = _existing_quality_sources(tenant_id)
+    query_index = _existing_query_index(tenant_id)
     created: list[dict] = []
+    promoted: list[dict] = []
     skipped_existing = 0
+    skipped_similar = 0
     failed = 0
 
     feedback_items = database.list_rag_quality_thumbs_down(tenant_id, limit=limit)
@@ -314,6 +378,21 @@ def sync_quality_loop_eval_drafts(
         if source_key in existing:
             skipped_existing += 1
             continue
+
+        normalized_query = _normalize_query(str(payload.get("question") or ""))
+        if _has_similar_case(normalized_query, query_index):
+            skipped_similar += 1
+            logger.info(
+                "Skipping quality-loop draft: similar case already exists",
+                extra={
+                    "tenant_id": tenant_id,
+                    "source_type": payload.get("source_type"),
+                    "source_ref_id": payload.get("source_ref_id"),
+                    "normalized_query": normalized_query[:200],
+                },
+            )
+            continue
+
         try:
             created_case = database.create_rag_eval_case(tenant_id, payload)
         except Exception:
@@ -329,10 +408,22 @@ def sync_quality_loop_eval_drafts(
             continue
         created.append(created_case)
         existing.add(source_key)
+        if normalized_query:
+            query_index[normalized_query] = str(created_case.get("id") or "")
+
+        signal_count = _count_negative_signals(payload)
+        if signal_count >= AUTO_PROMOTE_MIN_SIGNALS:
+            reason = f"auto_promote: {signal_count} negative signals (threshold={AUTO_PROMOTE_MIN_SIGNALS})"
+            promoted_case = _auto_promote_case(tenant_id, created_case, reason)
+            if promoted_case:
+                promoted.append(promoted_case)
 
     return {
         "created_count": len(created),
+        "promoted_count": len(promoted),
         "skipped_existing_count": skipped_existing,
+        "skipped_similar_count": skipped_similar,
         "failed_count": failed,
         "created": created,
+        "promoted": promoted,
     }

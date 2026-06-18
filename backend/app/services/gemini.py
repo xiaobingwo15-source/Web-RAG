@@ -125,7 +125,10 @@ MAX_CONTEXT_TOKENS_DEFAULT = 6000
 
 
 def _estimate_tokens(text: str) -> int:
-    """Rough token estimate: ~4 chars per token for English."""
+    """Rough token estimate: ~4 chars per token for English, ~2 chars per token for CJK."""
+    # CJK characters are typically 1 character = 1 token
+    if any("一" <= ch <= "鿿" or "぀" <= ch <= "ゟ" or "゠" <= ch <= "ヿ" for ch in text):
+        return len(text) // 2
     return len(text) // 4
 
 

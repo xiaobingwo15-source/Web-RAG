@@ -16,6 +16,11 @@ MMR_LAMBDA = 0.5  # Balance between relevance (1.0) and diversity (0.0)
 MAX_RETRIEVAL_LOG_ITEMS = 10
 MAX_RETRIEVAL_LOG_TEXT_CHARS = 2000
 
+# Post-reranker filtering: drop chunks whose reranker score falls below this
+# threshold before they reach the LLM generator.  When Cohere reranking is not
+# available (fallback mode), this filter is skipped to preserve backward compat.
+RERANK_SCORE_THRESHOLD = 0.3
+
 
 def _snippet(content: str, limit: int = 240) -> str:
     text = " ".join((content or "").split())
@@ -549,6 +554,28 @@ async def retrieve_context(
                 tenant_id=tenant_id,
                 thread_id=thread_id,
             )
+
+            # Pre-generation context filtering: drop low-relevance chunks.
+            # Only applies to actual Cohere reranker scores; skipped in fallback
+            # mode (where scores have a different scale) to preserve backward compat.
+            is_fallback = any(s.get("fallback") for s in scored)
+            if not is_fallback and scored:
+                pre_filter_count = len(scored)
+                scored = [s for s in scored if s.get("score", 0) >= RERANK_SCORE_THRESHOLD]
+                filtered_count = pre_filter_count - len(scored)
+                if filtered_count:
+                    logger.debug(
+                        "Post-reranker filter: dropped %d chunks below %.2f threshold (%d remain)",
+                        filtered_count, RERANK_SCORE_THRESHOLD, len(scored),
+                    )
+                if not scored:
+                    logger.info(
+                        "All %d reranked chunks filtered out (below %.2f threshold), returning empty",
+                        pre_filter_count, RERANK_SCORE_THRESHOLD,
+                    )
+                    retrieval_diagnostics["fallback_reason"] = "all_chunks_filtered_by_rerank_threshold"
+                    return _empty()
+
             sources = []
             for s in scored:
                 idx = s["index"]

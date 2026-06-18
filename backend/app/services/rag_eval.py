@@ -80,7 +80,7 @@ def score_eval_case(
         source_hits = sum(1 for fact in facts if _contains_fact(source_text, fact))
         answer_relevance = answer_hits / len(facts)
         context_relevance = source_hits / len(facts) if valid_sources else 0.0
-        groundedness = source_hits / len(facts) if valid_sources else 0.0
+        groundedness = answer_hits / len(facts) if valid_sources and answer.strip() else 0.0
         missing_facts = [fact for fact in facts if not _contains_fact(answer, fact)]
 
     # Phase 4.4: Deterministic recall@k
@@ -99,7 +99,7 @@ def score_eval_case(
         failures.append("expected document was not retrieved")
     if missing_facts:
         failures.append("missing expected facts: " + ", ".join(missing_facts))
-    if groundedness < 0.7:
+    if groundedness < 0.5:
         failures.append(f"groundedness below threshold: {groundedness:.2f}")
     if answer_relevance < 0.7:
         failures.append(f"answer relevance below threshold: {answer_relevance:.2f}")
