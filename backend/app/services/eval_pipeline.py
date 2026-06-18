@@ -476,12 +476,17 @@ async def run_eval_suite(
     """
     started_at = datetime.now(UTC).isoformat()
     results: list[EvalResult] = []
+    total = len(test_cases)
+
+    logger.info("Starting eval suite: %d test cases, retrieval_mode=%s", total, retrieval_mode)
 
     for i, tc in enumerate(test_cases):
-        logger.info("Evaluating case %d/%d: %s", i + 1, len(test_cases), tc.question[:60])
+        case_num = i + 1
+        logger.info("[%d/%d] Evaluating: %s", case_num, total, tc.question[:80])
 
         try:
             # Step 1: Retrieve context
+            logger.info("[%d/%d] Retrieving context...", case_num, total)
             retrieval = await retrieve_context(
                 access_token,
                 user_id,
@@ -490,11 +495,14 @@ async def run_eval_suite(
                 tenant_id=tenant_id,
             )
             contexts = retrieval.get("chunks", [])
+            logger.info("[%d/%d] Retrieved %d context chunks", case_num, total, len(contexts))
 
             # Step 2: Generate answer
+            logger.info("[%d/%d] Generating answer...", case_num, total)
             actual_answer = await generate_answer(tc.question, contexts)
 
             # Step 3: Score with LLM-as-judge
+            logger.info("[%d/%d] Scoring with LLM-as-judge...", case_num, total)
             result = await evaluate_query(
                 query=tc.question,
                 expected_answer=tc.expected_answer,
@@ -502,15 +510,26 @@ async def run_eval_suite(
                 contexts=contexts,
             )
             results.append(result)
+            logger.info(
+                "[%d/%d] Done — scores: faith=%d rel=%d prec=%d recall=%d avg=%.1f",
+                case_num, total,
+                result.faithfulness.score,
+                result.answer_relevance.score,
+                result.context_precision.score,
+                result.context_recall.score,
+                result.average_score,
+            )
 
         except Exception as e:
-            logger.error("Eval case %d failed: %s", i + 1, e)
+            logger.error("[%d/%d] FAILED: %s", case_num, total, e)
             results.append(EvalResult(
                 question=tc.question,
                 expected_answer=tc.expected_answer,
                 actual_answer=f"ERROR: {str(e)}",
                 contexts=[],
             ))
+
+    logger.info("Eval suite complete: %d/%d cases processed", len(results), total)
 
     # Compute aggregates
     n = len(results) or 1

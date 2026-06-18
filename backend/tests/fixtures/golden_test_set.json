@@ -1,0 +1,383 @@
+{
+  "test_cases": [
+    {
+      "question": "What is the maximum operating temperature for the CNC milling machine model X-4500?",
+      "expected_answer": "The CNC milling machine model X-4500 has a maximum continuous operating temperature of 85 degrees Celsius. Exceeding this threshold triggers the automatic thermal shutdown safeguard.",
+      "expected_facts": [
+        "Maximum operating temperature is 85 degrees Celsius",
+        "Exceeding the threshold triggers automatic thermal shutdown"
+      ],
+      "expected_sources": ["equipment_specifications.pdf"],
+      "category": "simple_factual",
+      "tags": ["simple_factual", "equipment", "specifications"],
+      "validated": true,
+      "notes": "Tests direct factual retrieval from a single equipment specification document."
+    },
+    {
+      "question": "How often must calipers be calibrated according to the quality control manual?",
+      "expected_answer": "Calipers must be calibrated every 6 months according to the quality control manual. Calibration records must be maintained and available for audit review.",
+      "expected_facts": [
+        "Calipers must be calibrated every 6 months",
+        "Calibration records must be maintained for audit review"
+      ],
+      "expected_sources": ["quality_control_manual.pdf"],
+      "category": "simple_factual",
+      "tags": ["simple_factual", "quality", "calibration"],
+      "validated": true,
+      "notes": "Tests retrieval of a specific frequency requirement from QC documentation."
+    },
+    {
+      "question": "What raw material grade is specified for injection-molded housing components?",
+      "expected_answer": "Injection-molded housing components must use polycarbonate grade Lexan 143R with a minimum tensile strength of 62 MPa. Material certificates from the supplier are required for each batch.",
+      "expected_facts": [
+        "Polycarbonate grade Lexan 143R is specified",
+        "Minimum tensile strength is 62 MPa",
+        "Material certificates are required per batch"
+      ],
+      "expected_sources": ["material_specifications.pdf"],
+      "category": "simple_factual",
+      "tags": ["simple_factual", "materials", "specifications"],
+      "validated": true,
+      "notes": "Tests retrieval of specific material grade and mechanical property requirements."
+    },
+    {
+      "question": "What personal protective equipment is required on the assembly floor?",
+      "expected_answer": "Workers on the assembly floor must wear safety glasses with side shields, steel-toed boots, cut-resistant gloves, and high-visibility vests. Hearing protection is required in zones where noise exceeds 85 dB.",
+      "expected_facts": [
+        "Safety glasses with side shields are required",
+        "Steel-toed boots are required",
+        "Cut-resistant gloves are required",
+        "High-visibility vests are required",
+        "Hearing protection required above 85 dB"
+      ],
+      "expected_sources": ["safety_procedures.pdf"],
+      "category": "simple_factual",
+      "tags": ["simple_factual", "safety", "PPE"],
+      "validated": true,
+      "notes": "Tests retrieval of a list of required safety equipment from safety documentation."
+    },
+    {
+      "question": "What is the acceptable defect rate threshold for finished goods before shipment?",
+      "expected_answer": "The acceptable defect rate for finished goods is no more than 0.5 percent (5,000 PPM). Batches exceeding this threshold must be quarantined and undergo 100 percent re-inspection before release.",
+      "expected_facts": [
+        "Acceptable defect rate is 0.5 percent or 5000 PPM",
+        "Exceeding batches must be quarantined",
+        "100 percent re-inspection required before release"
+      ],
+      "expected_sources": ["quality_control_manual.pdf"],
+      "category": "simple_factual",
+      "tags": ["simple_factual", "quality", "defect_rate"],
+      "validated": true,
+      "notes": "Tests retrieval of a specific numeric quality threshold and associated procedure."
+    },
+    {
+      "question": "How do the welding procedure specifications for stainless steel differ from carbon steel, and what are the joint preparation requirements for each?",
+      "expected_answer": "Stainless steel welding uses TIG process with argon shielding gas at 15-20 CFH flow rate and requires back-purging. Carbon steel welding uses MIG process with CO2/argon mix. Joint preparation for stainless steel requires chemical cleaning with nitric acid passivation, while carbon steel requires mechanical grinding to remove mill scale. Both require pre-heating above 10 mm thickness.",
+      "expected_facts": [
+        "Stainless steel uses TIG process with argon shielding gas",
+        "Stainless steel requires back-purging",
+        "Carbon steel uses MIG process with CO2/argon mix",
+        "Stainless steel joint prep requires nitric acid passivation",
+        "Carbon steel joint prep requires mechanical grinding",
+        "Both require pre-heating above 10 mm thickness"
+      ],
+      "expected_sources": ["welding_procedures.pdf", "material_specifications.pdf"],
+      "category": "multi_doc",
+      "tags": ["multi_doc", "welding", "materials", "procedures"],
+      "validated": true,
+      "notes": "Tests synthesis of welding specs across two documents covering different steel types."
+    },
+    {
+      "question": "What are the environmental compliance requirements for the wastewater discharge from the chemical etching process, and how do they align with the facility's ISO 14001 commitments?",
+      "expected_answer": "Wastewater from chemical etching must be treated to pH 6.5-8.5 before discharge, with heavy metal concentrations below 0.5 mg/L for chromium and 1.0 mg/L for nickel. ISO 14001 requires quarterly monitoring reports and annual third-party audits of discharge quality. The facility must maintain an environmental aspect register documenting all discharge points.",
+      "expected_facts": [
+        "Wastewater pH must be between 6.5 and 8.5",
+        "Chromium concentration must be below 0.5 mg/L",
+        "Nickel concentration must be below 1.0 mg/L",
+        "ISO 14001 requires quarterly monitoring reports",
+        "Annual third-party audits are required",
+        "Environmental aspect register must document discharge points"
+      ],
+      "expected_sources": ["environmental_compliance.pdf", "iso_14001_manual.pdf"],
+      "category": "multi_doc",
+      "tags": ["multi_doc", "environmental", "compliance", "ISO"],
+      "validated": true,
+      "notes": "Tests cross-referencing environmental discharge limits with ISO management system requirements."
+    },
+    {
+      "question": "What training certifications are required for operators running the automated press line, and what is the maintenance schedule for that equipment?",
+      "expected_answer": "Press line operators must hold Level 2 CNC certification plus a press-specific safety qualification renewed annually. The automated press line requires daily lubrication checks, weekly alignment verification, monthly hydraulic system inspection, and a full overhaul every 10,000 operating hours.",
+      "expected_facts": [
+        "Level 2 CNC certification is required",
+        "Press-specific safety qualification renewed annually",
+        "Daily lubrication checks are required",
+        "Weekly alignment verification is required",
+        "Monthly hydraulic system inspection is required",
+        "Full overhaul every 10000 operating hours"
+      ],
+      "expected_sources": ["training_requirements.pdf", "maintenance_schedule.pdf"],
+      "category": "multi_doc",
+      "tags": ["multi_doc", "training", "maintenance", "equipment"],
+      "validated": true,
+      "notes": "Tests synthesis of HR training requirements with equipment maintenance documentation."
+    },
+    {
+      "question": "What supplier qualification criteria apply to critical raw materials, and what incoming inspection procedures verify compliance?",
+      "expected_answer": "Critical raw material suppliers must hold ISO 9001 certification, demonstrate 12 months of on-time delivery above 95 percent, and provide full material traceability. Incoming inspection includes visual examination, dimensional verification against spec, material certificate review, and sample testing at one per 500 units or per lot, whichever is smaller.",
+      "expected_facts": [
+        "Suppliers must hold ISO 9001 certification",
+        "12 months on-time delivery above 95 percent required",
+        "Full material traceability is required",
+        "Incoming inspection includes visual examination",
+        "Dimensional verification against spec is required",
+        "Material certificate review is required",
+        "Sample testing at one per 500 units or per lot"
+      ],
+      "expected_sources": ["supplier_qualification.pdf", "incoming_inspection_procedures.pdf"],
+      "category": "multi_doc",
+      "tags": ["multi_doc", "supplier", "inspection", "quality"],
+      "validated": true,
+      "notes": "Tests combining supplier qualification standards with incoming inspection procedures."
+    },
+    {
+      "question": "What are the shelf life and storage conditions for adhesive bonding agents, and how does the production schedule account for material expiry?",
+      "expected_answer": "Structural adhesive EA-9394 has a shelf life of 12 months stored at 2-8 degrees Celsius. After removal from cold storage, it must be used within 72 hours at room temperature. The production planning system flags materials within 30 days of expiry for priority consumption and blocks expired materials from batch assignment.",
+      "expected_facts": [
+        "EA-9394 adhesive has 12-month shelf life",
+        "Storage temperature is 2 to 8 degrees Celsius",
+        "Must be used within 72 hours after cold storage removal",
+        "Production system flags materials within 30 days of expiry",
+        "Expired materials are blocked from batch assignment"
+      ],
+      "expected_sources": ["material_specifications.pdf", "production_planning_guide.pdf"],
+      "category": "multi_doc",
+      "tags": ["multi_doc", "materials", "storage", "production_planning"],
+      "validated": true,
+      "notes": "Tests combining material handling specifications with production scheduling logic."
+    },
+    {
+      "question": "How do I ensure my measuring instruments remain accurate over time?",
+      "expected_answer": "Measuring instruments must be calibrated at defined intervals. Calipers are calibrated every 6 months and micrometers every 12 months. All instruments must be stored in protective cases when not in use and checked against reference standards before each shift. Calibration records must be retained for a minimum of 5 years.",
+      "expected_facts": [
+        "Calipers calibrated every 6 months",
+        "Micrometers calibrated every 12 months",
+        "Instruments stored in protective cases when not in use",
+        "Checked against reference standards before each shift",
+        "Calibration records retained for minimum 5 years"
+      ],
+      "expected_sources": ["quality_control_manual.pdf"],
+      "category": "paraphrased",
+      "tags": ["paraphrased", "calibration", "quality"],
+      "validated": true,
+      "notes": "Paraphrases 'calibration schedule' as 'ensure accuracy over time' - tests semantic matching."
+    },
+    {
+      "question": "What do I need to wear when working near the heavy machinery area?",
+      "expected_answer": "Workers in heavy machinery areas must wear safety glasses with side shields, steel-toed boots, cut-resistant gloves, and high-visibility vests. Hearing protection is mandatory where noise levels exceed 85 dB. Loose clothing, jewelry, and unsecured long hair are prohibited near rotating equipment.",
+      "expected_facts": [
+        "Safety glasses with side shields are required",
+        "Steel-toed boots are required",
+        "Cut-resistant gloves are required",
+        "High-visibility vests are required",
+        "Hearing protection mandatory above 85 dB",
+        "Loose clothing and jewelry are prohibited"
+      ],
+      "expected_sources": ["safety_procedures.pdf"],
+      "category": "paraphrased",
+      "tags": ["paraphrased", "safety", "PPE"],
+      "validated": true,
+      "notes": "Uses informal language ('what do I need to wear', 'heavy machinery area') instead of formal terms."
+    },
+    {
+      "question": "What is the process for handling parts that fail quality inspection?",
+      "expected_answer": "Failed parts are tagged with a red non-conformance label and moved to the quarantine zone. A non-conformance report is filed within 24 hours. The disposition options are: rework, return to supplier, or scrap. The quality engineer approves the disposition and the corrective action must address root cause within 10 business days.",
+      "expected_facts": [
+        "Failed parts are tagged with red non-conformance label",
+        "Parts moved to quarantine zone",
+        "Non-conformance report filed within 24 hours",
+        "Disposition options are rework, return to supplier, or scrap",
+        "Quality engineer approves disposition",
+        "Corrective action addresses root cause within 10 business days"
+      ],
+      "expected_sources": ["quality_control_manual.pdf"],
+      "category": "paraphrased",
+      "tags": ["paraphrased", "quality", "non_conformance"],
+      "validated": true,
+      "notes": "Paraphrases 'non-conformance procedure' as 'handling parts that fail inspection' - tests synonym matching."
+    },
+    {
+      "question": "Can you walk me through the steps to get a new vendor approved for supplying components?",
+      "expected_answer": "New vendor approval requires: initial questionnaire submission, ISO 9001 certification verification, sample evaluation with First Article Inspection report, on-site audit by the quality team, pilot order of 3 batches with acceptable quality, and final approval by the procurement committee. The process typically takes 8-12 weeks.",
+      "expected_facts": [
+        "Initial questionnaire submission is required",
+        "ISO 9001 certification must be verified",
+        "Sample evaluation with First Article Inspection report",
+        "On-site audit by quality team is required",
+        "Pilot order of 3 batches with acceptable quality",
+        "Final approval by procurement committee",
+        "Process typically takes 8 to 12 weeks"
+      ],
+      "expected_sources": ["supplier_qualification.pdf"],
+      "category": "paraphrased",
+      "tags": ["paraphrased", "supplier", "procurement"],
+      "validated": true,
+      "notes": "Reframes 'supplier qualification criteria' as a how-to question from the vendor's perspective."
+    },
+    {
+      "question": "How should I store chemical solvents after opening the container?",
+      "expected_answer": "Chemical solvents must be stored in original or approved secondary containers with labels intact. After opening, containers must be sealed tightly and stored in the designated flammable storage cabinet at temperatures below 30 degrees Celsius. MSDS sheets must be accessible at the storage location. Open containers have a shelf life of 6 months from the date of opening.",
+      "expected_facts": [
+        "Store in original or approved secondary containers with labels",
+        "Containers must be sealed tightly after opening",
+        "Store in designated flammable storage cabinet",
+        "Temperature must be below 30 degrees Celsius",
+        "MSDS sheets must be accessible at storage location",
+        "Open containers have 6-month shelf life from opening date"
+      ],
+      "expected_sources": ["chemical_handling_procedures.pdf"],
+      "category": "paraphrased",
+      "tags": ["paraphrased", "chemical", "storage", "safety"],
+      "validated": true,
+      "notes": "Rephrases chemical storage requirements as a practical post-opening question."
+    },
+    {
+      "question": "What is the company's policy on employee stock options and equity vesting schedules?",
+      "expected_answer": "I don't have that information. The available documents do not contain details about employee stock options or equity vesting schedules.",
+      "expected_facts": [
+        "System should indicate it does not have information about stock options",
+        "System should not fabricate equity or vesting details"
+      ],
+      "expected_sources": [],
+      "category": "edge_case",
+      "tags": ["edge_case", "out_of_scope", "HR"],
+      "validated": true,
+      "notes": "Tests refusal when the question is outside the document corpus entirely."
+    },
+    {
+      "question": "What were the company's total revenue and profit margins for the last fiscal year?",
+      "expected_answer": "I don't have that information. The available documents do not contain financial performance data such as revenue or profit margins.",
+      "expected_facts": [
+        "System should indicate it does not have financial data",
+        "System should not generate fictional revenue or margin numbers"
+      ],
+      "expected_sources": [],
+      "category": "edge_case",
+      "tags": ["edge_case", "out_of_scope", "financial"],
+      "validated": true,
+      "notes": "Tests refusal for financial data queries that are not in the technical/compliance corpus."
+    },
+    {
+      "question": "Who is the CEO of the company and what is their management philosophy?",
+      "expected_answer": "I don't have that information. The available documents do not contain details about company leadership or management philosophy.",
+      "expected_facts": [
+        "System should indicate it does not have leadership information",
+        "System should not fabricate names or biographical details"
+      ],
+      "expected_sources": [],
+      "category": "edge_case",
+      "tags": ["edge_case", "out_of_scope", "leadership"],
+      "validated": true,
+      "notes": "Tests refusal for biographical/leadership queries outside technical documentation."
+    },
+    {
+      "question": "What is the recommended procedure for disposing of nuclear waste generated during production?",
+      "expected_answer": "I don't have that information. The available manufacturing documentation does not cover nuclear waste disposal, as this is not part of the facility's operations.",
+      "expected_facts": [
+        "System should indicate no information on nuclear waste disposal",
+        "System should not invent disposal procedures for materials not covered in documents"
+      ],
+      "expected_sources": [],
+      "category": "edge_case",
+      "tags": ["edge_case", "out_of_scope", "nuclear"],
+      "validated": true,
+      "notes": "Tests refusal for a plausible-sounding but document-absent topic. The facility does not handle nuclear materials."
+    },
+    {
+      "question": "Can you provide a comparison of our manufacturing costs versus our top three competitors?",
+      "expected_answer": "I don't have that information. The available documents do not contain competitive cost comparisons or competitor manufacturing data.",
+      "expected_facts": [
+        "System should indicate it does not have competitor data",
+        "System should not fabricate cost comparisons"
+      ],
+      "expected_sources": [],
+      "category": "edge_case",
+      "tags": ["edge_case", "out_of_scope", "competitive"],
+      "validated": true,
+      "notes": "Tests refusal for competitive intelligence queries that no internal document would contain."
+    },
+    {
+      "question": "What is the welding gas flow rate for that process?",
+      "expected_answer": "For stainless steel TIG welding, the argon shielding gas flow rate is 15 to 20 CFH. For carbon steel MIG welding, the CO2/argon mixed gas flow rate is 20 to 25 CFH.",
+      "expected_facts": [
+        "Stainless steel TIG welding uses argon at 15 to 20 CFH",
+        "Carbon steel MIG welding uses CO2/argon at 20 to 25 CFH"
+      ],
+      "expected_sources": ["welding_procedures.pdf"],
+      "category": "follow_up",
+      "tags": ["follow_up", "welding", "anaphora"],
+      "validated": true,
+      "notes": "Uses 'that process' as anaphoric reference. Assumes prior conversation about welding. Tests handling of implicit context references."
+    },
+    {
+      "question": "How long can it sit at room temperature before I need to throw it away?",
+      "expected_answer": "Structural adhesive EA-9394 can remain at room temperature for up to 72 hours after removal from cold storage. After 72 hours at room temperature, the adhesive must be discarded and not returned to cold storage.",
+      "expected_facts": [
+        "EA-9394 adhesive can stay at room temperature for up to 72 hours",
+        "After 72 hours it must be discarded",
+        "It should not be returned to cold storage after room temperature exposure"
+      ],
+      "expected_sources": ["material_specifications.pdf"],
+      "category": "follow_up",
+      "tags": ["follow_up", "materials", "storage", "anaphora"],
+      "validated": true,
+      "notes": "Uses 'it' as anaphoric reference. Assumes prior conversation about adhesive storage. Tests pronoun resolution in follow-up context."
+    },
+    {
+      "question": "What corrective action is required if the defect rate goes above the limit?",
+      "expected_answer": "When the defect rate exceeds 0.5 percent, the affected batch must be quarantined immediately. A root cause analysis must be initiated within 48 hours using the 8D methodology. Corrective and preventive actions must be documented and verified within 10 business days. The quality manager must be notified within 24 hours of detection.",
+      "expected_facts": [
+        "Affected batch must be quarantined immediately",
+        "Root cause analysis initiated within 48 hours using 8D methodology",
+        "Corrective and preventive actions documented within 10 business days",
+        "Quality manager notified within 24 hours"
+      ],
+      "expected_sources": ["quality_control_manual.pdf"],
+      "category": "follow_up",
+      "tags": ["follow_up", "quality", "corrective_action", "anaphora"],
+      "validated": true,
+      "notes": "Uses 'the limit' without specifying which limit. Assumes prior discussion of the 0.5% defect rate threshold."
+    },
+    {
+      "question": "Does the same documentation requirement apply to subcontractors as well?",
+      "expected_answer": "Yes, subcontractors must maintain the same documentation standards as internal operations. This includes material certificates, process control records, calibration logs, and inspection reports. Subcontractors are subject to annual audits and must grant access to their quality records upon request.",
+      "expected_facts": [
+        "Subcontractors must maintain same documentation standards",
+        "Documentation includes material certificates and process control records",
+        "Calibration logs and inspection reports are required",
+        "Subcontractors are subject to annual audits",
+        "Must grant access to quality records upon request"
+      ],
+      "expected_sources": ["supplier_qualification.pdf", "quality_control_manual.pdf"],
+      "category": "follow_up",
+      "tags": ["follow_up", "subcontractor", "documentation", "anaphora"],
+      "validated": true,
+      "notes": "Uses 'the same documentation requirement' assuming prior discussion of documentation standards. Tests scope extension in follow-up."
+    },
+    {
+      "question": "What happens if we need to make an exception to the standard procedure for an urgent order?",
+      "expected_answer": "Urgent order exceptions require written authorization from the quality manager and the production manager. The deviation must be documented in a formal deviation request form, including risk assessment and proposed mitigations. Customer approval is required if the deviation affects product specifications. All deviations are reviewed in the monthly management review meeting.",
+      "expected_facts": [
+        "Written authorization from quality manager and production manager required",
+        "Deviation documented in formal deviation request form",
+        "Risk assessment and proposed mitigations must be included",
+        "Customer approval required if specs are affected",
+        "Deviations reviewed in monthly management review meeting"
+      ],
+      "expected_sources": ["quality_control_manual.pdf", "production_planning_guide.pdf"],
+      "category": "follow_up",
+      "tags": ["follow_up", "deviation", "exceptions", "urgent"],
+      "validated": true,
+      "notes": "Tests handling of exception/deviation scenarios, assuming prior context about standard procedures. Validates the system's ability to retrieve deviation management policies."
+    }
+  ]
+}

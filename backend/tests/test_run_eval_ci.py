@@ -10,4 +10,5 @@ def test_run_eval_ci_skips_when_golden_fixture_missing(monkeypatch):
 
     result = asyncio.run(run_eval_ci.main())
 
-    assert result == 0
+    # Now exits with code 1 when golden test set is missing (fail loudly)
+    assert result == 1

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import re
 from collections.abc import AsyncGenerator
@@ -123,6 +124,14 @@ HYDE_SYSTEM_PROMPT = (
 )
 HYDE_MIN_WORD_COUNT = 5
 
+# Retry HyDE prompt: generates a refined hypothetical answer informed by the weak answer
+RETRY_HYDE_PROMPT = (
+    "Given a question and a previous answer that was NOT well-supported by documents, "
+    "write a refined hypothetical answer that focuses on the specific claims needing "
+    "better sourcing. Use domain-appropriate terminology and spell out abbreviations. "
+    "Return ONLY the refined hypothetical answer paragraph, nothing else."
+)
+
 # Corrective RAG constants
 CORRECTIVE_RAG_SYSTEM_PROMPT = (
     "You are a knowledgeable assistant with access to a curated knowledge base "
@@ -204,6 +213,34 @@ DELEGATION_PROMPT = (
 
 def _public_sources(sources: list[dict]) -> list[dict]:
     return [{k: v for k, v in source.items() if k != "content"} for source in sources]
+
+
+# ---------------------------------------------------------------------------
+# Web result relevance filtering
+# ---------------------------------------------------------------------------
+
+# Minimum keyword overlap ratio (query tokens found in content / total query tokens)
+_WEB_RELEVANCE_THRESHOLD = 0.10
+
+
+def _compute_keyword_overlap(query: str, content: str) -> float:
+    """Compute query-centric keyword overlap between a query and content.
+
+    Returns the fraction of query tokens (3+ chars) that appear in the content.
+    This is a lightweight relevance proxy — if none of the user's keywords
+    appear in a web result, it is almost certainly irrelevant.
+
+    Returns:
+        Float between 0.0 and 1.0.
+    """
+    query_tokens = set(re.findall(r'\b\w{3,}\b', query.lower()))
+    if not query_tokens:
+        return 1.0  # no meaningful tokens → don't filter
+    content_tokens = set(re.findall(r'\b\w{3,}\b', content.lower()))
+    if not content_tokens:
+        return 0.0
+    intersection = query_tokens & content_tokens
+    return len(intersection) / len(query_tokens)
 
 
 async def rewrite_query(message: str, history: list, client) -> str:
@@ -416,6 +453,28 @@ async def augment_with_web_search(query: str, doc_chunks: list[str], doc_sources
     if not web_results:
         return {"chunks": doc_chunks, "sources": doc_sources, "web_results": []}
 
+    # ── Relevance filtering: drop web results with low keyword overlap ──
+    filtered_results = []
+    for r in web_results:
+        raw_content = f"{r['title']} {r['content'][:500]}"
+        overlap = _compute_keyword_overlap(query, raw_content)
+        if overlap >= _WEB_RELEVANCE_THRESHOLD:
+            filtered_results.append(r)
+        else:
+            logger.info(
+                f"Web relevance filter: dropped '{r['title'][:60]}' "
+                f"(keyword_overlap={overlap:.2%} < {_WEB_RELEVANCE_THRESHOLD:.0%})"
+            )
+    if len(filtered_results) < len(web_results):
+        logger.info(
+            f"Web relevance filter: {len(web_results) - len(filtered_results)} of "
+            f"{len(web_results)} web results dropped (< {_WEB_RELEVANCE_THRESHOLD:.0%} keyword overlap)"
+        )
+    web_results = filtered_results
+
+    if not web_results:
+        return {"chunks": doc_chunks, "sources": doc_sources, "web_results": []}
+
     web_chunks = []
     web_sources = []
     for r in web_results:
@@ -611,6 +670,144 @@ async def _execute_sql_delegation(message: str, history: list) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Chain-of-Verification (CoVe)
+# ---------------------------------------------------------------------------
+
+COVE_QUESTIONS_PROMPT = (
+    "You are a fact-checker. For each factual claim in the following answer, "
+    "generate a verification question that would independently confirm or refute it. "
+    "Focus on specific facts, numbers, names, and relationships — not opinions or hedging. "
+    "Return a JSON array of strings (the questions), nothing else. Limit to the 8 most important claims.\n\n"
+    "Answer to verify:\n{draft_answer}"
+)
+
+COVE_VERIFY_PROMPT = (
+    "You are a strict fact-checker. Answer the following question using ONLY the "
+    "context provided below. Do NOT use any outside knowledge.\n\n"
+    "Context:\n{context}\n\n"
+    "Question: {question}\n\n"
+    "Provide a concise answer, then on a new line state whether the claim is "
+    "SUPPORTED or NOT SUPPORTED by the context. Format:\n"
+    "Answer: <your answer>\nVerdict: SUPPORTED or NOT SUPPORTED"
+)
+
+
+async def generate_verification_questions(draft_answer: str, client, model: str) -> list[str]:
+    """Generate fact-checking questions from a draft answer's claims."""
+    max_questions = 8
+    try:
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "user", "content": COVE_QUESTIONS_PROMPT.format(draft_answer=draft_answer)},
+                ],
+                max_tokens=500,
+                temperature=0.2,
+            ),
+            timeout=10.0,
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        # Try JSON parse first
+        try:
+            # Strip markdown code fences if present
+            clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
+            questions = json.loads(clean)
+            if isinstance(questions, list):
+                return [str(q).strip() for q in questions if str(q).strip()][:max_questions]
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # Fallback: split on question marks
+        parts = re.split(r"\?\s*", raw)
+        questions = [p.strip() + "?" for p in parts if p.strip() and len(p.strip()) > 10]
+        return questions[:max_questions]
+    except Exception as e:
+        logger.warning(f"CoVe question generation failed: {e}")
+    return []
+
+
+async def _verify_single_question(
+    question: str, context_chunks: list[str], client, model: str
+) -> dict:
+    """Answer a single verification question using only the context chunks."""
+    context = "\n---\n".join(context_chunks[:10])
+    try:
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "user", "content": COVE_VERIFY_PROMPT.format(context=context, question=question)},
+                ],
+                max_tokens=200,
+                temperature=0.1,
+            ),
+            timeout=10.0,
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        # Extract verdict
+        supported = "not supported" not in raw.lower()
+        # Extract answer portion
+        answer = raw
+        for marker in ["Verdict:", "verdict:"]:
+            idx = raw.find(marker)
+            if idx > 0:
+                answer = raw[:idx].replace("Answer:", "").strip()
+                break
+        return {"question": question, "answer": answer, "supported": supported}
+    except Exception as e:
+        logger.warning(f"CoVe verification failed for question '{question[:50]}': {e}")
+        return {"question": question, "answer": "", "supported": True}  # default to supported on error
+
+
+async def verify_answer_independently(
+    questions: list[str], context_chunks: list[str], client, model: str
+) -> list[dict]:
+    """Answer each verification question independently using only context chunks."""
+    tasks = [
+        _verify_single_question(q, context_chunks, client, model)
+        for q in questions
+    ]
+    results = await asyncio.gather(*tasks)
+    return list(results)
+
+
+async def chain_of_verification(
+    draft_answer: str, context_chunks: list[str], client, model: str
+) -> dict:
+    """Run the full Chain-of-Verification pipeline.
+
+    Returns:
+        {
+            "verified": bool,          # True if >= 70% claims supported
+            "unsupported_claims": list[str],
+            "verification_questions": list[str],
+            "verification_results": list[dict],
+        }
+    """
+    questions = await generate_verification_questions(draft_answer, client, model)
+    if not questions:
+        return {
+            "verified": True,
+            "unsupported_claims": [],
+            "verification_questions": [],
+            "verification_results": [],
+        }
+
+    results = await verify_answer_independently(questions, context_chunks, client, model)
+
+    unsupported = [r["question"] for r in results if not r["supported"]]
+    support_ratio = 1.0 - (len(unsupported) / len(results)) if results else 1.0
+    verified = support_ratio >= 0.7
+
+    return {
+        "verified": verified,
+        "unsupported_claims": unsupported,
+        "verification_questions": questions,
+        "verification_results": results,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main execution pipeline
 # ---------------------------------------------------------------------------
 
@@ -738,7 +935,7 @@ async def execute(
         result_chunks = result.get("chunks", [])
         result_sources = result.get("sources", [])
         for rank, chunk in enumerate(result_chunks):
-            key = chunk[:200].strip().lower()
+            key = chunk[:500].strip().lower()
             rrf_score = 1.0 / (rrf_k + rank + 1)
             if key in fused:
                 # Document found by another variant — boost its score
@@ -763,12 +960,12 @@ async def execute(
     for item in sorted_fused:
         chunk = item["content"]
         source = item["source"]
-        key = chunk[:200].strip().lower()
+        key = chunk[:500].strip().lower()
         if key not in seen_chunk_keys:
             seen_chunk_keys.add(key)
             context_chunks.append(chunk)
             context_sources.append(source)
-        src_key = source.get("content", "")[:200].strip().lower() if source else ""
+        src_key = source.get("content", "")[:500].strip().lower() if source else ""
         if src_key and src_key not in seen_source_keys:
             seen_source_keys.add(src_key)
             sources.append(source)
@@ -782,7 +979,7 @@ async def execute(
         sql_chunks = delegated_sql_result["chunks"]
         sql_sources = delegated_sql_result.get("sources", [])
         for i, chunk in enumerate(sql_chunks):
-            key = chunk[:200].strip().lower()
+            key = chunk[:500].strip().lower()
             if key not in seen_chunk_keys:
                 seen_chunk_keys.add(key)
                 context_chunks.insert(0, chunk)  # Prepend SQL results (high priority)
@@ -822,11 +1019,52 @@ async def execute(
                     similarity_threshold=0.5, tenant_id=tenant_id,
                 )
                 if hyde_chunks:
+                    # HyDE Relevance Backcheck: verify chunks are relevant to the
+                    # ORIGINAL query, not just the hypothetical answer.  The HyDE
+                    # embedding search finds chunks similar to the hypothetical
+                    # answer, which can drift off-topic.  We re-compute similarity
+                    # against the original query embedding and reject chunks below
+                    # the 0.3 relevance threshold.
+                    HYDE_RELEVANCE_THRESHOLD = 0.3
+                    try:
+                        query_embedding = await get_embedding(get_embedding_client(), augmented_query)
+
+                        def _cosine_sim(a: list[float], b: list[float]) -> float:
+                            """Pure-Python cosine similarity between two float vectors."""
+                            dot = sum(x * y for x, y in zip(a, b))
+                            norm_a = sum(x * x for x in a) ** 0.5
+                            norm_b = sum(x * x for x in b) ** 0.5
+                            if norm_a == 0 or norm_b == 0:
+                                return 0.0
+                            return dot / (norm_a * norm_b)
+
+                        original_len = len(hyde_chunks)
+                        backchecked_chunks = []
+                        for chunk in hyde_chunks:
+                            chunk_text = chunk["content"]
+                            chunk_embedding = await get_embedding(get_embedding_client(), chunk_text)
+                            relevance = _cosine_sim(query_embedding, chunk_embedding)
+                            if relevance >= HYDE_RELEVANCE_THRESHOLD:
+                                backchecked_chunks.append(chunk)
+                            else:
+                                logger.info(
+                                    f"HyDE backcheck: rejected chunk (relevance={relevance:.3f} < {HYDE_RELEVANCE_THRESHOLD}): "
+                                    f"'{chunk_text[:80]}...'"
+                                )
+                        if len(backchecked_chunks) < original_len:
+                            logger.info(
+                                f"HyDE backcheck: {original_len - len(backchecked_chunks)} chunks rejected "
+                                f"(< {HYDE_RELEVANCE_THRESHOLD} relevance to original query)"
+                            )
+                        hyde_chunks = backchecked_chunks
+                    except Exception as e:
+                        logger.warning(f"HyDE relevance backcheck failed, keeping all chunks: {e}")
+
                     existing_contents = set(seen_chunk_keys)
                     added = 0
                     for chunk in hyde_chunks:
                         content = chunk["content"]
-                        key = content[:200].strip().lower()
+                        key = content[:500].strip().lower()
                         if key not in existing_contents:
                             context_chunks.append(content)
                             hyde_src = {
@@ -906,12 +1144,25 @@ async def execute(
         web_results = await search_web(augmented_query, max_results=5)
         log_latency("retrieval.web_search", elapsed_ms(ws_start), user_id=user_id, tenant_id=tenant_id, thread_id=thread_id, result_count=len(web_results) if web_results else 0)
         if web_results:
+            # Relevance filtering for web-only fallback
+            filtered_web = []
+            for r in web_results:
+                raw = f"{r['title']} {r['content'][:500]}"
+                overlap = _compute_keyword_overlap(augmented_query, raw)
+                if overlap >= _WEB_RELEVANCE_THRESHOLD:
+                    filtered_web.append(r)
+                else:
+                    logger.info(f"Web fallback filter: dropped '{r['title'][:60]}' (keyword_overlap={overlap:.2%})")
+            if len(filtered_web) < len(web_results):
+                logger.info(f"Web fallback filter: {len(web_results) - len(filtered_web)} of {len(web_results)} results dropped")
+            web_results = filtered_web
+
             web_chunks = [f"[Web] {r['title']}: {r['content'][:500]}" for r in web_results]
             web_sources = [{"id": f"web_{r['url']}", "document_id": "web_search", "content": c, "score": 0.0, "title": r["title"], "url": r["url"]} for r, c in zip(web_results, web_chunks)]
 
             yield {
                 "type": "thought",
-                "content": f"No documents matched, but found {len(web_results)} web results. Generating answer from web search.",
+                "content": f"No documents matched, but found {len(web_results)} relevant web results. Generating answer from web search.",
                 "action_type": "synthesizing",
                 "action_source": "doc_rag",
                 "action_data": {"web_result_count": len(web_results), "fallback": True},
@@ -1094,19 +1345,40 @@ async def execute(
             web_results = await search_web(search_query, max_results=3)
             log_latency("retrieval.web_search_external", elapsed_ms(wse_start), user_id=user_id, tenant_id=tenant_id, thread_id=thread_id, result_count=len(web_results) if web_results else 0)
             if web_results:
+                # Relevance filtering: drop web results with low keyword overlap
+                filtered_web = []
+                for r in web_results:
+                    raw = f"{r['title']} {r['content'][:500]}"
+                    overlap = _compute_keyword_overlap(search_query, raw)
+                    if overlap >= _WEB_RELEVANCE_THRESHOLD:
+                        filtered_web.append(r)
+                    else:
+                        logger.info(
+                            f"External web filter: dropped '{r['title'][:60]}' "
+                            f"(keyword_overlap={overlap:.2%} < {_WEB_RELEVANCE_THRESHOLD:.0%})"
+                        )
+                if len(filtered_web) < len(web_results):
+                    logger.info(
+                        f"External web filter: {len(web_results) - len(filtered_web)} of "
+                        f"{len(web_results)} results dropped (< {_WEB_RELEVANCE_THRESHOLD:.0%} keyword overlap)"
+                    )
+                web_results = filtered_web
+
                 web_context = []
                 web_sources = []
                 for r in web_results:
                     snippet = r["content"][:500]
                     web_context.append(f"[Web] {r['title']}: {snippet}")
                     web_sources.append({"title": r["title"], "url": r["url"]})
+                if not web_context:
+                    logger.info("External web search: all results filtered out by relevance check")
                 context_chunks = context_chunks + web_context
                 context_sources = context_sources + web_sources
                 public_sources = public_sources + web_sources
-                use_hybrid = True
+                use_hybrid = bool(web_context)
                 yield {
                     "type": "thought",
-                    "content": f"Found {len(web_results)} web results to supplement document data.",
+                    "content": f"Found {len(web_results)} relevant web results to supplement document data.",
                     "action_type": "synthesizing",
                     "action_source": "doc_rag",
                     "action_data": {"web_results": len(web_results), "search_query": search_query},
@@ -1143,7 +1415,8 @@ async def execute(
         yield {"type": "token", "content": "> I found limited relevant documents, so I also searched the web to give you a better answer.\n\n"}
 
     # ── Generate answer with optional groundedness retry ──
-    max_retries = 1
+    # Retry 1: query reformulation; Retry 2: HyDE-based retrieval
+    max_retries = 2
     attempt = 0
     is_grounded = True
     groundedness = 1.0
@@ -1181,86 +1454,251 @@ async def execute(
         )
 
         # Groundedness check (two-stage: token-overlap + LLM)
+        # Detect if context contains web-fallback content to use web-aware groundedness prompt
+        has_web_content = any(c.strip().startswith("[Web]") for c in context_chunks)
         groundedness, is_grounded = await check_groundedness_with_llm(
-            full_answer, context_chunks, client, get_primary_model()
+            full_answer, context_chunks, client, get_primary_model(),
+            web_mode=has_web_content,
         )
+        if has_web_content:
+            logger.info(f"Groundedness check used web-aware prompt (web chunks detected in context)")
         logger.info(f"Groundedness attempt {attempt+1}: score={groundedness:.3f}, is_grounded={is_grounded}")
 
         if is_grounded or attempt >= max_retries:
             break
 
-        # ── Retry: refine query and re-retrieve ──
+        # ── Retry: different strategies per attempt ──
         attempt += 1
-        yield {
-            "type": "thought",
-            "content": f"Answer may not be fully grounded ({groundedness:.0%}). Refining search and trying again...",
-            "action_type": "retrying",
-            "action_source": "doc_rag",
-            "action_data": {"attempt": attempt, "groundedness": round(groundedness, 3)},
-        }
 
-        refined_query = await _refine_query_for_retry(augmented_query, full_answer, client)
-        yield {
-            "type": "thought",
-            "content": f"Refined search: “{refined_query[:80]}”",
-            "action_type": "searching",
-            "action_source": "doc_rag",
-            "action_data": {"refined_query": refined_query},
-        }
+        if attempt == 1:
+            # Retry 1: Query reformulation — refine the search query based on weak answer
+            yield {
+                "type": "thought",
+                "content": f"Answer may not be fully grounded ({groundedness:.0%}). Refining search query and trying again...",
+                "action_type": "retrying",
+                "action_source": "doc_rag",
+                "action_data": {"attempt": attempt, "groundedness": round(groundedness, 3), "strategy": "query_reformulation"},
+            }
 
-        retry_result = await retrieve_context(
-            token, user_id, refined_query, mode=retrieval_mode,
-            target_user_id=target_user_id, tenant_id=tenant_id, thread_id=thread_id,
-            diagnostics={
-                "channel": channel,
-                "query_variant_count": len(all_queries),
-                "retry": True,
-                "web_fallback_allowed": allow_web_fallback,
-            },
-        )
-        retry_retrieval_log_ids.extend(retry_result.get("retrieval_log_ids", []))
+            refined_query = await _refine_query_for_retry(augmented_query, full_answer, client)
+            yield {
+                "type": "thought",
+                "content": f"Refined search: “{refined_query[:80]}”",
+                "action_type": "searching",
+                "action_source": "doc_rag",
+                "action_data": {"refined_query": refined_query},
+            }
 
-        if retry_result.get("chunks"):
-            # Merge retry chunks with existing, deduplicating
-            seen_keys = {c[:200].strip().lower() for c in context_chunks}
-            retry_chunks = retry_result["chunks"]
-            retry_sources = retry_result.get("sources", [])
-            added = 0
-            for i, chunk in enumerate(retry_chunks):
-                key = chunk[:200].strip().lower()
-                if key not in seen_keys:
-                    context_chunks.append(chunk)
-                    if i < len(retry_sources):
-                        context_sources.append(retry_sources[i])
-                    else:
-                        context_sources.append({})
-                    seen_keys.add(key)
-                    added += 1
-            if added:
-                yield {
-                    "type": "thought",
-                    "content": f"Retry retrieval found {added} additional relevant section{'s' if added != 1 else ''}.",
-                    "action_type": "searching",
-                    "action_source": "doc_rag",
-                    "action_data": {"added": added},
-                }
-                # Update sources for the sources event
-                sources = sources + retry_result.get("sources", [])
-                yield {"type": "sources", "sources": _public_sources(sources)}
+            retry_result = await retrieve_context(
+                token, user_id, refined_query, mode=retrieval_mode,
+                target_user_id=target_user_id, tenant_id=tenant_id, thread_id=thread_id,
+                diagnostics={
+                    "channel": channel,
+                    "query_variant_count": len(all_queries),
+                    "retry": True,
+                    "retry_strategy": "query_reformulation",
+                    "web_fallback_allowed": allow_web_fallback,
+                },
+            )
+            retry_retrieval_log_ids.extend(retry_result.get("retrieval_log_ids", []))
+
+            if retry_result.get("chunks"):
+                # Merge retry chunks with existing, deduplicating
+                seen_keys = {c[:500].strip().lower() for c in context_chunks}
+                retry_chunks = retry_result["chunks"]
+                retry_sources = retry_result.get("sources", [])
+                added = 0
+                for i, chunk in enumerate(retry_chunks):
+                    key = chunk[:500].strip().lower()
+                    if key not in seen_keys:
+                        context_chunks.append(chunk)
+                        if i < len(retry_sources):
+                            context_sources.append(retry_sources[i])
+                        else:
+                            context_sources.append({})
+                        seen_keys.add(key)
+                        added += 1
+                if added:
+                    yield {
+                        "type": "thought",
+                        "content": f"Retry retrieval found {added} additional relevant section{'s' if added != 1 else ''}.",
+                        "action_type": "searching",
+                        "action_source": "doc_rag",
+                        "action_data": {"added": added},
+                    }
+                    sources = sources + retry_result.get("sources", [])
+                    yield {"type": "sources", "sources": _public_sources(sources)}
+                else:
+                    yield {
+                        "type": "thought",
+                        "content": "Retry retrieval found no new information.",
+                        "action_type": "searching",
+                        "action_source": "doc_rag",
+                    }
             else:
                 yield {
                     "type": "thought",
-                    "content": "Retry retrieval found no new information.",
+                    "content": "Retry retrieval found no additional results.",
                     "action_type": "searching",
                     "action_source": "doc_rag",
                 }
-        else:
+
+        elif attempt == 2:
+            # Retry 2: HyDE-based retrieval — use the weak answer to generate a
+            # hypothetical answer and search Qdrant for similar chunks
             yield {
                 "type": "thought",
-                "content": "Retry retrieval found no additional results.",
-                "action_type": "searching",
+                "content": f"Groundedness still low ({groundedness:.0%}). Trying HyDE-based retrieval from the draft answer...",
+                "action_type": "retrying",
                 "action_source": "doc_rag",
+                "action_data": {"attempt": attempt, "groundedness": round(groundedness, 3), "strategy": "hyde_retrieval"},
             }
+
+            retry_hyde_added = 0
+            try:
+                # Generate a refined hypothetical answer informed by the weak answer
+                hyde_prompt = (
+                    f"Original question: {augmented_query}\n\n"
+                    f"Previous answer lacking document support: {full_answer[:500]}\n\n"
+                    "Based on the gaps in the previous answer, write a refined hypothetical "
+                    "answer that would be ideal if the information existed in a knowledge base."
+                )
+                response = await asyncio.wait_for(
+                    client.chat.completions.create(
+                        model=get_primary_model(),
+                        messages=[
+                            {"role": "system", "content": RETRY_HYDE_PROMPT},
+                            {"role": "user", "content": hyde_prompt},
+                        ],
+                        max_tokens=200,
+                        temperature=0.3,
+                    ),
+                    timeout=8.0,
+                )
+                retry_hyde_answer = (response.choices[0].message.content or "").strip()
+
+                if retry_hyde_answer:
+                    logger.info(f"Retry HyDE: generated refined hypothetical answer ({len(retry_hyde_answer)} chars)")
+                    hyde_start = monotonic_ms()
+                    hyde_embedding = await get_embedding(get_embedding_client(), retry_hyde_answer)
+                    target_uid = target_user_id or user_id or ""
+                    hyde_chunks = await search_similar_chunks(
+                        target_uid, hyde_embedding, match_count=5,
+                        similarity_threshold=0.5, tenant_id=tenant_id,
+                    )
+                    log_latency("retrieval.retry_hyde", elapsed_ms(hyde_start), user_id=user_id, tenant_id=tenant_id, thread_id=thread_id, chunk_count=len(hyde_chunks) if hyde_chunks else 0)
+
+                    if hyde_chunks:
+                        # Dedup and merge
+                        seen_keys = {c[:500].strip().lower() for c in context_chunks}
+                        for chunk in hyde_chunks:
+                            content = chunk["content"]
+                            key = content[:500].strip().lower()
+                            if key not in seen_keys:
+                                context_chunks.append(content)
+                                hyde_src = {
+                                    "id": chunk.get("id", ""),
+                                    "document_id": chunk.get("document_id", ""),
+                                    "content": content,
+                                    "score": chunk.get("similarity", 0),
+                                    "retrieval_method": "retry_hyde",
+                                }
+                                sources.append(hyde_src)
+                                context_sources.append(hyde_src)
+                                seen_keys.add(key)
+                                retry_hyde_added += 1
+
+                        if retry_hyde_added:
+                            yield {
+                                "type": "thought",
+                                "content": f"Retry HyDE retrieval found {retry_hyde_added} additional relevant section{'s' if retry_hyde_added != 1 else ''}.",
+                                "action_type": "searching",
+                                "action_source": "doc_rag",
+                                "action_data": {"added": retry_hyde_added, "strategy": "hyde_retrieval"},
+                            }
+                            yield {"type": "sources", "sources": _public_sources(sources)}
+                        else:
+                            yield {
+                                "type": "thought",
+                                "content": "Retry HyDE retrieval found no new unique chunks.",
+                                "action_type": "searching",
+                                "action_source": "doc_rag",
+                            }
+                    else:
+                        yield {
+                            "type": "thought",
+                            "content": "Retry HyDE vector search returned 0 results.",
+                            "action_type": "searching",
+                            "action_source": "doc_rag",
+                        }
+                else:
+                    logger.warning("Retry HyDE: hypothetical answer generation returned empty")
+                    yield {
+                        "type": "thought",
+                        "content": "Retry HyDE answer generation produced no output.",
+                        "action_type": "searching",
+                        "action_source": "doc_rag",
+                    }
+            except Exception as e:
+                logger.warning(f"Retry HyDE retrieval failed: {e}")
+                yield {
+                    "type": "thought",
+                    "content": f"Retry HyDE retrieval encountered an error: {e}",
+                    "action_type": "searching",
+                    "action_source": "doc_rag",
+                }
+
+    # ── Chain-of-Verification (CoVe): secondary check after groundedness ──
+    cove_results = None
+    if is_grounded and full_answer and context_chunks:
+        try:
+            cove_start = monotonic_ms()
+            yield {
+                "type": "thought",
+                "content": "Running Chain-of-Verification to independently fact-check claims...",
+                "action_type": "verifying",
+                "action_source": "doc_rag",
+                "action_data": {"stage": "cove_start"},
+            }
+            cove_results = await chain_of_verification(
+                full_answer, context_chunks, client, get_primary_model(),
+            )
+            log_latency("llm.cove", elapsed_ms(cove_start), user_id=user_id, tenant_id=tenant_id, thread_id=thread_id, verified=cove_results["verified"])
+            logger.info(
+                f"Chain-of-Verification: verified={cove_results['verified']}, "
+                f"support_ratio={1.0 - len(cove_results['unsupported_claims']) / max(len(cove_results['verification_questions']), 1):.2f}, "
+                f"questions={len(cove_results['verification_questions'])}, "
+                f"unsupported={len(cove_results['unsupported_claims'])}"
+            )
+            print(
+                f"[DOC_RAG] CoVe: verified={cove_results['verified']}, "
+                f"questions={len(cove_results['verification_questions'])}, "
+                f"unsupported={len(cove_results['unsupported_claims'])}"
+            )
+            if not cove_results["verified"]:
+                is_grounded = False
+                yield {
+                    "type": "thought",
+                    "content": f"Chain-of-Verification found {len(cove_results['unsupported_claims'])} unsupported claim(s). Marking as not fully grounded.",
+                    "action_type": "guardrail",
+                    "action_source": "doc_rag",
+                    "action_data": {
+                        "stage": "cove_fail",
+                        "unsupported_claims": cove_results["unsupported_claims"],
+                        "support_ratio": round(1.0 - len(cove_results["unsupported_claims"]) / max(len(cove_results["verification_questions"]), 1), 3),
+                    },
+                }
+            else:
+                yield {
+                    "type": "thought",
+                    "content": "Chain-of-Verification passed — claims are well-supported.",
+                    "action_type": "verifying",
+                    "action_source": "doc_rag",
+                    "action_data": {"stage": "cove_pass"},
+                }
+        except Exception as e:
+            logger.warning(f"Chain-of-Verification failed (non-fatal): {e}")
+            print(f"[DOC_RAG] CoVe failed: {e}")
 
     # ── Post-retry groundedness handling ──
     if not is_grounded and context_chunks:
@@ -1280,7 +1718,7 @@ async def execute(
     all_retrieval_log_ids = retrieval_log_ids + retry_retrieval_log_ids
     final_doc_count = sum(1 for s in sources if s.get("document_id") != "web_search")
     final_web_count = sum(1 for s in sources if s.get("document_id") == "web_search" or s.get("url"))
-    yield {
+    rag_quality_data = {
         "type": "rag_quality",
         "retrieval_log_ids": all_retrieval_log_ids,
         "groundedness": round(groundedness, 3),
@@ -1297,3 +1735,11 @@ async def execute(
             **({"fallback_reason": "web_augmented"} if used_web_fallback or use_hybrid else {}),
         },
     }
+    if cove_results is not None:
+        rag_quality_data["cove"] = {
+            "verified": cove_results["verified"],
+            "question_count": len(cove_results["verification_questions"]),
+            "unsupported_count": len(cove_results["unsupported_claims"]),
+            "unsupported_claims": cove_results["unsupported_claims"],
+        }
+    yield rag_quality_data

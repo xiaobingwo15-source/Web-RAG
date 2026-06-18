@@ -7,6 +7,7 @@ against baseline metrics, and exits with code 0 (pass) or 1 (fail).
 Usage:
     python -m scripts.run_eval_ci                    # compare to baseline
     python -m scripts.run_eval_ci --update-baseline  # run eval and write new baseline
+    python -m scripts.run_eval_ci --generate-baseline  # run eval and save as new baseline
 
 Environment variables (required):
     OPENROUTER_API_KEY  — for LLM-as-judge and answer generation
@@ -16,6 +17,9 @@ Environment variables (required):
     QDRANT_URL          — Qdrant vector DB URL
     QDRANT_API_KEY      — Qdrant API key
     COHERE_API_KEY      — for reranking (optional, falls back to keyword overlap)
+
+Environment variables (optional):
+    EVAL_REGRESSION_THRESHOLD — max metric drop (on 1-5 scale) before failing; default 0.5
 """
 
 import argparse
@@ -50,7 +54,7 @@ GOLDEN_PATH = FIXTURES_DIR / "golden_test_set.json"
 BASELINE_PATH = FIXTURES_DIR / "eval_baseline.json"
 
 METRICS = ["faithfulness", "answer_relevance", "context_precision", "context_recall", "overall"]
-REGRESSION_THRESHOLD = 0.5  # fail if any metric drops by more than this (on 1-5 scale)
+REGRESSION_THRESHOLD = float(os.environ.get("EVAL_REGRESSION_THRESHOLD", "0.5"))
 
 
 def load_baseline(path: Path = BASELINE_PATH) -> dict:
@@ -166,8 +170,13 @@ async def main(update_baseline: bool = False) -> int:
     # Load golden test set
     logger.info("Loading golden test set from %s", GOLDEN_PATH)
     if not GOLDEN_PATH.exists():
-        logger.warning("Golden test set fixture missing at %s; skipping eval CI run", GOLDEN_PATH)
-        return 0
+        logger.error(
+            "Golden test set fixture missing at %s. "
+            "Run with --generate-baseline after creating the fixture, "
+            "or ensure tests/fixtures/golden_test_set.json exists.",
+            GOLDEN_PATH,
+        )
+        return 1
     try:
         test_cases = load_golden_test_set(GOLDEN_PATH)
     except (FileNotFoundError, ValueError) as e:
@@ -231,7 +240,13 @@ if __name__ == "__main__":
         action="store_true",
         help="After running eval, write current metrics as the new baseline",
     )
+    parser.add_argument(
+        "--generate-baseline",
+        action="store_true",
+        help="Run the eval suite and save results as the new baseline (alias for --update-baseline)",
+    )
     args = parser.parse_args()
 
-    exit_code = asyncio.run(main(update_baseline=args.update_baseline))
+    should_update = args.update_baseline or args.generate_baseline
+    exit_code = asyncio.run(main(update_baseline=should_update))
     sys.exit(exit_code)
