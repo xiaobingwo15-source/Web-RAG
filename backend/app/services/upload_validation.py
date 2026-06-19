@@ -1,10 +1,14 @@
 import mimetypes
 import re
 from pathlib import PurePath
+from typing import Protocol
 
 from fastapi import HTTPException
 
+from app.config import Settings
+
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+PDF_MIME_TYPE = "application/pdf"
 
 ALLOWED_MIME_TYPES = {
     "application/pdf",
@@ -53,6 +57,42 @@ EXTENSION_MIME_TYPES = {
 OLE_SIGNATURE = bytes.fromhex("D0CF11E0A1B11AE1")
 
 
+class AsyncUpload(Protocol):
+    size: int | None
+
+    async def read(self, size: int = -1) -> bytes: ...
+
+
+def max_upload_bytes_for_mime(mime_type: str) -> int:
+    if mime_type == PDF_MIME_TYPE:
+        return Settings().pdf_max_bytes
+    return MAX_UPLOAD_BYTES
+
+
+def _size_limit_detail(mime_type: str, limit: int) -> str:
+    size_mb = limit // (1024 * 1024)
+    file_label = "PDF" if mime_type == PDF_MIME_TYPE else "File"
+    return f"{file_label} is too large. Maximum upload size is {size_mb} MB."
+
+
+def validate_upload_size(size: int, mime_type: str) -> None:
+    limit = max_upload_bytes_for_mime(mime_type)
+    if size > limit:
+        raise HTTPException(status_code=413, detail=_size_limit_detail(mime_type, limit))
+
+
+async def read_upload_bytes(file: AsyncUpload, mime_type: str) -> bytes:
+    """Read no more than one byte past the applicable upload limit."""
+    limit = max_upload_bytes_for_mime(mime_type)
+    declared_size = getattr(file, "size", None)
+    if declared_size is not None:
+        validate_upload_size(int(declared_size), mime_type)
+
+    file_bytes = await file.read(limit + 1)
+    validate_upload_bytes(file_bytes, mime_type)
+    return file_bytes
+
+
 def sanitize_upload_filename(filename: str | None) -> str:
     name = PurePath(filename or "unnamed").name.strip()
     name = re.sub(r"[\x00-\x1f\x7f]", "", name)
@@ -78,10 +118,19 @@ def resolve_upload_mime_type(filename: str, declared: str | None) -> str:
 
 
 def validate_upload_bytes(file_bytes: bytes, mime_type: str) -> None:
-    if len(file_bytes) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="File is too large. Maximum upload size is 25 MB.")
-    if mime_type == "application/pdf" and not file_bytes.startswith(b"%PDF"):
+    validate_upload_size(len(file_bytes), mime_type)
+    if mime_type == PDF_MIME_TYPE and not file_bytes.startswith(b"%PDF"):
         raise HTTPException(status_code=422, detail="PDF signature mismatch")
+    if mime_type == PDF_MIME_TYPE:
+        page_count = _pdf_page_count(file_bytes)
+        max_pages = Settings().pdf_max_pages
+        if page_count <= 0:
+            raise HTTPException(status_code=422, detail="PDF contains no pages")
+        if page_count > max_pages:
+            raise HTTPException(
+                status_code=422,
+                detail=f"PDF has {page_count} pages, exceeding the {max_pages}-page limit.",
+            )
     if mime_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" and not file_bytes.startswith(b"PK\x03\x04"):
         raise HTTPException(status_code=422, detail="XLSX signature mismatch")
     if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" and not file_bytes.startswith(b"PK\x03\x04"):
@@ -104,4 +153,18 @@ def validate_upload_bytes(file_bytes: bytes, mime_type: str) -> None:
             file_bytes[:4096].decode("utf-8")
         except UnicodeDecodeError as exc:
             raise HTTPException(status_code=422, detail="Text file must be UTF-8 encoded") from exc
+
+
+def _pdf_page_count(file_bytes: bytes) -> int:
+    import pypdfium2 as pdfium
+
+    doc = None
+    try:
+        doc = pdfium.PdfDocument(file_bytes)
+        return len(doc)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="PDF is invalid or unreadable") from exc
+    finally:
+        if doc is not None:
+            doc.close()
 

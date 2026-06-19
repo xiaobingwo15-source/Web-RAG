@@ -1,4 +1,6 @@
+import asyncio
 import json as json_lib
+import logging
 import uuid
 from typing import Literal
 from fastapi import APIRouter, Header, HTTPException
@@ -16,12 +18,15 @@ from app.services.database import (
     get_tenant_admin_user_id,
     save_widget_feedback,
     save_widget_message,
+    save_widget_message_streaming,
+    update_message_content,
     update_retrieval_logs_for_answer,
 )
 from app.services.widget_tokens import create_widget_token, verify_widget_token
 from app.services.rate_limit import check_rate_limit
 from app.config import Settings
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -162,54 +167,99 @@ async def chat_stream(
     save_widget_message(tenant_id, session_id, thread_id, "user", stored_content)
     history = build_history(get_thread_messages_service(tenant_id, thread_id)[:-1])
 
-    async def event_generator():
+    # ── Persistent pipeline: runs in background even if client disconnects ──
+    assistant_placeholder = save_widget_message_streaming(tenant_id, session_id, thread_id)
+    assistant_msg_id = str(assistant_placeholder["id"]) if assistant_placeholder and "id" in assistant_placeholder else None
+
+    _SENTINEL = object()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def _run_pipeline():
         full_response = ""
         retrieval_log_ids: list[str] = []
         groundedness_score: float | None = None
         groundedness_flag = False
         retrieval_quality: str | None = None
         rag_diagnostics: dict | None = None
-        async for event in agent_execute(
-            token="",
-            user_id=session_id,
-            message=request.message,
-            history=history,
-            thread_id=thread_id,
-            use_documents=True,
-            retrieval_mode="hybrid",
-            enable_web_search=False,
-            enable_sql=False,
-            images=request.images,
-            tenant_id=tenant_id,
-            target_user_id=target_user_id,
-        ):
-            if event["type"] == "token":
-                full_response += event["content"]
-            if event["type"] == "rag_quality":
-                retrieval_log_ids = event.get("retrieval_log_ids", []) or retrieval_log_ids
-                groundedness_score = event.get("groundedness")
-                groundedness_flag = bool(event.get("groundedness_flag"))
-                retrieval_quality = event.get("retrieval_quality")
-                rag_diagnostics = event.get("diagnostics")
-            if event["type"] == "error":
-                save_widget_message(tenant_id, session_id, thread_id, "assistant", event["content"])
-                yield {"data": json_lib.dumps({"type": "error", "content": event["content"], "error_code": event.get("error_code", "unknown"), "thread_id": thread_id})}
-                return
-            yield {"data": json_lib.dumps({**event, "thread_id": thread_id})}
-
-        saved = save_widget_message(tenant_id, session_id, thread_id, "assistant", full_response)
-        saved_id = str(saved["id"]) if saved and "id" in saved else None
-        if saved_id and retrieval_log_ids:
-            update_retrieval_logs_for_answer(
+        try:
+            async for event in agent_execute(
+                token="",
+                user_id=session_id,
+                message=request.message,
+                history=history,
+                thread_id=thread_id,
+                use_documents=True,
+                retrieval_mode="hybrid",
+                enable_web_search=False,
+                enable_sql=False,
+                images=request.images,
                 tenant_id=tenant_id,
-                retrieval_log_ids=retrieval_log_ids,
-                answer_message_id=saved_id,
-                groundedness_score=groundedness_score,
-                groundedness_flag=groundedness_flag,
-                retrieval_quality=retrieval_quality,
-                diagnostics=rag_diagnostics,
-            )
-        yield {"data": json_lib.dumps({"type": "done", "content": "", "thread_id": thread_id, "done": True, "message_id": saved_id})}
+                target_user_id=target_user_id,
+            ):
+                try:
+                    queue.put_nowait(event)
+                except asyncio.QueueFull:
+                    pass
+
+                if event["type"] == "token":
+                    full_response += event["content"]
+                elif event["type"] == "error":
+                    if assistant_msg_id:
+                        try:
+                            update_message_content(assistant_msg_id, event["content"], status="complete")
+                        except Exception:
+                            logger.warning("Widget: failed to save error message", exc_info=True)
+                    return
+                elif event["type"] == "rag_quality":
+                    retrieval_log_ids = event.get("retrieval_log_ids", []) or retrieval_log_ids
+                    groundedness_score = event.get("groundedness")
+                    groundedness_flag = bool(event.get("groundedness_flag"))
+                    retrieval_quality = event.get("retrieval_quality")
+                    rag_diagnostics = event.get("diagnostics")
+
+            # Pipeline completed — persist answer
+            if assistant_msg_id:
+                update_message_content(assistant_msg_id, full_response, status="complete")
+                if retrieval_log_ids:
+                    update_retrieval_logs_for_answer(
+                        tenant_id=tenant_id,
+                        retrieval_log_ids=retrieval_log_ids,
+                        answer_message_id=assistant_msg_id,
+                        groundedness_score=groundedness_score,
+                        groundedness_flag=groundedness_flag,
+                        retrieval_quality=retrieval_quality,
+                        diagnostics=rag_diagnostics,
+                    )
+        except Exception as e:
+            logger.error(f"Widget background pipeline failed: {e}", exc_info=True)
+            if assistant_msg_id:
+                try:
+                    update_message_content(assistant_msg_id, full_response or "An unexpected error occurred.", status="complete")
+                except Exception:
+                    logger.warning("Widget: failed to persist partial response", exc_info=True)
+        finally:
+            try:
+                queue.put_nowait(_SENTINEL)
+            except asyncio.QueueFull:
+                pass
+
+    pipeline_task = asyncio.ensure_future(_run_pipeline())
+
+    async def event_generator():
+        try:
+            while True:
+                event = await queue.get()
+                if event is _SENTINEL:
+                    break
+                if event["type"] == "error":
+                    yield {"data": json_lib.dumps({"type": "error", "content": event["content"], "error_code": event.get("error_code", "unknown"), "thread_id": thread_id})}
+                    return
+                yield {"data": json_lib.dumps({**event, "thread_id": thread_id})}
+            yield {"data": json_lib.dumps({"type": "done", "content": "", "thread_id": thread_id, "done": True, "message_id": assistant_msg_id})}
+        except asyncio.CancelledError:
+            logger.info(f"Widget SSE cancelled (client disconnected), pipeline continues for thread={thread_id}")
+        except Exception as e:
+            logger.error(f"Widget SSE generator failed: {e}", exc_info=True)
 
     return EventSourceResponse(event_generator())
 

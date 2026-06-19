@@ -28,6 +28,15 @@ services:
         sync: false
       - key: GOOGLE_API_KEY
         sync: false
+      # PDF ingestion limits for the 512 MB free instance
+      - key: PDF_MAX_BYTES
+        value: "10485760"
+      - key: PDF_MAX_PAGES
+        value: "100"
+      - key: PDF_OCR_MAX_PAGES
+        value: "20"
+      - key: PDF_LAYOUT_MAX_PAGES
+        value: "30"
       # Langfuse
       - key: LANGFUSE_PUBLIC_KEY
         sync: false

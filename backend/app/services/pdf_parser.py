@@ -63,6 +63,7 @@ async def extract_pdf(
     requested_mode = normalize_pdf_parser_mode(parser_mode)
     inspection = _inspect_pdf(file_bytes)
     settings = Settings()
+    _enforce_global_page_limit(inspection.page_count, settings.pdf_max_pages)
     planned_mode = "ocr" if use_ocr else _choose_mode(requested_mode, inspection)
     warnings: list[str] = []
     forced_candidates: list[str] | None = None
@@ -110,6 +111,16 @@ async def extract_pdf(
             )
 
     for mode in (forced_candidates or _candidate_modes(planned_mode)):
+        page_limit_warning = _mode_page_limit_warning(
+            mode,
+            inspection.page_count,
+            pdf_ocr_max_pages,
+            pdf_layout_max_pages,
+        )
+        if page_limit_warning:
+            warnings.append(page_limit_warning)
+            logger.warning("PDF parser skipped: mode=%s, pages=%s", mode, inspection.page_count)
+            continue
         try:
             logger.info("PDF parser attempt: mode=%s", mode)
             result = await _run_parser(mode, file_bytes, requested_mode, inspection, filename)
@@ -134,6 +145,34 @@ async def extract_pdf(
 
 def _over_limit(page_count: int, limit: int) -> bool:
     return limit > 0 and page_count > limit
+
+
+def _enforce_global_page_limit(page_count: int, max_pages: int) -> None:
+    if page_count <= 0:
+        raise PDFParserFailed("PDF contains no pages")
+    if page_count > max_pages:
+        raise PDFParserFailed(
+            f"PDF has {page_count} pages and exceeds the {max_pages}-page limit for this deployment"
+        )
+
+
+def _mode_page_limit_warning(
+    mode: str,
+    page_count: int,
+    ocr_max_pages: int,
+    layout_max_pages: int,
+) -> str | None:
+    if mode == "ocr" and _over_limit(page_count, ocr_max_pages):
+        return (
+            f"ocr skipped: PDF has {page_count} pages and exceeds the "
+            f"{ocr_max_pages}-page OCR limit"
+        )
+    if mode == "unstructured" and _over_limit(page_count, layout_max_pages):
+        return (
+            f"layout parser skipped: PDF has {page_count} pages and exceeds the "
+            f"{layout_max_pages}-page layout limit"
+        )
+    return None
 
 
 def _parser_warning(mode: str, status: str, exc: Exception) -> str:
@@ -209,20 +248,31 @@ def _choose_mode(requested_mode: str, inspection: PDFInspection) -> str:
 def _inspect_pdf(file_bytes: bytes) -> PDFInspection:
     import pypdfium2 as pdfium
 
-    doc = pdfium.PdfDocument(file_bytes)
     try:
+        doc = pdfium.PdfDocument(file_bytes)
+    except Exception as exc:
+        raise PDFParserFailed("PDF is invalid or unreadable") from exc
+    try:
+        page_count = len(doc)
+        _enforce_global_page_limit(page_count, Settings().pdf_max_pages)
         page_texts: list[str] = []
         for page in doc:
-            textpage = page.get_textpage()
-            page_texts.append(textpage.get_text_range() or "")
+            textpage = None
+            try:
+                textpage = page.get_textpage()
+                page_texts.append(textpage.get_text_range() or "")
+            finally:
+                _close_quietly(textpage)
+                _close_quietly(page)
     finally:
-        page_count = len(doc)
         doc.close()
 
     text = "\n\n".join(page_texts)
     return PDFInspection(
         page_count=page_count,
-        text=text,
+        # Keep one copy of extracted page text. The combined copy is needed
+        # only for inspection signals and can be released before parsing.
+        text="",
         page_texts=page_texts,
         text_page_count=sum(1 for page_text in page_texts if page_text.strip()),
         char_count=len(text.strip()),
@@ -230,6 +280,15 @@ def _inspect_pdf(file_bytes: bytes) -> PDFInspection:
         table_like=_looks_table_like(text),
         formula_like=_looks_formula_like(text),
     )
+
+
+def _close_quietly(resource: object | None) -> None:
+    close = getattr(resource, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            logger.debug("Failed to close PDF inspection resource", exc_info=True)
 
 
 def _looks_table_like(text: str) -> bool:

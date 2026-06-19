@@ -309,6 +309,56 @@ def save_widget_message(tenant_id: str, client_session_id: str, thread_id: str, 
     return result.data[0]
 
 
+def save_message_streaming(access_token: str, user_id: str, thread_id: str, tenant_id: str | None = None) -> dict:
+    """Insert a placeholder assistant message with status='streaming'.
+
+    The RAG pipeline runs in a background task and writes the final content
+    via ``update_message_content`` when generation completes — even if the
+    client has already disconnected.
+    """
+    db = get_user_db(access_token)
+    row = {
+        "thread_id": thread_id,
+        "user_id": user_id,
+        "role": "assistant",
+        "content": "",
+        "status": "streaming",
+        **_tenant_payload(tenant_id),
+    }
+    result = db.table("messages").insert(row).execute()
+    return result.data[0]
+
+
+def save_widget_message_streaming(tenant_id: str, client_session_id: str, thread_id: str) -> dict:
+    """Widget variant of ``save_message_streaming`` (uses service-role client)."""
+    db = get_db()
+    row = {
+        "tenant_id": tenant_id,
+        "client_session_id": client_session_id,
+        "thread_id": thread_id,
+        "role": "assistant",
+        "content": "",
+        "status": "streaming",
+    }
+    result = db.table("messages").insert(row).execute()
+    return result.data[0]
+
+
+def update_message_content(message_id: str, content: str, status: str = "complete") -> dict:
+    """Update a message's content and status.
+
+    Called by the background pipeline task when generation finishes (or fails).
+    """
+    db = get_db()
+    result = (
+        db.table("messages")
+        .update({"content": content, "status": status})
+        .eq("id", message_id)
+        .execute()
+    )
+    return result.data[0] if result.data else {}
+
+
 def get_thread_messages(access_token: str, thread_id: str, tenant_id: str | None = None) -> list[dict]:
     db = get_user_db(access_token)
     query = db.table("messages").select("*").eq("thread_id", thread_id)

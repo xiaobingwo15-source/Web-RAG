@@ -970,9 +970,54 @@ async def execute(
             seen_source_keys.add(src_key)
             sources.append(source)
 
-    logger.info(f"RAG-Fusion: {len(fused)} unique chunks from {len(all_queries)} variants, top fused score={sorted_fused[0]['score']:.4f}" if sorted_fused else "RAG-Fusion: 0 chunks")
+    top_fused_score = sorted_fused[0]["score"] if sorted_fused else 0.0
+    logger.info(f"RAG-Fusion: {len(fused)} unique chunks from {len(all_queries)} variants, top fused score={top_fused_score:.4f}" if sorted_fused else "RAG-Fusion: 0 chunks")
     public_sources = _public_sources(sources)
     print(f"[DOC_RAG] Retrieved {len(context_chunks)} context chunks (RAG-Fusion: {len(all_queries)} variants, {len(fused)} unique) for user_id={user_id}")
+
+    # ── Early exit: skip expensive pipeline when all variants retrieved near-random chunks ──
+    # When the top RRF score is extremely low, no chunk appeared consistently across variants.
+    # Running HyDE / corrective RAG / web fallback / retries on random matches wastes 10-15s
+    # and still produces unreliable answers.
+    EARLY_EXIT_FUSED_THRESHOLD = 0.01
+    if not context_chunks or top_fused_score < EARLY_EXIT_FUSED_THRESHOLD:
+        refusal_reason = "no_chunks" if not context_chunks else "near_random"
+        logger.info(
+            f"Early exit: {refusal_reason} (top_fused_score={top_fused_score:.4f}, "
+            f"chunks={len(context_chunks)}, variants={len(all_queries)})"
+        )
+        print(f"[DOC_RAG] Early exit: {refusal_reason} (top_fused_score={top_fused_score:.4f})")
+        yield {
+            "type": "thought",
+            "content": f"No relevant content found in the knowledge base (low retrieval confidence: {top_fused_score:.3f}).",
+            "action_type": "no_results",
+            "action_source": "doc_rag",
+            "action_data": {
+                "query": message,
+                "fallback_reason": refusal_reason,
+                "retrieval_log_ids": retrieval_log_ids,
+                "top_fused_score": round(top_fused_score, 4),
+                "web_fallback_allowed": allow_web_fallback,
+            },
+        }
+        yield {"type": "token", "content": "I don't have that information in my knowledge base."}
+        yield {
+            "type": "rag_quality",
+            "retrieval_log_ids": retrieval_log_ids,
+            "groundedness": None,
+            "groundedness_flag": False,
+            "retrieval_quality": "near_random_early_exit" if refusal_reason == "near_random" else "no_sources",
+            "diagnostics": {
+                "channel": channel,
+                "doc_chunk_count": 0,
+                "web_result_count": 0,
+                "fallback_reason": refusal_reason,
+                "web_fallback_allowed": allow_web_fallback,
+                "query_variant_count": len(all_queries),
+                "top_fused_score": round(top_fused_score, 4),
+            },
+        }
+        return
 
     # ── Merge delegated SQL results into context ──
     if delegated_sql_result and delegated_sql_result.get("chunks"):
@@ -1732,6 +1777,7 @@ async def execute(
             "used_web_fallback": used_web_fallback or use_hybrid,
             "web_fallback_allowed": allow_web_fallback,
             "query_variant_count": len(all_queries),
+            "top_fused_score": round(top_fused_score, 4),
             **({"fallback_reason": "web_augmented"} if used_web_fallback or use_hybrid else {}),
         },
     }

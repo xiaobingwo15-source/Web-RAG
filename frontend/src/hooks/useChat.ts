@@ -50,6 +50,7 @@ export function useChat() {
   const rafId = useRef<number | null>(null)
   const latencyTimer = useRef<LatencyTimer | null>(null)
   const abortRef = useRef<(() => void) | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const { session } = useAuth()
   const accessToken = session?.access_token
 
@@ -72,11 +73,19 @@ export function useChat() {
   useEffect(() => {
     return () => {
       if (rafId.current !== null) cancelAnimationFrame(rafId.current)
+      if (pollRef.current !== null) clearInterval(pollRef.current)
     }
   }, [])
 
   const loadThread = useCallback(async (id: string) => {
     if (!accessToken) return
+
+    // Stop any existing poll when switching threads
+    if (pollRef.current !== null) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+
     try {
       const msgs = await getThreadMessages(id, accessToken)
       // Build a lookup map of message ID → content for reply previews
@@ -112,6 +121,61 @@ export function useChat() {
       }
       setMessages(parsed)
       setThreadId(id)
+
+      // ── Pending-response polling ──
+      // If the last message is from the user, the backend pipeline is still
+      // generating a response (or completed while we were away).  Poll every
+      // 3 s until an assistant message appears.
+      const lastMsg = parsed[parsed.length - 1]
+      if (lastMsg?.role === 'user') {
+        setIsStreaming(true)
+        const pollId = setInterval(async () => {
+          try {
+            const updated = await getThreadMessages(id, accessToken)
+            const lastUserTime = lastMsg.created_at || ''
+            const hasAssistant = updated.some(
+              m => m.role === 'assistant' && (m.created_at || '') > lastUserTime
+            )
+            if (hasAssistant) {
+              clearInterval(pollId)
+              pollRef.current = null
+              setIsStreaming(false)
+              // Re-hydrate the full thread with the new assistant message
+              const reloaded: ChatMessage[] = []
+              const cMap: Record<string, string> = {}
+              const rMap: Record<string, ChatMessageRole> = {}
+              for (const m of updated) {
+                const role = m.role === 'user' || m.role === 'assistant' ? m.role : null
+                const pc = parseStoredMessageContent(m.content)
+                cMap[m.id] = pc.text
+                if (role) rMap[m.id] = role
+              }
+              for (const m of updated) {
+                if (m.role === 'admin') {
+                  const prev = reloaded[reloaded.length - 1]
+                  if (prev && prev.role === 'assistant') prev.adminResponse = m.content
+                  continue
+                }
+                const pc = parseStoredMessageContent(m.content)
+                reloaded.push({
+                  id: m.id,
+                  role: m.role as ChatMessageRole,
+                  content: pc.text,
+                  created_at: m.created_at,
+                  images: pc.images,
+                  replyTo: m.reply_to || undefined,
+                  replyToContent: m.reply_to ? cMap[m.reply_to] : undefined,
+                  replyToRole: m.reply_to ? rMap[m.reply_to] : undefined,
+                })
+              }
+              setMessages(reloaded)
+            }
+          } catch {
+            // ignore poll errors, will retry
+          }
+        }, 3000)
+        pollRef.current = pollId
+      }
     } catch (err) {
       console.error('Failed to load thread:', err)
     }
@@ -127,6 +191,12 @@ export function useChat() {
     replyToRole?: ChatMessageRole,
   ) => {
     if (!accessToken) return
+
+    // Stop any pending-response poll when sending a new message
+    if (pollRef.current !== null) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
 
     const now = new Date().toISOString()
     const userClientId = crypto.randomUUID()
@@ -316,6 +386,10 @@ export function useChat() {
     if (rafId.current !== null) {
       cancelAnimationFrame(rafId.current)
       rafId.current = null
+    }
+    if (pollRef.current !== null) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
     }
     tokenBuffer.current = ''
     latencyTimer.current = null
