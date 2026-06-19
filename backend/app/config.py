@@ -71,6 +71,8 @@ class Settings(BaseSettings):
 
     # Free-tier PDF safety limits. OCR and high-res layout parsing can exceed
     # Render's 512 MB free instance memory on high-page PDFs.
+    pdf_max_bytes: int = 10 * 1024 * 1024
+    pdf_max_pages: int = 100
     pdf_ocr_max_pages: int = 20
     pdf_layout_max_pages: int = 30
 

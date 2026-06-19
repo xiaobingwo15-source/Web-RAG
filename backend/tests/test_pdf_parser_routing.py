@@ -1,4 +1,6 @@
 import asyncio
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -127,7 +129,7 @@ def test_large_text_pdf_forced_ocr_uses_pypdfium_with_warning(monkeypatch):
     monkeypatch.setattr(
         pdf_parser,
         "_inspect_pdf",
-        lambda _: _inspection("Digital text page", page_count=136),
+        lambda *_args, **_kwargs: _inspection("Digital text page", page_count=80),
     )
 
     async def fake_ocr(file_bytes, requested_mode):
@@ -188,4 +190,128 @@ def test_large_unstructured_pdf_falls_back_to_pypdfium(monkeypatch):
 
     assert result.parser == "pypdfium"
     assert result.metadata["pdf_parser_planned"] == "pypdfium"
+    assert "layout parser skipped" in result.metadata["extraction_quality_warning"]
+
+
+def test_global_page_limit_fails_before_any_page_text_is_loaded(monkeypatch):
+    instances = []
+
+    class FakePdfDocument:
+        def __init__(self, _payload):
+            self.closed = False
+            instances.append(self)
+
+        def __len__(self):
+            return 101
+
+        def __iter__(self):
+            raise AssertionError("page text must not be loaded after the count exceeds the limit")
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setenv("PDF_MAX_PAGES", "100")
+    monkeypatch.setitem(sys.modules, "pypdfium2", SimpleNamespace(PdfDocument=FakePdfDocument))
+
+    with pytest.raises(pdf_parser.PDFParserFailed, match=r"101 pages.*100-page limit"):
+        asyncio.run(pdf_parser.extract_pdf(b"%PDF-1.4\n"))
+
+    assert instances[0].closed is True
+
+
+def test_pdf_inspection_closes_each_native_page_resource(monkeypatch):
+    instances = []
+
+    class FakeTextPage:
+        closed = False
+
+        def get_text_range(self):
+            return "safe page text"
+
+        def close(self):
+            self.closed = True
+
+    class FakePage:
+        closed = False
+
+        def __init__(self):
+            self.text_page = FakeTextPage()
+
+        def get_textpage(self):
+            return self.text_page
+
+        def close(self):
+            self.closed = True
+
+    class FakePdfDocument:
+        closed = False
+
+        def __init__(self, _payload):
+            self.page = FakePage()
+            instances.append(self)
+
+        def __len__(self):
+            return 1
+
+        def __iter__(self):
+            yield self.page
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setenv("PDF_MAX_PAGES", "100")
+    monkeypatch.setitem(sys.modules, "pypdfium2", SimpleNamespace(PdfDocument=FakePdfDocument))
+
+    inspection = pdf_parser._inspect_pdf(b"%PDF-1.4\n")
+
+    assert inspection.page_count == 1
+    assert inspection.page_texts == ["safe page text"]
+    assert inspection.text == ""
+    assert instances[0].page.text_page.closed is True
+    assert instances[0].page.closed is True
+    assert instances[0].closed is True
+
+
+def test_high_page_fallback_never_enters_layout_or_ocr_parsers(monkeypatch):
+    monkeypatch.setenv("PDF_MAX_PAGES", "100")
+    monkeypatch.setenv("PDF_OCR_MAX_PAGES", "20")
+    monkeypatch.setenv("PDF_LAYOUT_MAX_PAGES", "30")
+    monkeypatch.setattr(
+        pdf_parser,
+        "_inspect_pdf",
+        lambda *_args, **_kwargs: _inspection(
+            "复杂表格  数量  公式\n项目A  2  x=1",
+            has_cjk=True,
+            table_like=True,
+            formula_like=True,
+            page_count=40,
+        ),
+    )
+    attempted = []
+
+    async def fake_mineru(file_bytes, requested_mode, filename):
+        attempted.append("mineru")
+        raise pdf_parser.PDFParserUnavailable("disabled")
+
+    def fake_unstructured(file_bytes, requested_mode):
+        attempted.append("unstructured")
+        raise pdf_parser.PDFParserUnavailable("must be page-guarded")
+
+    def fake_pypdfium(inspection, requested_mode):
+        attempted.append("pypdfium")
+        return PDFExtractionResult("safe text", "pypdfium", requested_mode)
+
+    async def fake_ocr(file_bytes, requested_mode):
+        attempted.append("ocr")
+        return PDFExtractionResult("unsafe OCR", "ocr", requested_mode)
+
+    monkeypatch.setattr(pdf_parser, "_extract_pdf_mineru", fake_mineru)
+    monkeypatch.setattr(pdf_parser, "_extract_pdf_unstructured", fake_unstructured)
+    monkeypatch.setattr(pdf_parser, "_extract_pdf_pypdfium", fake_pypdfium)
+    monkeypatch.setattr(pdf_parser, "_extract_pdf_ocr", fake_ocr)
+
+    result = asyncio.run(pdf_parser.extract_pdf(b"%PDF", parser_mode="auto"))
+
+    assert result.parser == "pypdfium"
+    assert attempted == ["mineru", "pypdfium"]
     assert "layout parser skipped" in result.metadata["extraction_quality_warning"]

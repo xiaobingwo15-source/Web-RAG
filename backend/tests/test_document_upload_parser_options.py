@@ -32,6 +32,11 @@ def test_upload_form_options_reach_ingestion_worker(monkeypatch):
         )
 
     monkeypatch.setattr(documents, "check_rate_limit", lambda *args, **kwargs: None)
+
+    async def fake_read_upload_bytes(file, _mime_type):
+        return await file.read()
+
+    monkeypatch.setattr(documents, "read_upload_bytes", fake_read_upload_bytes)
     monkeypatch.setattr(documents, "compute_content_hash", lambda file_bytes: "hash-1")
     monkeypatch.setattr(documents, "get_document_by_hash", lambda *args, **kwargs: None)
     monkeypatch.setattr(documents, "get_user_store", lambda *args, **kwargs: {"id": "store-1"})
@@ -71,3 +76,36 @@ def test_upload_form_options_reach_ingestion_worker(monkeypatch):
     assert captured["filename"] == "sample.pdf"
     assert captured["mime_type"] == "application/pdf"
     assert captured["tenant_id"] == "tenant-1"
+
+
+def test_direct_upload_rejects_pdf_over_10_mb_before_database_work(monkeypatch):
+    monkeypatch.setattr(documents, "check_rate_limit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        documents,
+        "compute_content_hash",
+        lambda _payload: (_ for _ in ()).throw(AssertionError("oversized upload reached database work")),
+    )
+    user = SimpleNamespace(
+        id="user-1",
+        access_token="token-1",
+        role="admin",
+        status="approved",
+        tenant_id="tenant-1",
+    )
+    app = FastAPI()
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.include_router(documents.router, prefix="/api/documents")
+
+    response = TestClient(app).post(
+        "/api/documents/upload",
+        files={
+            "file": (
+                "oversized.pdf",
+                b"%PDF-1.4\n" + (b"x" * (10 * 1024 * 1024)),
+                "application/pdf",
+            )
+        },
+    )
+
+    assert response.status_code == 413
+    assert "10 MB" in response.json()["detail"]

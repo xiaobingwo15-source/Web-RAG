@@ -34,10 +34,10 @@ from app.services.ingestion_worker import process_document_async
 from app.services.pdf_parser import normalize_pdf_parser_mode
 from app.services.rate_limit import check_rate_limit
 from app.services.upload_validation import (
-    MAX_UPLOAD_BYTES,
     resolve_upload_mime_type,
     sanitize_upload_filename,
     validate_upload_bytes,
+    validate_upload_size,
 )
 
 logger = logging.getLogger(__name__)
@@ -120,8 +120,7 @@ async def init_upload(body: InitUploadRequest, user=Depends(get_current_user)):
     mime_type = _resolve_mime_type(safe_filename, body.mime_type)
     if body.total_size <= 0:
         raise HTTPException(status_code=400, detail="total_size must be positive")
-    if body.total_size > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="File is too large. Maximum upload size is 25 MB.")
+    validate_upload_size(body.total_size, mime_type)
     if body.chunk_size < 64 * 1024 or body.chunk_size > 10 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="chunk_size must be between 64 KB and 10 MB")
 
@@ -172,8 +171,8 @@ async def upload_chunk(
     if not CHECKSUM_RE.fullmatch(checksum.strip()):
         raise HTTPException(status_code=400, detail="checksum must be a SHA-256 hex digest")
 
-    chunk_bytes = await file.read()
     max_chunk = session["chunk_size"] + 1024  # small tolerance
+    chunk_bytes = await file.read(max_chunk + 1)
     if len(chunk_bytes) > max_chunk:
         raise HTTPException(status_code=413, detail=f"Chunk too large (max {max_chunk} bytes)")
 

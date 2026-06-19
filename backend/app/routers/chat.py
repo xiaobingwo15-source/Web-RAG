@@ -1,3 +1,4 @@
+import asyncio
 import json as json_lib
 import logging
 import uuid
@@ -10,7 +11,7 @@ from app.services.gemini import get_llm_client, generate_chat_response, generate
 from app.services.groundedness import GROUNDEDNESS_THRESHOLD, check_groundedness
 from app.services.retrieval import retrieve_context
 from app.services.agent_supervisor import execute as agent_execute
-from app.services.database import create_thread, save_message, get_thread_messages, get_user_threads, get_thread, delete_thread as db_delete_thread, save_message_feedback, get_message_feedback, get_retrieval_logs, update_retrieval_logs_for_answer
+from app.services.database import create_thread, save_message, save_message_streaming, update_message_content, get_thread_messages, get_user_threads, get_thread, delete_thread as db_delete_thread, save_message_feedback, get_message_feedback, get_retrieval_logs, update_retrieval_logs_for_answer
 from app.services.rate_limit import check_rate_limit
 from app.config import Settings
 from sse_starlette.sse import EventSourceResponse
@@ -207,7 +208,24 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
         history_messages = thread_messages[:-1]
         history = build_history(history_messages)
 
-        async def event_generator():
+        # ── Persistent pipeline: runs in background even if client disconnects ──
+        # Save a placeholder assistant message immediately so the frontend can
+        # detect that a response is being generated.  The background task fills
+        # in the real content when the pipeline finishes.
+        assistant_placeholder = save_message_streaming(token, user.id, thread_id, tenant_id=user.tenant_id)
+        assistant_msg_id = assistant_placeholder["id"]
+
+        _SENTINEL = object()  # signals end-of-stream to the SSE generator
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def _run_pipeline():
+            """Background task: runs the full RAG pipeline and persists the answer.
+
+            This task continues running even if the client disconnects.  It
+            pushes every event to *queue* so the SSE generator can forward them
+            to the client when connected, and always saves the final answer via
+            ``update_message_content`` regardless of client state.
+            """
             full_response = ""
             retrieval_log_ids: list[str] = []
             groundedness_score: float | None = None
@@ -215,14 +233,6 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
             retrieval_quality: str | None = None
             rag_diagnostics: dict | None = None
             try:
-                yield {
-                    "data": json_lib.dumps({
-                        "type": "user_message",
-                        "thread_id": thread_id,
-                        "message_id": user_message["id"],
-                        "created_at": user_message.get("created_at"),
-                    })
-                }
                 async for event in agent_execute(
                     token=token,
                     user_id=user.id,
@@ -236,6 +246,91 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                     images=request.images,
                     tenant_id=user.tenant_id,
                 ):
+                    # Push every event to the SSE queue (best-effort)
+                    try:
+                        queue.put_nowait(event)
+                    except asyncio.QueueFull:
+                        pass  # drop if consumer is too slow
+
+                    if event["type"] == "token":
+                        full_response += event["content"]
+                    elif event["type"] == "error":
+                        # Persist error as the assistant message content
+                        try:
+                            update_message_content(assistant_msg_id, event["content"], status="complete")
+                        except Exception:
+                            logger.warning("Failed to save error message to DB", exc_info=True)
+                        return
+                    elif event["type"] == "rag_quality":
+                        retrieval_log_ids = event.get("retrieval_log_ids", []) or retrieval_log_ids
+                        groundedness_score = event.get("groundedness")
+                        groundedness_flag = bool(event.get("groundedness_flag"))
+                        retrieval_quality = event.get("retrieval_quality")
+                        rag_diagnostics = event.get("diagnostics")
+
+                # Pipeline completed normally — persist the full answer
+                update_message_content(assistant_msg_id, full_response, status="complete")
+                if retrieval_log_ids:
+                    update_retrieval_logs_for_answer(
+                        tenant_id=user.tenant_id,
+                        retrieval_log_ids=retrieval_log_ids,
+                        answer_message_id=assistant_msg_id,
+                        groundedness_score=groundedness_score,
+                        groundedness_flag=groundedness_flag,
+                        retrieval_quality=retrieval_quality,
+                        diagnostics=rag_diagnostics,
+                    )
+            except Exception as e:
+                logger.error(f"Background pipeline failed: {e}", exc_info=True)
+                # Save whatever we have so far (may be partial)
+                error_text = full_response or "An unexpected error occurred. Please try again."
+                try:
+                    update_message_content(assistant_msg_id, error_text, status="complete")
+                except Exception:
+                    logger.warning("Failed to persist partial response on error", exc_info=True)
+            finally:
+                # Always signal end-of-stream so the SSE generator can exit
+                try:
+                    queue.put_nowait(_SENTINEL)
+                except asyncio.QueueFull:
+                    pass
+
+        # Launch the pipeline as a background task (detached from the SSE stream)
+        pipeline_task = asyncio.ensure_future(_run_pipeline())
+
+        async def event_generator():
+            """SSE generator: reads events from the pipeline queue and yields to the client.
+
+            If the client disconnects, this generator is cancelled but the
+            background pipeline task continues running and saves the answer.
+            """
+            # Yield the user_message confirmation first
+            yield {
+                "data": json_lib.dumps({
+                    "type": "user_message",
+                    "thread_id": thread_id,
+                    "message_id": user_message["id"],
+                    "created_at": user_message.get("created_at"),
+                })
+            }
+
+            # Yield the placeholder assistant message ID so the frontend can
+            # associate streamed tokens with the correct message row.
+            yield {
+                "data": json_lib.dumps({
+                    "type": "assistant_message",
+                    "thread_id": thread_id,
+                    "message_id": assistant_msg_id,
+                    "created_at": assistant_placeholder.get("created_at"),
+                })
+            }
+
+            try:
+                while True:
+                    event = await queue.get()
+                    if event is _SENTINEL:
+                        break
+
                     if event["type"] == "thought":
                         payload = {
                             "type": "thought",
@@ -247,7 +342,6 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                                 payload[key] = event[key]
                         yield {"data": json_lib.dumps(payload)}
                     elif event["type"] == "token":
-                        full_response += event["content"]
                         yield {
                             "data": json_lib.dumps({
                                 "type": "token",
@@ -257,12 +351,6 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                             })
                         }
                     elif event["type"] == "error":
-                        # Persist error message so the DB trigger can flag it
-                        if thread_id:
-                            try:
-                                save_message(token, user.id, thread_id, "assistant", event["content"], tenant_id=user.tenant_id)
-                            except Exception:
-                                logger.warning("Failed to save error message to DB", exc_info=True)
                         yield {
                             "data": json_lib.dumps({
                                 "type": "error",
@@ -280,35 +368,21 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                                 "thread_id": thread_id,
                             })
                         }
-                    elif event["type"] == "rag_quality":
-                        retrieval_log_ids = event.get("retrieval_log_ids", []) or retrieval_log_ids
-                        groundedness_score = event.get("groundedness")
-                        groundedness_flag = bool(event.get("groundedness_flag"))
-                        retrieval_quality = event.get("retrieval_quality")
-                        rag_diagnostics = event.get("diagnostics")
 
-                assistant_message = save_message(token, user.id, thread_id, "assistant", full_response, tenant_id=user.tenant_id)
-                if retrieval_log_ids:
-                    update_retrieval_logs_for_answer(
-                        tenant_id=user.tenant_id,
-                        retrieval_log_ids=retrieval_log_ids,
-                        answer_message_id=assistant_message["id"],
-                        groundedness_score=groundedness_score,
-                        groundedness_flag=groundedness_flag,
-                        retrieval_quality=retrieval_quality,
-                        diagnostics=rag_diagnostics,
-                    )
-
+                # Pipeline finished — send done event
                 yield {
                     "data": json_lib.dumps({
                         "type": "done",
                         "content": "",
                         "thread_id": thread_id,
-                        "message_id": assistant_message["id"],
-                        "created_at": assistant_message.get("created_at"),
+                        "message_id": assistant_msg_id,
+                        "created_at": assistant_placeholder.get("created_at"),
                         "done": True,
                     })
                 }
+            except asyncio.CancelledError:
+                # Client disconnected — the background task continues running
+                logger.info(f"SSE generator cancelled (client disconnected), pipeline continues in background for thread={thread_id}")
             except Exception as e:
                 logger.error(f"SSE event_generator failed: {e}", exc_info=True)
                 error_code = "rate_limit" if isinstance(e, RateLimitError) else "server_error"

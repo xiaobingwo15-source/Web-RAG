@@ -79,6 +79,8 @@ class WidgetRagTargetTests(unittest.IsolatedAsyncioTestCase):
             patch.object(widget, "_resolve_widget_rag_target_user_id", return_value="admin-a"),
             patch.object(widget, "create_widget_thread", return_value={"id": "thread-a"}),
             patch.object(widget, "save_widget_message", return_value={"id": "message-a"}),
+            patch.object(widget, "save_widget_message_streaming", return_value={"id": "streaming-msg-a"}),
+            patch.object(widget, "update_message_content", return_value={"id": "streaming-msg-a"}),
             patch.object(widget, "get_thread_messages_service", return_value=[]),
             patch.object(widget, "agent_execute", new=fake_agent_execute),
         ):

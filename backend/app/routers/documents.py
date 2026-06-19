@@ -12,9 +12,9 @@ from app.services.database import (
 from app.services.rate_limit import check_rate_limit
 from app.services.pdf_parser import normalize_pdf_parser_mode
 from app.services.upload_validation import (
+    read_upload_bytes,
     resolve_upload_mime_type,
     sanitize_upload_filename,
-    validate_upload_bytes,
 )
 
 router = APIRouter()
@@ -41,8 +41,7 @@ async def upload(
     safe_filename = sanitize_upload_filename(file.filename)
     mime_type = resolve_upload_mime_type(safe_filename, file.content_type)
 
-    file_bytes = await file.read()
-    validate_upload_bytes(file_bytes, mime_type)
+    file_bytes = await read_upload_bytes(file, mime_type)
 
     content_hash = compute_content_hash(file_bytes)
     existing = get_document_by_hash(token, user.id, content_hash, tenant_id=user.tenant_id)
