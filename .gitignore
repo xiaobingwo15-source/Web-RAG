@@ -41,3 +41,6 @@ dev-server-*.log
 # Upload chunks (temporary chunked upload storage)
 uploaded_chunks/
 .tmp/
+
+# Generated code-review diff dumps (fallback if a review tool misses .tmp/)
+/*rag_review_diff*.txt
