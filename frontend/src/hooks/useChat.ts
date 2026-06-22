@@ -123,20 +123,26 @@ export function useChat() {
       setThreadId(id)
 
       // ── Pending-response polling ──
-      // If the last message is from the user, the backend pipeline is still
-      // generating a response (or completed while we were away).  Poll every
-      // 3 s until an assistant message appears.
+      // If the last message is an empty assistant placeholder (created by
+      // save_message_streaming before the pipeline starts), the backend is
+      // still generating.  Poll every 3 s until the content is filled in.
       const lastMsg = parsed[parsed.length - 1]
-      if (lastMsg?.role === 'user') {
+      const isStreamingPlaceholder = lastMsg?.role === 'assistant' && !lastMsg?.content && !!lastMsg?.id
+      if (isStreamingPlaceholder || lastMsg?.role === 'user') {
         setIsStreaming(true)
         const pollId = setInterval(async () => {
           try {
             const updated = await getThreadMessages(id, accessToken)
+            // Check if: (a) the placeholder got content filled in, or
+            // (b) a new assistant message appeared after the last user message
             const lastUserTime = lastMsg.created_at || ''
-            const hasAssistant = updated.some(
-              m => m.role === 'assistant' && (m.created_at || '') > lastUserTime
+            const placeholderFilled = isStreamingPlaceholder && updated.some(
+              m => m.id === lastMsg.id && m.content && m.status === 'complete'
             )
-            if (hasAssistant) {
+            const hasNewAssistant = updated.some(
+              m => m.role === 'assistant' && (m.created_at || '') > lastUserTime && m.content
+            )
+            if (placeholderFilled || hasNewAssistant) {
               clearInterval(pollId)
               pollRef.current = null
               setIsStreaming(false)

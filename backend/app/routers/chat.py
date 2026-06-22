@@ -280,6 +280,13 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                         retrieval_quality=retrieval_quality,
                         diagnostics=rag_diagnostics,
                     )
+            except asyncio.CancelledError:
+                # Server shutdown / deployment — persist whatever we have so far
+                logger.warning(f"Background pipeline cancelled, persisting partial response for thread={thread_id}")
+                try:
+                    update_message_content(assistant_msg_id, full_response or "", status="complete")
+                except Exception:
+                    logger.warning("Failed to persist partial response on cancellation", exc_info=True)
             except Exception as e:
                 logger.error(f"Background pipeline failed: {e}", exc_info=True)
                 # Save whatever we have so far (may be partial)
@@ -288,6 +295,15 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                     update_message_content(assistant_msg_id, error_text, status="complete")
                 except Exception:
                     logger.warning("Failed to persist partial response on error", exc_info=True)
+                # Push an error event so the SSE generator yields 'error' instead of 'done'
+                try:
+                    queue.put_nowait({
+                        "type": "error",
+                        "content": "An unexpected error occurred. Please try again.",
+                        "error_code": "server_error",
+                    })
+                except asyncio.QueueFull:
+                    pass
             finally:
                 # Always signal end-of-stream so the SSE generator can exit
                 try:
@@ -296,7 +312,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                     pass
 
         # Launch the pipeline as a background task (detached from the SSE stream)
-        pipeline_task = asyncio.ensure_future(_run_pipeline())
+        pipeline_task = asyncio.create_task(_run_pipeline())
 
         async def event_generator():
             """SSE generator: reads events from the pipeline queue and yields to the client.

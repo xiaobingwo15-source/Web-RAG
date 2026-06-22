@@ -171,6 +171,11 @@ async def chat_stream(
     assistant_placeholder = save_widget_message_streaming(tenant_id, session_id, thread_id)
     assistant_msg_id = str(assistant_placeholder["id"]) if assistant_placeholder and "id" in assistant_placeholder else None
 
+    if not assistant_msg_id:
+        # Cannot persist the response — fail loudly rather than silently losing the answer
+        logger.error(f"Widget streaming placeholder missing 'id': {assistant_placeholder}")
+        raise HTTPException(status_code=500, detail="Failed to create assistant message placeholder")
+
     _SENTINEL = object()
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -230,6 +235,13 @@ async def chat_stream(
                         retrieval_quality=retrieval_quality,
                         diagnostics=rag_diagnostics,
                     )
+        except asyncio.CancelledError:
+            logger.warning(f"Widget pipeline cancelled, persisting partial response for thread={thread_id}")
+            if assistant_msg_id:
+                try:
+                    update_message_content(assistant_msg_id, full_response or "", status="complete")
+                except Exception:
+                    logger.warning("Widget: failed to persist partial response on cancellation", exc_info=True)
         except Exception as e:
             logger.error(f"Widget background pipeline failed: {e}", exc_info=True)
             if assistant_msg_id:
@@ -237,13 +249,17 @@ async def chat_stream(
                     update_message_content(assistant_msg_id, full_response or "An unexpected error occurred.", status="complete")
                 except Exception:
                     logger.warning("Widget: failed to persist partial response", exc_info=True)
+            try:
+                queue.put_nowait({"type": "error", "content": "An unexpected error occurred.", "error_code": "server_error"})
+            except asyncio.QueueFull:
+                pass
         finally:
             try:
                 queue.put_nowait(_SENTINEL)
             except asyncio.QueueFull:
                 pass
 
-    pipeline_task = asyncio.ensure_future(_run_pipeline())
+    pipeline_task = asyncio.create_task(_run_pipeline())
 
     async def event_generator():
         try:

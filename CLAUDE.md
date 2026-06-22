@@ -39,6 +39,8 @@ $env:NODE_ENV = ""; npm run dev
 ### Supabase Migrations
 Migrations live in `backend/supabase/migrations/`. Apply via Supabase MCP (`mcp__supabase__apply_migration`) or the Supabase dashboard. The project uses Supabase MCP for all project management when 2FA dashboard lockout is active.
 
+Latest migration: **036** — adds `status` column to `messages` table (`text NOT NULL DEFAULT 'complete'`). Used by persistent streaming to track in-flight responses (`status='streaming'` during generation, `'complete'` when done).
+
 ## Technical Stack
 - Frontend: React + TypeScript + Vite + Tailwind + shadcn/ui
 - Backend: Python 3 + FastAPI + Uvicorn
@@ -110,6 +112,19 @@ New in migration 033 — `backend/app/services/environment_guard.py`, `audit.py`
   - SQL delegation: `_check_delegation()` uses keyword pre-filter + LLM to route SQL queries
   - Web result relevance filtering: `_compute_keyword_overlap()` drops web results with < 10% keyword overlap
   - Hardcoded refusal when 0 chunks found (LLM cannot be trusted to refuse on its own)
+  - **Early exit**: when top RRF fused score < 0.01 (all query variants retrieved near-random chunks), skips HyDE/CoVe/retries/web-fallback and returns fast refusal. Saves 10-15s on queries with no corpus coverage.
+
+### Persistent Chat Streaming
+The RAG pipeline survives client disconnects (navigation, refresh, tab close):
+
+1. `save_message_streaming()` creates a placeholder assistant message with `status='streaming'` before the pipeline starts
+2. Pipeline runs as a background `asyncio.Task` feeding events into an `asyncio.Queue`
+3. SSE generator reads from queue and streams to client
+4. On client disconnect: SSE generator gets `CancelledError` and returns; **background task continues**
+5. When pipeline finishes: `update_message_content()` writes the full answer and sets `status='complete'`
+6. Frontend `loadThread()` detects pending responses (last message is `role='user'`) and polls every 3s
+
+Key functions: `save_message_streaming()`, `save_widget_message_streaming()`, `update_message_content()` in `database.py`
 
 ### Groundedness & Faithfulness (`backend/app/services/groundedness.py`)
 Multi-layer verification to ensure answers are grounded in retrieved context:
@@ -156,11 +171,12 @@ Two evaluation frameworks + production quality monitoring:
 
 **CI runner** (`scripts/run_eval_ci.py`): Compares eval results against baseline (`tests/fixtures/eval_baseline.json`). Regression threshold configurable via `EVAL_REGRESSION_THRESHOLD` env var (default: 0.5). Exits code 1 when golden test set missing.
 
-**Quality signals** (`rag_quality_policy.py`): 6 production health signals from retrieval logs — zero_sources, weak_sources, groundedness, completion_latency, feedback_fallback, data_staleness.
+**Quality signals** (`rag_quality_policy.py`): 6 production health signals from retrieval logs — zero_sources, weak_sources, groundedness, completion_latency, feedback_fallback, data_staleness. Each `rag_quality` event now includes `top_fused_score` in diagnostics for tracking retrieval confidence trends.
 
 **Quality loop** (`rag_quality_loop.py`): Auto-drafts eval cases from thumbs-down feedback and web-fallback patterns. Auto-promotes cases with >= 2 negative signals. Skips duplicate queries.
 
 ## Rules
+- Write generated review and diff dumps under the repo-relative `.tmp/` directory (for example, `.tmp/rag_review.diff`). Do not use `/tmp`, shell-specific environment-variable syntax, or absolute Windows paths from Bash; those paths are not portable and can create malformed files in the repository root.
 - Backend runs on Python + FastAPI with Uvicorn servers.
 - Strictly call the direct `google-genai` SDK — zero third-party orchestrators (No LangChain/LlamaIndex).
 - Use Pydantic models for structural model responses.

@@ -262,6 +262,7 @@ export interface MessageResponse {
   content: string
   created_at: string
   reply_to?: string | null
+  status?: string
 }
 
 export async function getThreads(token: string): Promise<ThreadSummary[]> {

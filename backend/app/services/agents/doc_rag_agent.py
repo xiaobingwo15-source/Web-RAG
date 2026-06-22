@@ -331,26 +331,35 @@ async def expand_queries(message: str, client) -> list[str]:
 # ---------------------------------------------------------------------------
 
 async def generate_hypothetical_answer(query: str, client) -> str | None:
-    """Generate a hypothetical answer document for HyDE retrieval."""
-    try:
-        response = await asyncio.wait_for(
-            client.chat.completions.create(
-                model=get_primary_model(),
-                messages=[
-                    {"role": "system", "content": HYDE_SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Question: {query}"},
-                ],
-                max_tokens=200,
-                temperature=0.3,
-            ),
-            timeout=8.0,
-        )
-        answer = response.choices[0].message.content.strip()
-        if answer:
-            logger.info(f"HyDE hypothetical answer generated ({len(answer)} chars)")
-            return answer
-    except Exception as e:
-        logger.warning(f"HyDE hypothetical answer generation failed: {e}")
+    """Generate a hypothetical answer document for HyDE retrieval.
+
+    Retries once on transient failures (timeout, empty response, API error).
+    """
+    for attempt in range(2):
+        try:
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=get_primary_model(),
+                    messages=[
+                        {"role": "system", "content": HYDE_SYSTEM_PROMPT},
+                        {"role": "user", "content": f"Question: {query}"},
+                    ],
+                    max_tokens=200,
+                    temperature=0.3,
+                ),
+                timeout=8.0,
+            )
+            answer = (response.choices[0].message.content or "").strip()
+            if answer:
+                logger.info(f"HyDE hypothetical answer generated ({len(answer)} chars)")
+                return answer
+            logger.warning(f"HyDE attempt {attempt + 1}/2: empty response")
+        except asyncio.TimeoutError:
+            logger.warning(f"HyDE attempt {attempt + 1}/2: timeout (8s)")
+        except Exception as e:
+            logger.warning(f"HyDE attempt {attempt + 1}/2 failed: {e}")
+        if attempt == 0:
+            await asyncio.sleep(1.0)
     return None
 
 
@@ -693,36 +702,49 @@ COVE_VERIFY_PROMPT = (
 
 
 async def generate_verification_questions(draft_answer: str, client, model: str) -> list[str]:
-    """Generate fact-checking questions from a draft answer's claims."""
+    """Generate fact-checking questions from a draft answer's claims.
+
+    Retries once on transient failures (timeout, empty response, API error).
+    """
     max_questions = 8
-    try:
-        response = await asyncio.wait_for(
-            client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "user", "content": COVE_QUESTIONS_PROMPT.format(draft_answer=draft_answer)},
-                ],
-                max_tokens=500,
-                temperature=0.2,
-            ),
-            timeout=10.0,
-        )
-        raw = (response.choices[0].message.content or "").strip()
-        # Try JSON parse first
+    for attempt in range(2):
         try:
-            # Strip markdown code fences if present
-            clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
-            questions = json.loads(clean)
-            if isinstance(questions, list):
-                return [str(q).strip() for q in questions if str(q).strip()][:max_questions]
-        except (json.JSONDecodeError, TypeError):
-            pass
-        # Fallback: split on question marks
-        parts = re.split(r"\?\s*", raw)
-        questions = [p.strip() + "?" for p in parts if p.strip() and len(p.strip()) > 10]
-        return questions[:max_questions]
-    except Exception as e:
-        logger.warning(f"CoVe question generation failed: {e}")
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "user", "content": COVE_QUESTIONS_PROMPT.format(draft_answer=draft_answer)},
+                    ],
+                    max_tokens=500,
+                    temperature=0.2,
+                ),
+                timeout=10.0,
+            )
+            raw = (response.choices[0].message.content or "").strip()
+            if not raw:
+                logger.warning(f"CoVe question gen attempt {attempt + 1}/2: empty response")
+                if attempt == 0:
+                    await asyncio.sleep(1.0)
+                continue
+            # Try JSON parse first
+            try:
+                # Strip markdown code fences if present
+                clean = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
+                questions = json.loads(clean)
+                if isinstance(questions, list):
+                    return [str(q).strip() for q in questions if str(q).strip()][:max_questions]
+            except (json.JSONDecodeError, TypeError):
+                pass
+            # Fallback: split on question marks
+            parts = re.split(r"\?\s*", raw)
+            questions = [p.strip() + "?" for p in parts if p.strip() and len(p.strip()) > 10]
+            return questions[:max_questions]
+        except asyncio.TimeoutError:
+            logger.warning(f"CoVe question gen attempt {attempt + 1}/2: timeout (10s)")
+        except Exception as e:
+            logger.warning(f"CoVe question gen attempt {attempt + 1}/2 failed: {e}")
+        if attempt == 0:
+            await asyncio.sleep(1.0)
     return []
 
 
@@ -756,7 +778,7 @@ async def _verify_single_question(
         return {"question": question, "answer": answer, "supported": supported}
     except Exception as e:
         logger.warning(f"CoVe verification failed for question '{question[:50]}': {e}")
-        return {"question": question, "answer": "", "supported": True}  # default to supported on error
+        return {"question": question, "answer": "", "supported": False}  # fail-neutral: don't assume support on error
 
 
 async def verify_answer_independently(
@@ -787,7 +809,8 @@ async def chain_of_verification(
     questions = await generate_verification_questions(draft_answer, client, model)
     if not questions:
         return {
-            "verified": True,
+            "verified": False,  # fail-neutral: don't claim verification passed when it didn't run
+            "skipped": True,
             "unsupported_claims": [],
             "verification_questions": [],
             "verification_results": [],
@@ -801,6 +824,7 @@ async def chain_of_verification(
 
     return {
         "verified": verified,
+        "skipped": False,
         "unsupported_claims": unsupported,
         "verification_questions": questions,
         "verification_results": results,
@@ -1708,39 +1732,51 @@ async def execute(
             cove_results = await chain_of_verification(
                 full_answer, context_chunks, client, get_primary_model(),
             )
-            log_latency("llm.cove", elapsed_ms(cove_start), user_id=user_id, tenant_id=tenant_id, thread_id=thread_id, verified=cove_results["verified"])
-            logger.info(
-                f"Chain-of-Verification: verified={cove_results['verified']}, "
-                f"support_ratio={1.0 - len(cove_results['unsupported_claims']) / max(len(cove_results['verification_questions']), 1):.2f}, "
-                f"questions={len(cove_results['verification_questions'])}, "
-                f"unsupported={len(cove_results['unsupported_claims'])}"
-            )
-            print(
-                f"[DOC_RAG] CoVe: verified={cove_results['verified']}, "
-                f"questions={len(cove_results['verification_questions'])}, "
-                f"unsupported={len(cove_results['unsupported_claims'])}"
-            )
-            if not cove_results["verified"]:
-                is_grounded = False
+            log_latency("llm.cove", elapsed_ms(cove_start), user_id=user_id, tenant_id=tenant_id, thread_id=thread_id, verified=cove_results["verified"], skipped=cove_results.get("skipped", False))
+            if cove_results.get("skipped"):
+                # CoVe couldn't generate verification questions — log as skipped, not passed
+                logger.warning("CoVe skipped: question generation failed after retries")
+                print("[DOC_RAG] CoVe skipped: question generation failed")
                 yield {
                     "type": "thought",
-                    "content": f"Chain-of-Verification found {len(cove_results['unsupported_claims'])} unsupported claim(s). Marking as not fully grounded.",
-                    "action_type": "guardrail",
-                    "action_source": "doc_rag",
-                    "action_data": {
-                        "stage": "cove_fail",
-                        "unsupported_claims": cove_results["unsupported_claims"],
-                        "support_ratio": round(1.0 - len(cove_results["unsupported_claims"]) / max(len(cove_results["verification_questions"]), 1), 3),
-                    },
-                }
-            else:
-                yield {
-                    "type": "thought",
-                    "content": "Chain-of-Verification passed — claims are well-supported.",
+                    "content": "Chain-of-Verification skipped — verification questions could not be generated.",
                     "action_type": "verifying",
                     "action_source": "doc_rag",
-                    "action_data": {"stage": "cove_pass"},
+                    "action_data": {"stage": "cove_skipped"},
                 }
+            else:
+                logger.info(
+                    f"Chain-of-Verification: verified={cove_results['verified']}, "
+                    f"support_ratio={1.0 - len(cove_results['unsupported_claims']) / max(len(cove_results['verification_questions']), 1):.2f}, "
+                    f"questions={len(cove_results['verification_questions'])}, "
+                    f"unsupported={len(cove_results['unsupported_claims'])}"
+                )
+                print(
+                    f"[DOC_RAG] CoVe: verified={cove_results['verified']}, "
+                    f"questions={len(cove_results['verification_questions'])}, "
+                    f"unsupported={len(cove_results['unsupported_claims'])}"
+                )
+                if not cove_results["verified"]:
+                    is_grounded = False
+                    yield {
+                        "type": "thought",
+                        "content": f"Chain-of-Verification found {len(cove_results['unsupported_claims'])} unsupported claim(s). Marking as not fully grounded.",
+                        "action_type": "guardrail",
+                        "action_source": "doc_rag",
+                        "action_data": {
+                            "stage": "cove_fail",
+                            "unsupported_claims": cove_results["unsupported_claims"],
+                            "support_ratio": round(1.0 - len(cove_results["unsupported_claims"]) / max(len(cove_results["verification_questions"]), 1), 3),
+                        },
+                    }
+                else:
+                    yield {
+                        "type": "thought",
+                        "content": "Chain-of-Verification passed — claims are well-supported.",
+                        "action_type": "verifying",
+                        "action_source": "doc_rag",
+                        "action_data": {"stage": "cove_pass"},
+                    }
         except Exception as e:
             logger.warning(f"Chain-of-Verification failed (non-fatal): {e}")
             print(f"[DOC_RAG] CoVe failed: {e}")
@@ -1784,6 +1820,7 @@ async def execute(
     if cove_results is not None:
         rag_quality_data["cove"] = {
             "verified": cove_results["verified"],
+            "skipped": cove_results.get("skipped", False),
             "question_count": len(cove_results["verification_questions"]),
             "unsupported_count": len(cove_results["unsupported_claims"]),
             "unsupported_claims": cove_results["unsupported_claims"],
