@@ -20,6 +20,7 @@ const ACTION_ICONS: Record<ActionType, typeof Brain> = {
   reading: BookOpen,
   synthesizing: Sparkles,
   no_results: AlertCircle,
+  clarifying: Search,
 }
 
 const SOURCE_LABELS: Record<ActionSource, string> = {
