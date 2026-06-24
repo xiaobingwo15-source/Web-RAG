@@ -73,6 +73,115 @@ def classify_query_complexity(query: str) -> int:
     # Default
     return 5
 
+
+# ---------------------------------------------------------------------------
+# Query Clarification: detect meta-queries and generate clarifying responses
+# ---------------------------------------------------------------------------
+
+_META_QUERY_PATTERNS = re.compile(
+    r"(what|which|list|show|tell me about|do you have|any|available|overview|summarize|know about)"
+    r".{0,30}(document|file|info|information|assignment|material|content|knowledge|data|resource|doc|briefing|report)"
+    r"|(有什么|哪些|列出|显示|告诉我|有没有|可用的|概述|总结|了解)"
+    r".{0,20}(文档|文件|资料|信息|内容|知识|数据|资源|作业|简报|报告)",
+    re.IGNORECASE,
+)
+
+
+async def _is_meta_query(query: str) -> bool:
+    """Detect if the user is asking about the knowledge base itself (no LLM call)."""
+    return bool(_META_QUERY_PATTERNS.search(query))
+
+
+CLARIFICATION_PROMPT = (
+    "You are a helpful assistant with access to a knowledge base. "
+    "The user asked a question, but the retrieval system could not find "
+    "a specific match. However, the following documents DO exist in the "
+    "knowledge base:\n\n"
+    "{document_list}\n\n"
+    "Based on the user's question and the available documents, generate "
+    "a SHORT clarifying response that:\n"
+    "1. Acknowledges what the user is looking for\n"
+    "2. Lists the available relevant documents/topics (use bullet points)\n"
+    "3. Asks which specific topic they'd like to explore\n\n"
+    "IMPORTANT: Match the user's language. If they wrote in Chinese, "
+    "respond in Chinese. If in English, respond in English.\n"
+    "Keep the response concise (under 200 words). "
+    'Do NOT say "I don\'t have information" — the documents exist.\n'
+    "Do NOT fabricate content from the documents."
+)
+
+META_CLARIFICATION_PROMPT = (
+    "You are a helpful assistant. The user is asking what information "
+    "is available in the knowledge base. Here are the documents:\n\n"
+    "{document_list}\n\n"
+    "Generate a friendly response that lists what's available and asks "
+    "what they'd like to know about. Match the user's language. "
+    "Keep it concise (under 150 words). "
+    "Do NOT fabricate content from the documents."
+)
+
+
+async def _generate_clarification(
+    query: str,
+    document_summaries: list[dict],
+    client,
+    is_meta: bool = False,
+) -> str | None:
+    """Generate a clarifying response using document metadata. Returns None on failure."""
+    lines: list[str] = []
+    for i, doc in enumerate(document_summaries, 1):
+        tags_str = ", ".join(doc["tags"]) if doc["tags"] else ""
+        summary_str = doc["summary"] if doc["summary"] else ""
+        line = f"{i}. **{doc['title']}**"
+        if summary_str:
+            line += f"\n   Summary: {summary_str}"
+        if tags_str:
+            line += f"\n   Tags: {tags_str}"
+        lines.append(line)
+    document_list = "\n\n".join(lines)
+
+    prompt_template = META_CLARIFICATION_PROMPT if is_meta else CLARIFICATION_PROMPT
+    prompt = prompt_template.format(document_list=document_list)
+
+    try:
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model=get_primary_model(),
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": query},
+                ],
+                max_tokens=300,
+                temperature=0.3,
+            ),
+            timeout=8.0,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.warning(f"Clarification generation failed: {e}")
+        return None
+
+
+async def _try_clarification(
+    query: str,
+    token: str | None,
+    user_id: str | None,
+    tenant_id: str | None,
+    target_user_id: str | None,
+    client,
+    is_meta: bool,
+) -> str | None:
+    """Try to generate a clarification from document metadata. Returns None if no docs or failure."""
+    from app.services.database import get_user_document_summaries
+
+    # Use target_user_id (admin) for document lookup, matching retrieval resolution
+    doc_user_id = target_user_id or user_id
+    summaries = get_user_document_summaries(token, user_id=doc_user_id, tenant_id=tenant_id)
+    if not summaries:
+        return None
+    return await _generate_clarification(query, summaries, client, is_meta=is_meta)
+
+
 REWRITE_SYSTEM_PROMPT = (
     "You are a query rewriting assistant. Given a conversation history and a "
     "follow-up question, rewrite the question as a standalone search query that "
@@ -904,6 +1013,40 @@ async def execute(
             "action_data": {"original_query": message, "expanded_query": augmented_query},
         }
 
+    # ── Meta-query pre-check: short-circuit retrieval for KB-about queries ──
+    is_meta_query = await _is_meta_query(augmented_query)
+    if is_meta_query and len(augmented_query.split()) <= 10:
+        clarification = await _try_clarification(
+            message, token, user_id, tenant_id, target_user_id, client, is_meta=True
+        )
+        if clarification:
+            yield {
+                "type": "thought",
+                "content": "Detected a question about available information. Listing what's in your knowledge base...",
+                "action_type": "searching",
+                "action_source": "doc_rag",
+                "action_data": {"query": message, "meta_query": True, "clarification_used": True},
+            }
+            yield {"type": "token", "content": clarification}
+            yield {
+                "type": "rag_quality",
+                "retrieval_log_ids": retrieval_log_ids,
+                "groundedness": None,
+                "groundedness_flag": False,
+                "retrieval_quality": "clarification",
+                "diagnostics": {
+                    "channel": channel,
+                    "doc_chunk_count": 0,
+                    "web_result_count": 0,
+                    "fallback_reason": "meta_query",
+                    "web_fallback_allowed": allow_web_fallback,
+                    "clarification_used": True,
+                    "meta_query": True,
+                },
+            }
+            return
+        # If clarification fails (no docs), fall through to normal retrieval
+
     # Multi-query retrieval: generate variants and search in parallel
     qe_start = monotonic_ms()
     query_variants = await expand_queries(augmented_query, client)
@@ -1011,6 +1154,39 @@ async def execute(
             f"chunks={len(context_chunks)}, variants={len(all_queries)})"
         )
         print(f"[DOC_RAG] Early exit: {refusal_reason} (top_fused_score={top_fused_score:.4f})")
+
+        # ── Try clarification before refusing ──
+        clarification = await _try_clarification(
+            message, token, user_id, tenant_id, target_user_id, client, is_meta=is_meta_query
+        )
+        if clarification:
+            yield {
+                "type": "thought",
+                "content": "No direct match found. Checking knowledge base inventory for relevant topics...",
+                "action_type": "searching",
+                "action_source": "doc_rag",
+                "action_data": {"query": message, "clarification_used": True},
+            }
+            yield {"type": "token", "content": clarification}
+            yield {
+                "type": "rag_quality",
+                "retrieval_log_ids": retrieval_log_ids,
+                "groundedness": None,
+                "groundedness_flag": False,
+                "retrieval_quality": "clarification",
+                "diagnostics": {
+                    "channel": channel,
+                    "doc_chunk_count": 0,
+                    "web_result_count": 0,
+                    "fallback_reason": refusal_reason,
+                    "web_fallback_allowed": allow_web_fallback,
+                    "query_variant_count": len(all_queries),
+                    "top_fused_score": round(top_fused_score, 4),
+                    "clarification_used": True,
+                },
+            }
+            return
+
         yield {
             "type": "thought",
             "content": f"No relevant content found in the knowledge base (low retrieval confidence: {top_fused_score:.3f}).",
@@ -1171,6 +1347,37 @@ async def execute(
 
     if not context_chunks:
         if not allow_web_fallback:
+            # ── Try clarification before refusing ──
+            clarification = await _try_clarification(
+                message, token, user_id, tenant_id, target_user_id, client, is_meta=is_meta_query
+            )
+            if clarification:
+                yield {
+                    "type": "thought",
+                    "content": "No matching content found. Checking what's available in your knowledge base...",
+                    "action_type": "searching",
+                    "action_source": "doc_rag",
+                    "action_data": {"query": message, "clarification_used": True},
+                }
+                yield {"type": "token", "content": clarification}
+                yield {
+                    "type": "rag_quality",
+                    "retrieval_log_ids": retrieval_log_ids,
+                    "groundedness": None,
+                    "groundedness_flag": False,
+                    "retrieval_quality": "clarification",
+                    "diagnostics": {
+                        "channel": channel,
+                        "doc_chunk_count": 0,
+                        "web_result_count": 0,
+                        "fallback_reason": "no_doc_results",
+                        "web_fallback_allowed": False,
+                        "query_variant_count": len(all_queries),
+                        "clarification_used": True,
+                    },
+                }
+                return
+
             yield {
                 "type": "thought",
                 "content": "No matching content found in the knowledge base. Web fallback is disabled for this channel.",
@@ -1289,6 +1496,38 @@ async def execute(
 
     if quality == "low" and not allow_web_fallback:
         logger.info("Corrective RAG: retrieval quality is LOW and web fallback is disabled.")
+
+        # ── Try clarification before refusing ──
+        clarification = await _try_clarification(
+            message, token, user_id, tenant_id, target_user_id, client, is_meta=is_meta_query
+        )
+        if clarification:
+            yield {
+                "type": "thought",
+                "content": "Weak document matches found. Checking knowledge base for better matches...",
+                "action_type": "searching",
+                "action_source": "doc_rag",
+                "action_data": {"query": message, "quality": quality, "clarification_used": True},
+            }
+            yield {"type": "token", "content": clarification}
+            yield {
+                "type": "rag_quality",
+                "retrieval_log_ids": retrieval_log_ids,
+                "groundedness": None,
+                "groundedness_flag": False,
+                "retrieval_quality": "clarification",
+                "diagnostics": {
+                    "channel": channel,
+                    "doc_chunk_count": len(context_chunks),
+                    "web_result_count": 0,
+                    "fallback_reason": "low_quality_no_web",
+                    "web_fallback_allowed": False,
+                    "query_variant_count": len(all_queries),
+                    "clarification_used": True,
+                },
+            }
+            return
+
         yield {
             "type": "thought",
             "content": "Document matches are weak and web fallback is disabled for this channel.",

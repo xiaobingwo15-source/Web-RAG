@@ -545,6 +545,36 @@ def get_user_document_metadata(access_token: str, user_id: str | None = None, te
     return {"tags": sorted(all_tags), "languages": sorted(all_languages)}
 
 
+def get_user_document_summaries(
+    access_token: str | None,
+    user_id: str | None = None,
+    tenant_id: str | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Return lightweight document inventory for clarification responses.
+
+    Returns list of {id, filename, title, summary, tags} for non-archived docs.
+    Uses the service-role client (no access_token) when access_token is None
+    to support widget/anonymous callers.
+    """
+    db = get_user_db(access_token) if access_token else get_db()
+    query = db.table("documents").select("id, filename, metadata").neq("status", "archived").limit(limit)
+    if user_id:
+        query = query.eq("user_id", user_id)
+    result = _apply_tenant(query, tenant_id).order("created_at", desc=True).execute()
+    summaries: list[dict] = []
+    for doc in (result.data or []):
+        meta = doc.get("metadata") or {}
+        summaries.append({
+            "id": doc["id"],
+            "filename": doc.get("filename", "Unknown"),
+            "title": meta.get("title") or doc.get("filename", "Unknown"),
+            "summary": meta.get("summary", ""),
+            "tags": meta.get("tags", []),
+        })
+    return summaries
+
+
 def search_chunks_fts(access_token: str | None, user_id: str | None, query_text: str, match_count: int = 10, tenant_id: str | None = None) -> list[dict]:
     db = get_user_db(access_token) if access_token else get_db()
     params = {
