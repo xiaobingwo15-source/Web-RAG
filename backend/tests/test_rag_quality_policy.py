@@ -230,6 +230,8 @@ class DocRagFallbackPolicyTests(unittest.IsolatedAsyncioTestCase):
                 "retrieval_log_ids": ["log-1"],
             })),
             patch.object(doc_rag_agent, "search_web", search_web),
+            patch.object(doc_rag_agent, "_try_clarification", AsyncMock(return_value=None)),
+            patch.object(doc_rag_agent, "_is_meta_query", AsyncMock(return_value=False)),
         ):
             events = [
                 event async for event in doc_rag_agent.execute(
@@ -264,6 +266,8 @@ class DocRagFallbackPolicyTests(unittest.IsolatedAsyncioTestCase):
                 "retrieval_log_ids": ["log-1"],
             })),
             patch.object(doc_rag_agent, "search_web", search_web),
+            patch.object(doc_rag_agent, "_try_clarification", AsyncMock(return_value=None)),
+            patch.object(doc_rag_agent, "_is_meta_query", AsyncMock(return_value=False)),
         ):
             events = [
                 event async for event in doc_rag_agent.execute(

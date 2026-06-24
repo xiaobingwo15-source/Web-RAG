@@ -7,6 +7,7 @@ export type ActionType =
   | "reading"
   | "synthesizing"
   | "no_results"
+  | "clarifying"
 
 export type ActionSource = "supervisor" | "doc_rag" | "web_search" | "sql"
 
