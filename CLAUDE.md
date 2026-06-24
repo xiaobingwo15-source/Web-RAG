@@ -86,23 +86,29 @@ New in migration 033 — `backend/app/services/environment_guard.py`, `audit.py`
 2. Optional OCR via Gemini multimodal → `backend/app/services/ocr_service.py`
 3. Metadata extraction (title, summary, tags, language) → `backend/app/services/metadata_extractor.py`
 4. Chunking (parent-child: 1500/500 chars, 50 overlap) → `backend/app/services/chunker.py`
+   - Structure-aware: parses headings, tables, code blocks, lists; never splits atomic blocks
+   - Each chunk gets structural metadata: `heading`, `heading_level`, `structural_type`, `page_start`, `page_end`, `table_id`, `breadcrumb_path`
 5. Embedding (`gemini-embedding-001`, 768-dim, configurable via env) → `backend/app/services/embeddings.py`
 6. Store vectors in Qdrant → `backend/app/services/qdrant_db.py` (`insert_chunks`)
 7. Store text in Supabase for FTS → `backend/app/services/database.py` (`insert_chunks_for_fts`)
 
 ### Query Retrieval Flow (default: hybrid mode)
 1. User message → query rewriting (follow-up context) → multi-query expansion (2 variants, 3 total with original)
-2. Dynamic top-k: `classify_query_complexity()` returns 3/5/8/10 chunks based on query complexity (bilingual EN+ZH)
-3. Optional HyDE: generate hypothetical answer, embed it, search for similar chunks
-4. **HyDE relevance backcheck**: re-verify HyDE chunks against original query embedding (threshold 0.3), reject off-topic chunks
-5. Parallel search: Qdrant vector search + Supabase FTS (`search_chunks_fts` RPC, single version with `match_tenant_id`)
-6. Merge via Reciprocal Rank Fusion (RRF, k=60), dedup by chunk content prefix (first 500 chars)
-7. Cohere reranker (`rerank-v3.5`) → `backend/app/services/reranker.py` (fallback: keyword overlap scorer)
-8. **Reranker abstention**: if max reranker score < 0.25, return empty (refuse rather than hallucinate)
-9. **Hard score threshold**: drop chunks with reranker score < 0.3
-10. Parent resolution: child chunks replaced by their parent for broader context
-11. **Lost-in-the-Middle reorder**: highest-scored chunks at position 0 and N-1 to maximize LLM attention
-12. Chunks injected into prompt with filename metadata: `[N] (Source: filename) content...`
+2. **Semantic cache check**: in-memory cache (`semantic_cache.py`, TTL 300s, max 256 entries) with cosine similarity threshold 0.95 — cache hit skips the entire retrieval pipeline. `invalidate_by_document()` clears entries on re-ingestion.
+3. Dynamic top-k: `classify_query_complexity()` returns 3/5/8/10 chunks based on query complexity (bilingual EN+ZH)
+4. Optional HyDE: generate hypothetical answer, embed it, search for similar chunks
+5. **HyDE relevance backcheck**: re-verify HyDE chunks against original query embedding (threshold 0.3), reject off-topic chunks
+6. Parallel search: Qdrant vector search + Supabase FTS (`search_chunks_fts` RPC, single version with `match_tenant_id`)
+7. **Weighted RRF**: `_classify_query_type()` classifies queries as "keyword" or "semantic". Keyword queries (error codes, part numbers, quoted phrases) get weights 0.3 vector / 0.7 FTS; semantic queries get 0.7 vector / 0.3 FTS. RRF k=60, dedup by chunk content prefix (first 500 chars).
+8. **MMR diversification**: `_mmr_diversify()` uses text-level Jaccard similarity (lambda=0.5) to balance relevance vs. diversity before reranking
+9. Cohere reranker (`rerank-v3.5`) → `backend/app/services/reranker.py` (fallback: keyword overlap scorer)
+10. **Reranker abstention**: if max reranker score < 0.25, return empty (refuse rather to hallucinate)
+11. **Hard score threshold**: drop chunks with reranker score < 0.3
+12. Parent resolution: child chunks replaced by their parent for broader context
+13. **Lost-in-the-Middle reorder**: highest-scored chunks at position 0 and N-1 to maximize LLM attention
+14. Chunks injected into prompt with filename metadata: `[N] (Source: filename) content...`
+
+**Structural metadata carry-through**: Fields `heading`, `heading_level`, `structural_type`, `page_start`, `page_end`, `table_id`, `breadcrumb_path` are carried through the entire pipeline (RRF merge, parent resolution, source finalization) for citation enrichment with page numbers and section names.
 
 ### Agent Routing
 - `backend/app/services/agent_supervisor.py` — Routes queries to doc_rag, sql, web_search, or general agent
@@ -113,6 +119,21 @@ New in migration 033 — `backend/app/services/environment_guard.py`, `audit.py`
   - Web result relevance filtering: `_compute_keyword_overlap()` drops web results with < 10% keyword overlap
   - Hardcoded refusal when 0 chunks found (LLM cannot be trusted to refuse on its own)
   - **Early exit**: when top RRF fused score < 0.01 (all query variants retrieved near-random chunks), skips HyDE/CoVe/retries/web-fallback and returns fast refusal. Saves 10-15s on queries with no corpus coverage.
+  - **Query clarification**: when retrieval fails or meta-queries detected, instead of refusing, lists available documents and asks user to narrow their question. See below.
+
+### Query Clarification Mechanism
+When the RAG pipeline would normally refuse ("I don't have that information"), it first checks if documents exist in the DB and generates a clarifying response listing available topics.
+
+**Meta-query detection** (`_is_meta_query()`): Regex-based (bilingual EN+ZH) detection of queries about the knowledge base itself — "what documents do you have?", "有什么资料?", etc. Short-circuits expensive retrieval for pure meta-queries.
+
+**Clarification flow** (`_try_clarification()`): Fetches document metadata via `get_user_document_summaries()` (lightweight query: id, filename, title, summary, tags), then uses LLM to generate a friendly response listing available documents and asking the user to narrow their question.
+
+**Integration points** (3 refusal-point interceptors in `doc_rag_agent.py`):
+1. **Meta-query pre-check** (after query rewrite): Short-circuits retrieval for short meta-queries
+2. **Early exit** (top RRF fused score < 0.01): Tries clarification before refusing
+3. **Zero-chunk / low-quality paths**: Tries clarification when no docs found or quality is low with web fallback disabled
+
+**Key functions**: `_is_meta_query()`, `_generate_clarification()`, `_try_clarification()` in `doc_rag_agent.py`; `get_user_document_summaries()` in `database.py`
 
 ### Persistent Chat Streaming
 The RAG pipeline survives client disconnects (navigation, refresh, tab close):
@@ -145,7 +166,7 @@ Multi-layer verification to ensure answers are grounded in retrieved context:
 - Retry 1: Query reformulation based on weak answer's unsupported claims
 - Retry 2: HyDE-based retrieval using refined hypothetical answer from draft
 
-**Key constants**: `GROUNDEDNESS_THRESHOLD = 0.5`, `GROUNDEDNESS_LLM_HIGH = 0.0`, `RERANK_ABSTENTION_THRESHOLD = 0.25`, `RERANK_SCORE_THRESHOLD = 0.3`, `_WEB_RELEVANCE_THRESHOLD = 0.10`
+**Key constants**: `GROUNDEDNESS_THRESHOLD = 0.5`, `GROUNDEDNESS_LLM_HIGH = 0.0`, `RERANK_ABSTENTION_THRESHOLD = 0.25`, `RERANK_SCORE_THRESHOLD = 0.3`, `_WEB_RELEVANCE_THRESHOLD = 0.10`, `VECTOR_SIMILARITY_THRESHOLD = 0.1`, `MMR_LAMBDA = 0.5`, `EARLY_EXIT_FUSED_THRESHOLD = 0.01`, `HYDE_RELEVANCE_THRESHOLD = 0.3`, `VECTOR_SCORE_LOW_THRESHOLD = 0.5`, `VECTOR_SCORE_MIN_THRESHOLD = 0.4`
 
 ### SQL Tool (`backend/app/services/sql_engine.py`)
 - Gated by `SQL_TOOLS_ENABLED` env var (default: false) — also gates web search tool endpoint
@@ -153,6 +174,11 @@ Multi-layer verification to ensure answers are grounded in retrieved context:
 - Validation: `TABLE_REF_RE` regex extracts `FROM`/`JOIN` table refs, `BLOCKED_KEYWORDS` regex blocks DML
 - **Known gap**: regex only captures `FROM`/`JOIN` — subqueries, CTEs, and UNION can reference disallowed tables
 - Executes via Supabase RPC `exec_readonly_sql` (PL/pgSQL function with its own validation layer)
+
+### Retrieval Tools (`backend/app/services/agents/tools.py`)
+- `get_chunks_by_page()` — Fetches chunks for a specific page number using `page_start`/`page_end` range queries with fallbacks
+- `get_chunks_by_table_id()` — Fetches chunks belonging to a specific table by `table_id` and `structural_type='table'`
+- `get_document_info()` — Fetches document-level metadata for the info tool
 
 ### System Prompts (all language-aware)
 - `RAG_SYSTEM_PROMPT` — Standard doc RAG (in `gemini.py`)
@@ -214,6 +240,13 @@ Before planning, implementing, debugging, reviewing, or executing any task — *
 3. **Building** — Execute sequential blocks to deploy the structural logic.
 4. **Verification** — Run network, API hook, and UI sanity tests.
 5. **Iteration** — Tweak code configurations based on performance verification feedback.
+
+## Custom Agents (`.claude/agents/`)
+Pre-built agent definitions for common diagnostic tasks:
+- `rag-diagnose` — RAG pipeline health check: backend, routes, DB, Qdrant, embeddings
+- `rls-debug` — Debug Supabase RLS policy violations (42501 errors, NULL tenant_id, missing profiles)
+- `rag-retrieval-test` — Test retrieval quality for a specific query: chunk count, scores, relevance, diagnosis
+- `db-analyst` — Read-only database analyst for production data: stats, trends, anomalies, error rates
 
 ## Frontend Routing
 | Path | Component | Auth | Notes |
