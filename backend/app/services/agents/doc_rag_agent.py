@@ -967,6 +967,7 @@ async def execute(
 
     client = get_llm_client()
     channel = "widget" if not token else "authenticated"
+    retrieval_log_ids: list[str] = []
 
     # ── Inter-Agent Delegation: keyword pre-filter then LLM check ──
     SQL_KEYWORDS = {"sales", "revenue", "total", "count", "average", "sum", "how many",
@@ -1092,8 +1093,6 @@ async def execute(
     # Documents appearing in multiple variant result sets get higher fused scores.
     rrf_k = 60
     fused: dict[str, dict] = {}  # key -> {content, sources, score, ...}
-    retrieval_log_ids: list[str] = []
-
     for result in retrieval_results:
         if isinstance(result, Exception):
             logger.warning(f"Multi-query retrieval failed for one variant: {result}")
