@@ -1,3 +1,4 @@
+import importlib.util
 import sys
 import unittest
 from pathlib import Path
@@ -5,10 +6,13 @@ from unittest.mock import AsyncMock, patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from scripts import rag_readiness_check as readiness  # noqa: E402
+READINESS_SCRIPT = REPO_ROOT / "scripts" / "rag_readiness_check.py"
+spec = importlib.util.spec_from_file_location("repo_rag_readiness_check", READINESS_SCRIPT)
+if spec is None or spec.loader is None:
+    raise ImportError(f"Unable to load readiness script from {READINESS_SCRIPT}")
+readiness = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = readiness
+spec.loader.exec_module(readiness)
 
 
 class RagReadinessValidationTests(unittest.TestCase):

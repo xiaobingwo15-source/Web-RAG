@@ -22,6 +22,13 @@ pytest tests/test_admin_settings.py -v       # single file
 pytest tests/test_admin_settings.py::test_fn -k "test_name"  # single test
 ```
 
+### RAG Readiness Gate
+Run the live upload-to-answer readiness gate from the repository root, not from `backend/`, so it imports the repo-level `scripts/rag_readiness_check.py`:
+```powershell
+python scripts/rag_readiness_check.py --admin-token <token> --chat-token <token> --widget-tenant-slug <slug>
+```
+The readiness script intentionally does not delete or archive uploaded documents.
+
 ### Frontend (React / Vite)
 ```powershell
 cd frontend
@@ -197,7 +204,7 @@ Two evaluation frameworks + production quality monitoring:
 
 **CI runner** (`scripts/run_eval_ci.py`): Compares eval results against baseline (`tests/fixtures/eval_baseline.json`). Regression threshold configurable via `EVAL_REGRESSION_THRESHOLD` env var (default: 0.5). Exits code 1 when golden test set missing.
 
-**Quality signals** (`rag_quality_policy.py`): 6 production health signals from retrieval logs — zero_sources, weak_sources, groundedness, completion_latency, feedback_fallback, data_staleness. Each `rag_quality` event now includes `top_fused_score` in diagnostics for tracking retrieval confidence trends.
+**Quality signals** (`rag_quality_policy.py`): 8 production health signals from retrieval logs and feedback — zero_sources, weak_sources, groundedness, completion_latency, negative_feedback, web_fallback, widget_policy_violation, data_staleness. Retrieval diagnostics include `score_family`, channel breakdowns, stage timings, and `top_fused_score` so signal thresholds compare like-for-like score families.
 
 **Quality loop** (`rag_quality_loop.py`): Auto-drafts eval cases from thumbs-down feedback and web-fallback patterns. Auto-promotes cases with >= 2 negative signals. Skips duplicate queries.
 

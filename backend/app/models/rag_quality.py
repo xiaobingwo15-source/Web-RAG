@@ -6,6 +6,7 @@ class RagQualitySource(BaseModel):
     chunk_id: str | None = None
     filename: str | None = None
     score: float | None = None
+    score_family: str | None = None
     snippet: str | None = None
     content: str | None = None
     retrieval_mode: str | None = None

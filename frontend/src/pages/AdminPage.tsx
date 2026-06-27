@@ -32,6 +32,7 @@ import {
   type RagEvalRunDetail,
   type RagQualityFeedbackItem,
   type RagQualitySignal,
+  type RagQualitySignalExample,
   type RagQualitySignalsResponse,
   type RagQualitySource,
 } from '@/lib/api'
@@ -510,6 +511,11 @@ export function AdminPage() {
     } finally {
       setMessagesLoading(false)
     }
+  }
+
+  const handleOpenSignalConversation = (threadId: string, title: string) => {
+    switchTab('conversations')
+    void handleSelectThread(threadId, title)
   }
 
   const handleLogout = async () => {
@@ -1401,6 +1407,7 @@ export function AdminPage() {
                   loading={signalsLoading}
                   draftCount={qualityLoopDrafts.length}
                   onReviewDrafts={() => setEvalWorkspaceView('runs')}
+                  onOpenConversation={handleOpenSignalConversation}
                 />
               ) : (
                 <section className="grid gap-5 lg:grid-cols-[380px_1fr]">
@@ -1417,37 +1424,45 @@ export function AdminPage() {
                       ) : qualityFeedback.length === 0 ? (
                         <div className="py-10 text-center text-xs text-muted-foreground">No thumbs-down feedback yet</div>
                       ) : (
-                        qualityFeedback.map((item) => (
-                          <button
-                            key={item.feedback_id}
-                            onClick={() => setSelectedQualityFeedbackId(item.feedback_id)}
-                            className={`w-full rounded-md border px-3 py-2 text-left transition-colors ${
-                              selectedQualityFeedback?.feedback_id === item.feedback_id
-                                ? 'border-primary bg-primary/5'
-                                : 'border-border bg-background hover:bg-muted/40'
-                            }`}
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <span className="line-clamp-2 text-xs font-semibold text-foreground">
-                                {item.question || item.thread_title}
-                              </span>
-                              {(item.summary.groundedness_flag || item.summary.zero_source) && (
-                                <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 text-destructive" />
-                              )}
-                            </div>
-                            <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
-                              <span className="truncate">{item.client_email}</span>
-                              <span>{new Date(item.feedback_created_at).toLocaleDateString()}</span>
-                            </div>
-                            <div className="mt-1 flex flex-wrap gap-1.5">
-                              <QualityPill active={item.summary.zero_source} label="No sources" />
-                              <QualityPill active={item.summary.groundedness_flag} label="Grounding" />
-                              <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
-                                {item.summary.source_count} source{item.summary.source_count !== 1 ? 's' : ''}
-                              </span>
-                            </div>
-                          </button>
-                        ))
+                        qualityFeedback.map((item) => {
+                          const draft = qualityDraftBySource.get(`thumbs_down_feedback:${item.feedback_id}`)
+                          return (
+                            <button
+                              key={item.feedback_id}
+                              onClick={() => setSelectedQualityFeedbackId(item.feedback_id)}
+                              className={`w-full rounded-md border px-3 py-2 text-left transition-colors ${
+                                selectedQualityFeedback?.feedback_id === item.feedback_id
+                                  ? 'border-primary bg-primary/5'
+                                  : 'border-border bg-background hover:bg-muted/40'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <span className="line-clamp-2 text-xs font-semibold text-foreground">
+                                  {item.question || item.thread_title}
+                                </span>
+                                {(item.summary.groundedness_flag || item.summary.zero_source) && (
+                                  <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 text-destructive" />
+                                )}
+                              </div>
+                              <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+                                <span className="truncate">{item.client_email}</span>
+                                <span>{new Date(item.feedback_created_at).toLocaleDateString()}</span>
+                              </div>
+                              <div className="mt-1 flex flex-wrap gap-1.5">
+                                <QualityPill active={item.summary.zero_source} label="No sources" />
+                                <QualityPill active={item.summary.groundedness_flag} label="Grounding" />
+                                <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                                  {item.summary.source_count} source{item.summary.source_count !== 1 ? 's' : ''}
+                                </span>
+                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                                  draft ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
+                                }`}>
+                                  {draft ? 'Draft exists' : 'No draft'}
+                                </span>
+                              </div>
+                            </button>
+                          )
+                        })
                       )}
                     </div>
                   </div>
@@ -1487,6 +1502,15 @@ export function AdminPage() {
                             <Plus className="h-3.5 w-3.5" />
                             {selectedFeedbackDraft ? 'Review draft' : 'Seed draft'}
                           </button>
+                        </div>
+                        <div className={`rounded-md border px-3 py-2 text-xs ${
+                          selectedFeedbackDraft
+                            ? 'border-primary/40 bg-primary/5 text-primary'
+                            : 'border-border bg-background text-muted-foreground'
+                        }`}>
+                          {selectedFeedbackDraft
+                            ? `Quality-loop draft exists: ${selectedFeedbackDraft.question}`
+                            : 'No quality-loop draft exists for this feedback yet'}
                         </div>
 
                         <div className="grid gap-2 sm:grid-cols-4">
@@ -1533,6 +1557,14 @@ export function AdminPage() {
                                   )}
                                   {log.duration_ms !== null && log.duration_ms !== undefined && (
                                     <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{log.duration_ms}ms</span>
+                                  )}
+                                  {diagnosticChip(log.diagnostics, 'channel', 'Channel')}
+                                  {diagnosticChip(log.diagnostics, 'score_family', 'Score')}
+                                  {diagnosticChip(log.diagnostics, 'fallback_reason', 'Fallback')}
+                                  {formatStageTiming(log.diagnostics?.stage_timings_ms) && (
+                                    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+                                      {formatStageTiming(log.diagnostics?.stage_timings_ms)}
+                                    </span>
                                   )}
                                 </div>
                               </div>
@@ -1889,11 +1921,13 @@ function RagSignalsPanel({
   loading,
   draftCount,
   onReviewDrafts,
+  onOpenConversation,
 }: {
   data: RagQualitySignalsResponse | null
   loading: boolean
   draftCount: number
   onReviewDrafts: () => void
+  onOpenConversation: (threadId: string, title: string) => void
 }) {
   if (loading && !data) {
     return (
@@ -1913,6 +1947,7 @@ function RagSignalsPanel({
   }
 
   const flagged = data.signals.filter((signal) => signal.status !== 'ok')
+  const widgetBreakdown = data.totals.channel_breakdown?.widget
 
   return (
     <section className="space-y-4">
@@ -1924,7 +1959,7 @@ function RagSignalsPanel({
               Last {data.window_hours}h - {data.totals.retrieval_count ?? 0} retrievals - {flagged.length} signal{flagged.length !== 1 ? 's' : ''} flagged
             </p>
           </div>
-          <div className="grid grid-cols-4 gap-4 text-right text-[10px] text-muted-foreground">
+          <div className="grid grid-cols-5 gap-4 text-right text-[10px] text-muted-foreground">
             <div>
               <p className="font-semibold uppercase tracking-wider">Feedback</p>
               <p className="mt-1 text-sm font-bold text-foreground">{data.totals.feedback_count ?? 0}</p>
@@ -1936,6 +1971,10 @@ function RagSignalsPanel({
             <div>
               <p className="font-semibold uppercase tracking-wider">P95</p>
               <p className="mt-1 text-sm font-bold text-foreground">{formatLatency(data.totals.latency_p95_ms)}</p>
+            </div>
+            <div>
+              <p className="font-semibold uppercase tracking-wider">Widget</p>
+              <p className="mt-1 text-sm font-bold text-foreground">{widgetBreakdown?.retrieval_count ?? 0}</p>
             </div>
             <button
               type="button"
@@ -1966,21 +2005,38 @@ function RagSignalsPanel({
               {signal.examples.length === 0 ? (
                 <div className="rounded-md border border-border bg-background p-3 text-xs text-muted-foreground">No recent examples</div>
               ) : (
-                signal.examples.map((example, index) => (
-                  <div key={`${signal.id}-${example.id || index}`} className="rounded-md border border-border bg-background p-3">
-                    <div className="flex items-center justify-between gap-3 text-[10px] text-muted-foreground">
-                      <span className="truncate">{example.retrieval_mode || example.reason}</span>
-                      <span>{example.created_at ? new Date(example.created_at).toLocaleString() : 'recent'}</span>
-                    </div>
-                    <p className="mt-1 line-clamp-2 text-xs font-semibold text-foreground">{example.query || example.reason}</p>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{example.reason}</span>
-                      {example.value !== null && example.value !== undefined && (
-                        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{String(example.value)}</span>
+                signal.examples.map((example, index) => {
+                  const threadId = signalExampleThreadId(example)
+                  const title = signalExampleTitle(example)
+                  const detailChips = signalExampleDetailChips(example)
+                  return (
+                    <div key={`${signal.id}-${example.id || index}`} className="rounded-md border border-border bg-background p-3">
+                      <div className="flex items-center justify-between gap-3 text-[10px] text-muted-foreground">
+                        <span className="truncate">{example.retrieval_mode || example.reason}</span>
+                        <span>{example.created_at ? new Date(example.created_at).toLocaleString() : 'recent'}</span>
+                      </div>
+                      <p className="mt-1 line-clamp-2 text-xs font-semibold text-foreground">{example.query || example.reason}</p>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{example.reason}</span>
+                        {example.value !== null && example.value !== undefined && (
+                          <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{String(example.value)}</span>
+                        )}
+                        {detailChips.map((chip) => (
+                          <span key={chip} className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{chip}</span>
+                        ))}
+                      </div>
+                      {threadId && (
+                        <button
+                          type="button"
+                          onClick={() => onOpenConversation(threadId, title)}
+                          className="mt-2 text-[10px] font-semibold text-primary hover:underline"
+                        >
+                          Open conversation
+                        </button>
                       )}
                     </div>
-                  </div>
-                ))
+                  )
+                })
               )}
             </div>
           </div>
@@ -2048,6 +2104,57 @@ function formatLatency(value?: number | null): string {
   return `${Math.round(value)}ms`
 }
 
+function signalExampleThreadId(example: RagQualitySignalExample): string | null {
+  const value = example.details?.thread_id
+  return typeof value === 'string' && value.trim() ? value : null
+}
+
+function signalExampleTitle(example: RagQualitySignalExample): string {
+  const query = example.query?.trim()
+  if (query) return query.length > 60 ? `${query.slice(0, 57)}...` : query
+  const threadId = signalExampleThreadId(example)
+  return threadId ? `Thread ${threadId.slice(0, 8)}` : 'Signal example'
+}
+
+function signalExampleDetailChips(example: RagQualitySignalExample): string[] {
+  const details = example.details || {}
+  const chips = [
+    detailChip('Channel', details.channel),
+    detailChip('Score', details.score_family),
+    detailChip('Fallback', details.fallback_reason),
+    detailChip('Quality', details.retrieval_quality),
+    details.cache_hit === true ? 'Cache hit' : null,
+    typeof details.top_fused_score === 'number' ? `Fused ${details.top_fused_score.toFixed(4)}` : null,
+    formatStageTiming(details.stage_timings_ms),
+  ]
+  return chips.filter((chip): chip is string => Boolean(chip))
+}
+
+function detailChip(label: string, value: unknown): string | null {
+  if (typeof value === 'string' && value.trim()) return `${label}: ${value}`
+  if (typeof value === 'number') return `${label}: ${value}`
+  if (typeof value === 'boolean') return `${label}: ${value ? 'yes' : 'no'}`
+  return null
+}
+
+function diagnosticChip(diagnostics: Record<string, unknown> | null | undefined, key: string, label: string) {
+  const chip = detailChip(label, diagnostics?.[key])
+  if (!chip) return null
+  return <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{chip}</span>
+}
+
+function formatStageTiming(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null
+  const timings = value as Record<string, unknown>
+  const parts = ['qdrant_ms', 'fts_ms', 'rerank_ms', 'total_ms']
+    .map((key) => {
+      const timing = timings[key]
+      return typeof timing === 'number' ? `${key.replace('_ms', '')} ${Math.round(timing)}ms` : null
+    })
+    .filter((part): part is string => Boolean(part))
+  return parts.length ? parts.join(' / ') : null
+}
+
 function StatusPill({ status }: { status: string }) {
   const className = status === 'completed'
     ? 'bg-green-500/10 text-green-500'
@@ -2109,7 +2216,7 @@ function QualityChunkPreview({
     <div className="rounded border border-border/70 bg-muted/20 px-2 py-1.5">
       <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
         <span className="truncate">{source.chunk_id || 'captured chunk'}</span>
-        <span>{formatNullableScore(source.score)} · {source.retrieval_mode || 'retrieval'}</span>
+        <span>{formatNullableScore(source.score)} · {source.score_family || source.retrieval_mode || 'retrieval'}</span>
       </div>
       <p className="mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed text-foreground">
         {visibleText}
