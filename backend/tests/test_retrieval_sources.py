@@ -53,10 +53,61 @@ class RetrievalSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["sources"][0]["document_id"], "doc-a")
         self.assertEqual(result["sources"][0]["filename"], "fixture.md")
         self.assertEqual(result["sources"][0]["retrieval_mode"], "hybrid")
+        self.assertEqual(result["sources"][0]["score_family"], "cohere_rerank")
         self.assertIn("atlas-77", result["sources"][0]["snippet"])
         log_payload = log_retrieval.call_args.kwargs
         self.assertEqual(log_payload["chunks"], ["The verification passphrase is atlas-77."])
         self.assertIn("atlas-77", log_payload["sources"][0]["content"])
+        self.assertEqual(log_payload["sources"][0]["score_family"], "cohere_rerank")
+        self.assertEqual(log_payload["diagnostics"]["score_family"], "cohere_rerank")
+        self.assertEqual(log_payload["diagnostics"]["channel"], "authenticated")
+        self.assertIn("stage_timings_ms", log_payload["diagnostics"])
+        self.assertIn("top_fused_score", log_payload["diagnostics"])
+
+    async def test_hybrid_retrieval_logs_rrf_fallback_score_family(self):
+        with (
+            patch.object(retrieval, "get_embedding_client", return_value=Mock()),
+            patch.object(retrieval, "get_embedding", new=AsyncMock(return_value=[0.1, 0.2])),
+            patch.object(
+                retrieval,
+                "search_similar_chunks",
+                new=AsyncMock(return_value=[
+                    {
+                        "id": "chunk-a",
+                        "document_id": "doc-a",
+                        "content": "The fallback-ranked passphrase is atlas-77.",
+                        "similarity": 0.8,
+                    }
+                ]),
+            ),
+            patch.object(retrieval, "search_chunks_fts", return_value=[]),
+            patch.object(
+                retrieval,
+                "get_documents_by_ids",
+                return_value={"doc-a": {"id": "doc-a", "filename": "fixture.md", "status": "processed"}},
+            ),
+            patch.object(
+                retrieval,
+                "rerank_with_cohere",
+                new=AsyncMock(return_value=[{"index": 0, "score": 0.02, "fallback": True}]),
+            ),
+            patch.object(retrieval, "log_retrieval", return_value={"id": "log-a"}) as log_retrieval,
+        ):
+            result = await retrieval.retrieve_context(
+                token="token",
+                user_id="user-a",
+                target_user_id="admin-a",
+                tenant_id="tenant-a",
+                message="What is the fallback-ranked passphrase?",
+                mode="hybrid",
+                diagnostics={"channel": "widget"},
+            )
+
+        self.assertEqual(result["sources"][0]["score_family"], "rrf_fallback")
+        log_payload = log_retrieval.call_args.kwargs
+        self.assertEqual(log_payload["sources"][0]["score_family"], "rrf_fallback")
+        self.assertEqual(log_payload["diagnostics"]["score_family"], "rrf_fallback")
+        self.assertEqual(log_payload["diagnostics"]["channel"], "widget")
 
     def test_loggable_retrieval_evidence_is_bounded(self):
         long_text = "x" * 2500
@@ -69,6 +120,7 @@ class RetrievalSourceTests(unittest.IsolatedAsyncioTestCase):
                 "snippet": long_text,
                 "content": long_text,
                 "retrieval_mode": "hybrid",
+                "score_family": "cohere_rerank",
                 "ignored": "not persisted",
             }
             for i in range(12)
@@ -82,6 +134,7 @@ class RetrievalSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(log_sources[0]["content"]), 2000)
         self.assertLessEqual(len(log_sources[0]["snippet"]), 2000)
         self.assertLessEqual(len(log_chunks[0]), 2000)
+        self.assertEqual(log_sources[0]["score_family"], "cohere_rerank")
         self.assertNotIn("ignored", log_sources[0])
 
     async def test_archived_documents_are_excluded_from_sources(self):
@@ -173,6 +226,7 @@ class RetrievalSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["sources"][0]["document_id"], "doc-a")
         self.assertEqual(result["sources"][0]["filename"], "problem.pdf")
         self.assertEqual(result["sources"][0]["retrieval_mode"], "vector")
+        self.assertEqual(result["sources"][0]["score_family"], "vector_similarity")
         self.assertEqual(result["sources"][0]["metadata"], parent_metadata)
         self.assertIn("Electronics Technology", result["sources"][0]["snippet"])
 

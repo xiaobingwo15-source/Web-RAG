@@ -15,6 +15,11 @@ VECTOR_SIMILARITY_THRESHOLD = 0.1
 MMR_LAMBDA = 0.5  # Balance between relevance (1.0) and diversity (0.0)
 MAX_RETRIEVAL_LOG_ITEMS = 10
 MAX_RETRIEVAL_LOG_TEXT_CHARS = 2000
+SCORE_FAMILY_COHERE = "cohere_rerank"
+SCORE_FAMILY_RRF = "rrf_fallback"
+SCORE_FAMILY_VECTOR = "vector_similarity"
+SCORE_FAMILY_FTS = "fts_rank"
+SCORE_FAMILY_UNKNOWN = "unknown"
 
 # Post-reranker filtering: drop chunks whose reranker score falls below this
 # threshold before they reach the LLM generator.  When Cohere reranking is not
@@ -49,6 +54,7 @@ def _loggable_retrieval_evidence(sources: list[dict], chunks: list[str]) -> tupl
             "snippet": _truncate_log_text(source.get("snippet")),
             "content": _truncate_log_text(source.get("content")),
             "retrieval_mode": source.get("retrieval_mode"),
+            "score_family": source.get("score_family"),
         })
     bounded_chunks = [
         _truncate_log_text(chunk)
@@ -164,6 +170,7 @@ async def _resolve_parents(sources: list[dict]) -> list[dict]:
                     "score": s.get("score", 0),
                     "snippet": _snippet(parent_map[pid]["content"]),
                     "retrieval_mode": s.get("retrieval_mode"),
+                    "score_family": s.get("score_family"),
                     "metadata": parent_map[pid].get("metadata", s.get("metadata", {})),
                     "parent_id": pid,
                 }
@@ -211,6 +218,7 @@ def _finalize_sources(
             "score": float(source.get("score", 0) or 0),
             "snippet": _snippet(content),
             "retrieval_mode": mode,
+            "score_family": source.get("score_family") or SCORE_FAMILY_UNKNOWN,
             "content": content,
             "metadata": source.get("metadata", {}),
             **({"parent_id": source["parent_id"]} if source.get("parent_id") else {}),
@@ -329,6 +337,13 @@ async def retrieve_context(
         sources = result.get("sources", [])
         chunks = result.get("chunks", [])
         top_score = sources[0]["score"] if sources else None
+        score_family = (
+            retrieval_diagnostics.get("score_family")
+            or (sources[0].get("score_family") if sources else None)
+            or SCORE_FAMILY_UNKNOWN
+        )
+        retrieval_diagnostics["score_family"] = score_family
+        retrieval_diagnostics.setdefault("channel", "authenticated" if token else "widget")
         retrieval_quality = "no_sources" if not sources else "retrieved"
         _stage_timing(retrieval_diagnostics, "total_ms", _total_ms)
         log_latency(
@@ -394,7 +409,8 @@ async def retrieve_context(
         )
         if not chunks:
             return _empty()
-        raw_sources = [{"id": c.get("id", ""), "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("rank", 0), "metadata": c.get("metadata", {}), **({"parent_id": c["parent_id"]} if c.get("parent_id") else {})} for c in chunks]
+        retrieval_diagnostics["score_family"] = SCORE_FAMILY_FTS
+        raw_sources = [{"id": c.get("id", ""), "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("rank", 0), "score_family": SCORE_FAMILY_FTS, "metadata": c.get("metadata", {}), **({"parent_id": c["parent_id"]} if c.get("parent_id") else {})} for c in chunks]
         sources = _finalize_sources(token, raw_sources, mode, tenant_id)
         sources = await _resolve_parents(sources)
         logger.info(f"FTS retrieval: {len(sources)} chunks")
@@ -528,6 +544,7 @@ async def retrieve_context(
                 combined[cid] = _rrf_entry(cid, chunk, w_fts / (rrf_k + rank + 1))
 
         sorted_results = sorted(combined.values(), key=lambda x: x["score"], reverse=True)
+        retrieval_diagnostics["top_fused_score"] = sorted_results[0]["score"] if sorted_results else 0.0
 
         # MMR diversification: reduce redundancy in candidates before reranking
         diverse_results = _mmr_diversify(sorted_results, lambda_param=MMR_LAMBDA, top_n=match_count * 2)
@@ -559,6 +576,8 @@ async def retrieve_context(
             # Only applies to actual Cohere reranker scores; skipped in fallback
             # mode (where scores have a different scale) to preserve backward compat.
             is_fallback = any(s.get("fallback") for s in scored)
+            score_family = SCORE_FAMILY_RRF if is_fallback else SCORE_FAMILY_COHERE
+            retrieval_diagnostics["score_family"] = score_family
             if not is_fallback and scored:
                 pre_filter_count = len(scored)
                 scored = [s for s in scored if s.get("score", 0) >= RERANK_SCORE_THRESHOLD]
@@ -586,6 +605,7 @@ async def retrieve_context(
                         "document_id": meta.get("document_id", ""),
                         "content": candidates[idx],
                         "score": s.get("score", meta["score"]),
+                        "score_family": score_family,
                         "metadata": meta.get("metadata", {}),
                         **({"parent_id": meta["parent_id"]} if meta.get("parent_id") else {}),
                     })
@@ -621,7 +641,8 @@ async def retrieve_context(
         )
         if not chunks:
             return _empty()
-        raw_sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0), "metadata": c.get("metadata", {}), **({"parent_id": c["parent_id"]} if c.get("parent_id") else {})} for c in chunks]
+        retrieval_diagnostics["score_family"] = SCORE_FAMILY_VECTOR
+        raw_sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0), "score_family": SCORE_FAMILY_VECTOR, "metadata": c.get("metadata", {}), **({"parent_id": c["parent_id"]} if c.get("parent_id") else {})} for c in chunks]
         sources = _finalize_sources(token, raw_sources, mode, tenant_id)
         sources = await _resolve_parents(sources)
         return _log_and_return({"chunks": [s["content"] for s in sources], "sources": sources})
@@ -681,7 +702,8 @@ async def retrieve_context(
     )
     if not chunks:
         return _empty()
-    raw_sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0), "metadata": c.get("metadata", {}), **({"parent_id": c["parent_id"]} if c.get("parent_id") else {})} for c in chunks]
+    retrieval_diagnostics["score_family"] = SCORE_FAMILY_VECTOR
+    raw_sources = [{"id": c["id"], "document_id": c.get("document_id", ""), "content": c["content"], "score": c.get("similarity", 0), "score_family": SCORE_FAMILY_VECTOR, "metadata": c.get("metadata", {}), **({"parent_id": c["parent_id"]} if c.get("parent_id") else {})} for c in chunks]
     sources = _finalize_sources(token, raw_sources, mode, tenant_id)
     sources = await _resolve_parents(sources)
     logger.info(f"Vector retrieval: {len(sources)} chunks")

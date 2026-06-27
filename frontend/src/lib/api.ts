@@ -793,6 +793,7 @@ export interface RagQualitySource {
   filename?: string | null
   chunk_id?: string | null
   score?: number | null
+  score_family?: string | null
   snippet?: string | null
   content?: string | null
   retrieval_mode?: string | null
@@ -853,6 +854,27 @@ export interface RagQualityThumbsDownResponse {
 
 export type RagQualitySignalStatus = 'ok' | 'watch' | 'critical'
 
+export interface RagQualitySignalExampleDetails {
+  source_count?: number | null
+  chunk_count?: number | null
+  top_score?: number | null
+  duration_ms?: number | null
+  retrieval_quality?: string | null
+  thread_id?: string | null
+  answer_message_id?: string | null
+  fallback_reason?: string | null
+  web_result_count?: number | null
+  web_fallback_allowed?: boolean | null
+  used_web_fallback?: boolean | null
+  channel?: string | null
+  score_family?: string | null
+  stage_timings_ms?: Record<string, number> | null
+  top_fused_score?: number | null
+  query_type?: string | null
+  cache_hit?: boolean | null
+  [key: string]: unknown
+}
+
 export interface RagQualitySignalExample {
   id?: string | null
   query?: string | null
@@ -860,7 +882,7 @@ export interface RagQualitySignalExample {
   retrieval_mode?: string | null
   value?: string | number | null
   reason: string
-  details: Record<string, unknown>
+  details: RagQualitySignalExampleDetails
 }
 
 export interface RagQualitySignal {
@@ -875,10 +897,36 @@ export interface RagQualitySignal {
   examples: RagQualitySignalExample[]
 }
 
+export interface RagQualityChannelBreakdown {
+  retrieval_count: number
+  zero_source_count: number
+  weak_source_count: number
+  groundedness_flag_count: number
+  fallback_count: number
+  latency_p95_ms?: number | null
+}
+
+export interface RagQualitySignalsTotals {
+  retrieval_count?: number | null
+  feedback_count?: number | null
+  thumbs_down_count?: number | null
+  zero_source_count?: number | null
+  weak_source_count?: number | null
+  groundedness_flag_count?: number | null
+  fallback_count?: number | null
+  near_random_count?: number | null
+  staleness_ratio?: number | null
+  staleness_score_family?: string | null
+  latency_sample_count?: number | null
+  latency_p95_ms?: number | null
+  channel_breakdown?: Record<string, RagQualityChannelBreakdown>
+  [key: string]: number | string | null | Record<string, RagQualityChannelBreakdown> | undefined
+}
+
 export interface RagQualitySignalsResponse {
   window_hours: number
   limit: number
-  totals: Record<string, number | null>
+  totals: RagQualitySignalsTotals
   signals: RagQualitySignal[]
 }
 

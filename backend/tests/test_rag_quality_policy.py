@@ -9,7 +9,7 @@ from app.services.semantic_cache import clear_semantic_cache, get_semantic_cache
 
 
 class RagQualityPolicyTests(unittest.TestCase):
-    def test_builds_five_signals_from_retrieval_and_feedback_rows(self):
+    def test_builds_split_signals_from_retrieval_and_feedback_rows(self):
         retrieval_logs = [
             {
                 "id": "zero-1",
@@ -20,7 +20,9 @@ class RagQualityPolicyTests(unittest.TestCase):
                 "top_score": None,
                 "duration_ms": 120,
                 "created_at": "2026-06-12T00:00:00Z",
-                "diagnostics": {"channel": "widget"},
+                "thread_id": "thread-zero",
+                "answer_message_id": "answer-zero",
+                "diagnostics": {"channel": "widget", "score_family": "cohere_rerank"},
             },
             {
                 "id": "weak-1",
@@ -31,7 +33,11 @@ class RagQualityPolicyTests(unittest.TestCase):
                 "top_score": 0.2,
                 "duration_ms": 3500,
                 "created_at": "2026-06-12T00:01:00Z",
-                "diagnostics": {},
+                "diagnostics": {
+                    "channel": "authenticated",
+                    "score_family": "cohere_rerank",
+                    "stage_timings_ms": {"qdrant_ms": 100, "rerank_ms": 200, "total_ms": 3500},
+                },
             },
             {
                 "id": "ground-1",
@@ -43,7 +49,7 @@ class RagQualityPolicyTests(unittest.TestCase):
                 "duration_ms": 140,
                 "groundedness_flag": True,
                 "created_at": "2026-06-12T00:02:00Z",
-                "diagnostics": {},
+                "diagnostics": {"channel": "authenticated", "score_family": "cohere_rerank"},
             },
             {
                 "id": "fallback-1",
@@ -55,7 +61,13 @@ class RagQualityPolicyTests(unittest.TestCase):
                 "duration_ms": 150,
                 "retrieval_quality": "no_sources_web_fallback",
                 "created_at": "2026-06-12T00:03:00Z",
-                "diagnostics": {"web_result_count": 3},
+                "diagnostics": {
+                    "channel": "authenticated",
+                    "score_family": "cohere_rerank",
+                    "web_result_count": 3,
+                    "used_web_fallback": True,
+                    "fallback_reason": "no_doc_results",
+                },
             },
         ]
         feedback_rows = [
@@ -71,23 +83,34 @@ class RagQualityPolicyTests(unittest.TestCase):
         )
 
         signals = {signal["id"]: signal for signal in result["signals"]}
-        # 5 original signals + data_staleness (only when enough logs; 4 logs < STALENESS_MIN_LOGS*2 so it's ok)
-        # With only 4 logs, staleness won't fire (needs >= 10). But near_random is always computed.
         expected_base = {
             "zero_sources",
             "weak_sources",
             "groundedness",
             "completion_latency",
-            "feedback_fallback",
+            "negative_feedback",
+            "web_fallback",
+            "widget_policy_violation",
+            "data_staleness",
         }
-        # data_staleness only appears when there are enough scored logs in both halves
         self.assertTrue(expected_base.issubset(set(signals)), f"Missing base signals: {expected_base - set(signals)}")
+        self.assertNotIn("feedback_fallback", signals)
         self.assertEqual(signals["zero_sources"]["count"], 1)
         self.assertEqual(signals["weak_sources"]["count"], 1)
         self.assertEqual(signals["groundedness"]["count"], 1)
         self.assertEqual(signals["completion_latency"]["value"], 3500)
-        self.assertEqual(signals["feedback_fallback"]["count"], 2)
+        self.assertEqual(signals["negative_feedback"]["count"], 1)
+        self.assertEqual(signals["web_fallback"]["count"], 1)
+        self.assertEqual(signals["widget_policy_violation"]["count"], 0)
         self.assertEqual(result["totals"]["thumbs_down_count"], 1)
+        self.assertEqual(result["totals"]["fallback_count"], 1)
+        self.assertEqual(result["totals"]["channel_breakdown"]["widget"]["retrieval_count"], 1)
+        self.assertEqual(result["totals"]["channel_breakdown"]["authenticated"]["retrieval_count"], 3)
+
+        weak_example = signals["weak_sources"]["examples"][0]
+        self.assertEqual(weak_example["details"]["channel"], "authenticated")
+        self.assertEqual(weak_example["details"]["score_family"], "cohere_rerank")
+        self.assertEqual(weak_example["details"]["stage_timings_ms"]["rerank_ms"], 200)
 
     def test_near_random_signal_detected(self):
         """Logs with top_score < 0.15 are flagged as near-random."""
@@ -101,7 +124,7 @@ class RagQualityPolicyTests(unittest.TestCase):
                 "top_score": 0.05,
                 "duration_ms": 500,
                 "created_at": f"2026-06-12T00:{i:02d}:00Z",
-                "diagnostics": {},
+                "diagnostics": {"score_family": "cohere_rerank"},
             }
             for i in range(5)
         ]
@@ -114,6 +137,81 @@ class RagQualityPolicyTests(unittest.TestCase):
         self.assertEqual(result["totals"]["near_random_count"], 5)
         # Near-random count is mentioned in weak_sources description
         self.assertIn("Near-random", signals["weak_sources"]["description"])
+
+    def test_rrf_fallback_uses_rrf_score_thresholds(self):
+        retrieval_logs = [
+            {
+                "id": "rrf-ok",
+                "query": "fallback score should not use rerank threshold",
+                "retrieval_mode": "hybrid",
+                "source_count": 1,
+                "chunk_count": 1,
+                "top_score": 0.02,
+                "duration_ms": 200,
+                "created_at": "2026-06-12T00:00:00Z",
+                "diagnostics": {"score_family": "rrf_fallback"},
+            },
+            {
+                "id": "rrf-weak",
+                "query": "fallback score below rrf threshold",
+                "retrieval_mode": "hybrid",
+                "source_count": 1,
+                "chunk_count": 1,
+                "top_score": 0.012,
+                "duration_ms": 200,
+                "created_at": "2026-06-12T00:01:00Z",
+                "diagnostics": {"score_family": "rrf_fallback"},
+            },
+            {
+                "id": "fts-skip",
+                "query": "fts scores are not normalized",
+                "retrieval_mode": "fts",
+                "source_count": 1,
+                "chunk_count": 1,
+                "top_score": 0.001,
+                "duration_ms": 200,
+                "created_at": "2026-06-12T00:02:00Z",
+                "diagnostics": {"score_family": "fts_rank"},
+            },
+        ]
+
+        result = rag_quality_policy.build_rag_quality_signals(
+            retrieval_logs=retrieval_logs,
+            feedback_rows=[],
+        )
+
+        signals = {s["id"]: s for s in result["signals"]}
+        self.assertEqual(signals["weak_sources"]["count"], 1)
+        self.assertEqual(signals["weak_sources"]["examples"][0]["id"], "rrf-weak")
+
+    def test_widget_policy_violation_is_critical_when_widget_uses_web_fallback(self):
+        retrieval_logs = [
+            {
+                "id": "widget-violation",
+                "query": "public widget should not use web",
+                "retrieval_mode": "hybrid",
+                "source_count": 1,
+                "chunk_count": 1,
+                "top_score": 0.8,
+                "duration_ms": 200,
+                "created_at": "2026-06-12T00:00:00Z",
+                "diagnostics": {
+                    "channel": "widget",
+                    "score_family": "cohere_rerank",
+                    "web_fallback_allowed": True,
+                    "used_web_fallback": True,
+                },
+            }
+        ]
+
+        result = rag_quality_policy.build_rag_quality_signals(
+            retrieval_logs=retrieval_logs,
+            feedback_rows=[],
+        )
+
+        signals = {s["id"]: s for s in result["signals"]}
+        self.assertEqual(signals["widget_policy_violation"]["status"], "critical")
+        self.assertEqual(signals["widget_policy_violation"]["count"], 1)
 
     def test_staleness_signal_fires_on_score_degradation(self):
         """When recent scores drop significantly vs older scores, staleness signal fires."""
@@ -129,7 +227,7 @@ class RagQualityPolicyTests(unittest.TestCase):
                 "top_score": 0.8,
                 "duration_ms": 500,
                 "created_at": f"2026-06-01T00:{i:02d}:00Z",
-                "diagnostics": {},
+                "diagnostics": {"score_family": "cohere_rerank"},
             })
         for i in range(10):
             retrieval_logs.append({
@@ -141,7 +239,19 @@ class RagQualityPolicyTests(unittest.TestCase):
                 "top_score": 0.05,
                 "duration_ms": 500,
                 "created_at": f"2026-06-12T00:{i:02d}:00Z",
-                "diagnostics": {},
+                "diagnostics": {"score_family": "cohere_rerank"},
+            })
+        for i in range(20):
+            retrieval_logs.append({
+                "id": f"rrf-{i}",
+                "query": f"rrf query {i}",
+                "retrieval_mode": "hybrid",
+                "source_count": 1,
+                "chunk_count": 1,
+                "top_score": 0.02,
+                "duration_ms": 500,
+                "created_at": f"2026-06-{1 + i // 10:02d}T01:{i % 10:02d}:00Z",
+                "diagnostics": {"score_family": "rrf_fallback"},
             })
         result = rag_quality_policy.build_rag_quality_signals(
             retrieval_logs=retrieval_logs,
@@ -151,6 +261,7 @@ class RagQualityPolicyTests(unittest.TestCase):
         self.assertIn("data_staleness", signals)
         self.assertEqual(signals["data_staleness"]["status"], "critical")
         self.assertIn("staleness_ratio", result["totals"])
+        self.assertEqual(result["totals"]["staleness_score_family"], "cohere_rerank")
 
     def test_retrieval_log_model_accepts_diagnostics(self):
         log = RagQualityRetrievalLog(

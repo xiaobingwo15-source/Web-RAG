@@ -67,10 +67,26 @@ class WidgetRagTargetTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_widget_stream_passes_resolved_target_user_to_supervisor(self):
         captured: dict = {}
+        log_update: dict = {}
 
         async def fake_agent_execute(**kwargs):
             captured.update(kwargs)
             yield {"type": "token", "content": "The canonical support color is cobalt blue."}
+            yield {
+                "type": "rag_quality",
+                "retrieval_log_ids": ["log-a"],
+                "groundedness": None,
+                "groundedness_flag": False,
+                "retrieval_quality": "retrieved",
+                "diagnostics": {
+                    "channel": "widget",
+                    "web_fallback_allowed": False,
+                    "used_web_fallback": False,
+                },
+            }
+
+        def fake_update_logs(**kwargs):
+            log_update.update(kwargs)
 
         with (
             patch.object(widget, "verify_widget_token", return_value={"tenant_id": "tenant-a", "session_id": "session-a", "origin": "http://example.test"}),
@@ -81,6 +97,7 @@ class WidgetRagTargetTests(unittest.IsolatedAsyncioTestCase):
             patch.object(widget, "save_widget_message", return_value={"id": "message-a"}),
             patch.object(widget, "save_widget_message_streaming", return_value={"id": "streaming-msg-a"}),
             patch.object(widget, "update_message_content", return_value={"id": "streaming-msg-a"}),
+            patch.object(widget, "update_retrieval_logs_for_answer", side_effect=fake_update_logs),
             patch.object(widget, "get_thread_messages_service", return_value=[]),
             patch.object(widget, "agent_execute", new=fake_agent_execute),
         ):
@@ -95,6 +112,10 @@ class WidgetRagTargetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["target_user_id"], "admin-a")
         self.assertEqual(captured["tenant_id"], "tenant-a")
         self.assertEqual(captured["user_id"], "session-a")
+        self.assertFalse(captured["enable_web_search"])
+        self.assertEqual(log_update["diagnostics"]["channel"], "widget")
+        self.assertFalse(log_update["diagnostics"]["web_fallback_allowed"])
+        self.assertFalse(log_update["diagnostics"]["used_web_fallback"])
 
 
 class AgentSupervisorTargetTests(unittest.IsolatedAsyncioTestCase):
