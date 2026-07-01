@@ -82,6 +82,7 @@ def _compact_source(source: dict) -> dict:
         "chunk_id": source.get("chunk_id"),
         "filename": source.get("filename"),
         "score": _safe_float(source.get("score")),
+        "score_family": source.get("score_family"),
         "retrieval_mode": source.get("retrieval_mode"),
         "snippet": _truncate(source.get("snippet")),
         "content": _truncate(source.get("content")),

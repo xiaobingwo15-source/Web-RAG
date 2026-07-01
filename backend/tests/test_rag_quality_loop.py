@@ -44,6 +44,7 @@ class RagQualityLoopTests(unittest.TestCase):
                     "chunk_id": "chunk-1",
                     "filename": "benefits.md",
                     "score": 0.31,
+                    "score_family": "cohere_rerank",
                     "snippet": "Rollover details",
                 }],
             }],
@@ -73,7 +74,12 @@ class RagQualityLoopTests(unittest.TestCase):
                 "created_at": "2026-06-12T00:12:00Z",
                 "retrieval_quality": "low_quality_web_fallback",
                 "diagnostics": {"fallback_reason": "low_quality", "web_result_count": 2},
-                "sources": [{"filename": "ops.md", "score": 0.22, "snippet": "Escalation"}],
+                "sources": [{
+                    "filename": "ops.md",
+                    "score": 0.22,
+                    "score_family": "rrf_fallback",
+                    "snippet": "Escalation",
+                }],
                 "chunks": ["Escalation"],
             },
         ]
@@ -98,9 +104,17 @@ class RagQualityLoopTests(unittest.TestCase):
             feedback_payload["retrieval_metadata"]["retrieval"]["logs"][0]["diagnostics"]["channel"],
             "chat",
         )
+        self.assertEqual(
+            feedback_payload["retrieval_metadata"]["retrieval"]["logs"][0]["sources"][0]["score_family"],
+            "cohere_rerank",
+        )
         self.assertEqual(fallback_payload["source_type"], "fallback_retrieval")
         self.assertTrue(fallback_payload["source_ref_id"].startswith("fallback:"))
         self.assertEqual(fallback_payload["retrieval_metadata"]["fallback"]["fallback_count"], 2)
+        self.assertEqual(
+            fallback_payload["retrieval_metadata"]["retrieval"]["logs"][0]["sources"][0]["score_family"],
+            "rrf_fallback",
+        )
         self.assertIn("fallback-heavy", fallback_payload["tags"])
 
     def test_sync_skips_existing_quality_loop_sources(self):
