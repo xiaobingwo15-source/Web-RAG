@@ -1,14 +1,15 @@
-# Claude Code Agentic RAG Masterclass
+# Web-RAG Agentic RAG
 
-Collaborate with Claude Code to architect, verify, and launch a fully-managed Agentic RAG system entirely from scratch. Follow our structured video learning roadmap utilizing the precise operational criteria laid out across this directory.
+Web-RAG is a tenant-aware document chat application with admin-managed knowledge bases, public widget support, retrieval diagnostics, and quality review loops.
 
 ## Core Application Overview
 
-A production-optimized document processing engine featuring two decoupled, high-performance interfaces:
-- **Interactive Chat Arena** — A threaded workspace running dialogue tracking, streaming tokens, multi-path tool calls, and sub-agent reasoning paths.
-- **Managed Document Ingestion Hub** — A landing interface featuring smooth drag-and-drop file ingestion pipelines alongside live processing trackers.
+A production-oriented document processing system featuring three main interfaces:
+- **Interactive Chat Workspace** - A threaded workspace for authenticated chat, streaming answers, document retrieval, tool routing, and answer feedback.
+- **Managed Document Ingestion Hub** - An admin upload and processing surface for tenant-scoped knowledge-base documents.
+- **Public RAG Widget** - A tenant-scoped anonymous chat widget that answers from processed documents and keeps public answers document-grounded unless product policy changes.
 
-This architecture completely removes the burden of writing manual, complex backend token splitters or managing custom vector index mathematics. Instead, chunk formatting, OCR parsing, semantic embedding mapping, and distance searches are offloaded directly onto Google's cloud infrastructure via the native Gemini File Search engine.
+Documents are parsed, chunked, embedded, indexed in Qdrant, and retrieved with hybrid Qdrant vector search plus Supabase full-text search. Reranking, answer generation, groundedness checks, and RAG quality signals help admins inspect weak answers and improve the eval suite.
 
 ## Structural Technical Stack
 
@@ -18,8 +19,8 @@ This architecture completely removes the burden of writing manual, complex backe
 | Backend API Engine  | Python 3 + FastAPI + Uvicorn Servers |
 | Persistent Storage  | Supabase (Auth + Row-Level Security State Mapping) |
 | Core AI Intelligence| `google-genai` Python SDK (Google ai studio API key) |
-| Hosted RAG Engine   | Gemini Native File Search (Context Grounding Tool) |
-| System Observability| LangSmith Telemetry Tracing |
+| Vector Retrieval    | Qdrant `document_chunks` collection with Supabase full-text search |
+| System Observability| Langfuse tracing |
 
 ## Embedding Provider Configuration
 
@@ -49,7 +50,7 @@ pip install -r backend/requirements.txt
 ## The 8 Masterclass Modules
 
 1. **Application Shell** — User authentication blocks, unified workspace templates, and live initialization links directly targeting Google ai studio API key.
-2. **Managed Context Stores & Grounded Search** — File routing pipes deploying data straight into Gemini's `file_search_stores` with async operation tracking loops.
+2. **Managed Context Stores & Grounded Search** - Tenant-scoped document parsing, chunking, embeddings, Qdrant indexing, and async processing status tracking.
 3. **Incremental Records Manager** — Automated content hash checksum validators guarding data indices against redundant file entries.
 4. **Structured Metadata Extraction** — Programmatic metadata profiling using Pydantic tracking frames to enrich vector matching models.
 5. **Multi-Format Processing Adapters** — Dynamic handling of PDF layouts, tables, Markdown, and TXT files, combined with database cascade loops.
