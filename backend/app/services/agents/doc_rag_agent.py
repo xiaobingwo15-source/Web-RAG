@@ -80,9 +80,9 @@ def classify_query_complexity(query: str) -> int:
 
 _META_QUERY_PATTERNS = re.compile(
     r"(what|which|list|show|tell me about|do you have|any|available|overview|summarize|know about)"
-    r".{0,30}(document|file|info|information|assignment|material|content|knowledge|data|resource|doc|briefing|report)"
+    r".{0,30}(document|file|info|information|material|content|knowledge|data|resource|doc|briefing|report)"
     r"|(有什么|哪些|列出|显示|告诉我|有没有|可用的|概述|总结|了解)"
-    r".{0,20}(文档|文件|资料|信息|内容|知识|数据|资源|作业|简报|报告)",
+    r".{0,20}(文档|文件|资料|信息|内容|知识|数据|资源|简报|报告)",
     re.IGNORECASE,
 )
 
@@ -151,12 +151,16 @@ async def _generate_clarification(
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": query},
                 ],
-                max_tokens=300,
+                max_tokens=500,
                 temperature=0.3,
             ),
             timeout=8.0,
         )
-        return response.choices[0].message.content.strip()
+        choice = response.choices[0]
+        if choice.finish_reason == "length":
+            logger.warning("Clarification response truncated (hit max_tokens); discarding")
+            return None
+        return choice.message.content.strip()
     except Exception as e:
         logger.warning(f"Clarification generation failed: {e}")
         return None
