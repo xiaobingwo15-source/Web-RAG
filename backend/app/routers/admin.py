@@ -2,7 +2,7 @@
 
 import logging
 from datetime import UTC, datetime
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from app.middleware.auth import get_current_user
 from app.services.database import (
@@ -18,10 +18,12 @@ from app.services.database import (
     get_tenant_admin_invite,
     get_thread_messages_admin,
     save_admin_message,
+    clear_attention_flag,
     get_flagged_messages,
     get_flagged_count,
     clear_thread_attention_flags,
     get_tenant_users,
+    list_operation_audit_logs,
     update_rag_eval_case,
     update_user_status,
 )
@@ -391,6 +393,27 @@ async def get_flagged_count_endpoint(user=Depends(get_current_user)):
     return {"count": count}
 
 
+@router.post("/flagged/{message_id}/dismiss")
+async def dismiss_flagged_message(message_id: str, request: Request, user=Depends(get_current_user)):
+    """Dismiss a tenant-owned flagged message without adding an admin response."""
+    _verify_admin(user)
+    dismissed = clear_attention_flag(user.tenant_id, message_id)
+    if not dismissed:
+        raise HTTPException(status_code=404, detail="Flagged message not found")
+    log_operation(
+        tenant_id=user.tenant_id,
+        actor_user_id=user.id,
+        actor_email=getattr(user, "email", None),
+        actor_role=user.role,
+        action="flagged_message.dismiss",
+        resource_type="message",
+        resource_id=message_id,
+        after=dismissed,
+        request=request,
+    )
+    return {"status": "dismissed", "message_id": message_id}
+
+
 @router.post("/conversations/{thread_id}/respond")
 async def respond_to_thread(thread_id: str, request_body: AdminRespondRequest, request: Request, user=Depends(get_current_user)):
     """Admin submits a manual response to a client's flagged thread."""
@@ -425,6 +448,26 @@ async def respond_to_thread(thread_id: str, request_body: AdminRespondRequest, r
     )
 
     return {"status": "success", "message_id": saved["id"]}
+
+
+@router.get("/audit-logs")
+async def list_audit_logs(
+    limit: int = Query(default=50, ge=1, le=200),
+    action: str | None = None,
+    resource_type: str | None = None,
+    resource_id: str | None = None,
+    user=Depends(get_current_user),
+):
+    """Return recent redacted operation audit rows for the admin's tenant."""
+    _verify_admin(user)
+    logs = list_operation_audit_logs(
+        user.tenant_id,
+        limit=limit,
+        action=action,
+        resource_type=resource_type,
+        resource_id=resource_id,
+    )
+    return {"logs": logs}
 
 
 # --- User Management endpoints ---

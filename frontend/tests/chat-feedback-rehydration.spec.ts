@@ -227,3 +227,105 @@ test('uses stream created_at metadata for new chat bubbles', async ({ page }) =>
   await expectBubbleTime(page, 'Live question', userCreatedAt)
   await expectBubbleTime(page, 'Streamed answer', assistantCreatedAt)
 })
+
+test('shows source details, prefills follow-up, and submits feedback comments', async ({ page }) => {
+  const supabaseUrl = readEnvValue('VITE_SUPABASE_URL') ?? readEnvValue('SUPABASE_URL')
+  test.skip(!supabaseUrl, 'Set VITE_SUPABASE_URL or SUPABASE_URL so Supabase auth storage can be seeded.')
+
+  let feedbackPayload: Record<string, unknown> | null = null
+
+  await seedSupabaseSession(page, supabaseStorageKey(supabaseUrl!))
+
+  await page.route('**/api/auth/me', (route) =>
+    json(route, { email: 'client@example.com', role: 'client', status: 'approved', tenant_id: 'tenant-1' }),
+  )
+  await page.route('**/api/documents', (route) =>
+    json(route, {
+      documents: [{
+        id: 'doc-policy',
+        filename: 'policy.pdf',
+        status: 'processed',
+        metadata: { title: 'Policy Handbook' },
+      }],
+    }),
+  )
+  await page.route('**/api/chat/threads', (route) => json(route, { threads: [] }))
+  await page.route('**/api/chat/feedback', async (route) => {
+    feedbackPayload = await route.request().postDataJSON()
+    await json(route, { status: 'ok', id: 'feedback-1' })
+  })
+  await page.route('**/api/chat/stream', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: [
+        `data: ${JSON.stringify({
+          type: 'user_message',
+          thread_id: 'thread-source',
+          message_id: 'server-user-message',
+          created_at: '2026-01-01T00:05:00.000Z',
+        })}`,
+        '',
+        `data: ${JSON.stringify({
+          type: 'sources',
+          thread_id: 'thread-source',
+          sources: [{
+            document_id: 'doc-policy',
+            filename: 'policy.pdf',
+            chunk_id: 'chunk-policy-1',
+            score: 0.87,
+            snippet: 'Refund claims must include an invoice and be submitted within 30 days.',
+            retrieval_mode: 'hybrid',
+            score_family: 'cohere_rerank',
+            heading: 'Refunds',
+            structural_type: 'section',
+            page_start: 2,
+            page_end: 2,
+            breadcrumb_path: ['Policy Handbook', 'Refunds'],
+          }],
+        })}`,
+        '',
+        `data: ${JSON.stringify({
+          type: 'token',
+          thread_id: 'thread-source',
+          content: 'Source-backed answer',
+          done: false,
+        })}`,
+        '',
+        `data: ${JSON.stringify({
+          type: 'done',
+          thread_id: 'thread-source',
+          message_id: 'server-assistant-message',
+          created_at: '2026-01-01T00:06:00.000Z',
+          done: true,
+        })}`,
+        '',
+      ].join('\n'),
+    })
+  })
+
+  await page.goto('/chat')
+  await page.getByPlaceholder('Ask about your documents...').fill('What is the refund rule?')
+  await page.keyboard.press('Enter')
+
+  await expect(page.getByText('Source-backed answer', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: /policy\.pdf/i }).click()
+  await expect(page.getByText('Policy Handbook / Refunds')).toBeVisible()
+  await expect(page.getByText('Page 2')).toBeVisible()
+  await expect(page.getByText(/cohere_rerank/)).toBeVisible()
+
+  await page.getByRole('button', { name: 'Ask follow-up' }).click()
+  await expect(page.getByPlaceholder('Ask about your documents...')).toHaveValue(/Ask a follow-up using policy\.pdf/)
+
+  await page.getByLabel('Poor response').click()
+  await page.getByRole('button', { name: 'Missing source' }).click()
+  await page.getByPlaceholder('Add details for the admin').fill('Need exact page.')
+  await page.getByRole('button', { name: 'Submit', exact: true }).click()
+
+  await expect.poll(() => feedbackPayload).toMatchObject({
+    thread_id: 'thread-source',
+    message_id: 'server-assistant-message',
+    rating: -1,
+    comment: 'Missing source; Need exact page.',
+  })
+})

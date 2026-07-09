@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import type { ChatMessage as ChatMessageType, ChatReplyTarget } from '@/hooks/useChat'
+import type { RetrievalSource } from '@/lib/api'
 import { ThoughtTrace } from '@/components/ThoughtTrace'
-import { BookOpen, Shield, ThumbsUp, ThumbsDown, Reply } from 'lucide-react'
+import { BookOpen, Shield, ThumbsUp, ThumbsDown, Reply, X } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -9,9 +10,12 @@ interface ChatMessageProps {
   message: ChatMessageType
   messageId?: string
   feedback?: 1 | -1 | null
-  onFeedback?: (messageId: string, rating: 1 | -1) => void
+  onFeedback?: (messageId: string, rating: 1 | -1, comment?: string) => void
   onReply?: (target: ChatReplyTarget) => void
+  onSourceFollowUp?: (prompt: string) => void
 }
+
+const FEEDBACK_REASONS = ['Missing source', 'Wrong fact', 'Outdated', 'Hard to follow']
 
 function replyAuthor(role: ChatMessageType['replyToRole']) {
   if (role === 'user') return 'You'
@@ -29,22 +33,44 @@ function formatMessageTime(createdAt?: string) {
   })
 }
 
-export function ChatMessage({ message, messageId, feedback, onFeedback, onReply }: ChatMessageProps) {
+export function ChatMessage({ message, messageId, feedback, onFeedback, onReply, onSourceFollowUp }: ChatMessageProps) {
   const isUser = message.role === 'user'
   const normalizedFeedback = feedback ?? null
-  const [localFeedback, setLocalFeedback] = useState<1 | -1 | null>(normalizedFeedback)
+  const [optimisticFeedback, setOptimisticFeedback] = useState<{ messageId?: string; value: 1 | -1 | null }>({ value: null })
+  const [selectedSource, setSelectedSource] = useState<RetrievalSource | null>(null)
+  const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
+  const [feedbackReasons, setFeedbackReasons] = useState<string[]>([])
+  const [feedbackComment, setFeedbackComment] = useState('')
   const canReply = Boolean(message.content && messageId && onReply)
-
-  useEffect(() => {
-    setLocalFeedback(normalizedFeedback)
-  }, [messageId, normalizedFeedback])
+  const displayedFeedback = optimisticFeedback.messageId === messageId ? optimisticFeedback.value : normalizedFeedback
 
   const handleFeedback = (rating: 1 | -1) => {
-    const newRating = localFeedback === rating ? null : rating
-    setLocalFeedback(newRating)
+    if (rating === -1 && displayedFeedback !== -1) {
+      setFeedbackDialogOpen(true)
+      return
+    }
+    const newRating = displayedFeedback === rating ? null : rating
+    setOptimisticFeedback({ messageId, value: newRating })
     if (newRating && messageId && onFeedback) {
       onFeedback(messageId, newRating)
     }
+  }
+
+  const toggleFeedbackReason = (reason: string) => {
+    setFeedbackReasons((prev) => prev.includes(reason)
+      ? prev.filter((item) => item !== reason)
+      : [...prev, reason])
+  }
+
+  const submitNegativeFeedback = () => {
+    if (!messageId || !onFeedback) return
+    const detail = [
+      ...feedbackReasons,
+      feedbackComment.trim(),
+    ].filter(Boolean).join('; ')
+    setOptimisticFeedback({ messageId, value: -1 })
+    onFeedback(messageId, -1, detail || undefined)
+    setFeedbackDialogOpen(false)
   }
 
   const timestamp = formatMessageTime(message.created_at)
@@ -140,7 +166,11 @@ export function ChatMessage({ message, messageId, feedback, onFeedback, onReply 
             </div>
             <div className="space-y-1.5">
               {message.sources.slice(0, 5).map((source, index) => (
-                <div key={`${source.chunk_id}-${index}`} className="rounded bg-[#F5F6F6] px-2.5 py-1.5">
+                <button
+                  key={`${source.chunk_id}-${index}`}
+                  onClick={() => setSelectedSource(source)}
+                  className="block w-full rounded bg-[#F5F6F6] px-2.5 py-1.5 text-left transition hover:bg-[#EEF1F1]"
+                >
                   <div className="flex items-center justify-between gap-2 text-[11px]">
                     <span className="truncate font-medium text-[#111B21]">
                       {source.filename || `Document ${(source.document_id ?? '').slice(0, 8) || 'Unknown'}`}
@@ -152,7 +182,7 @@ export function ChatMessage({ message, messageId, feedback, onFeedback, onReply 
                   <p className="mt-0.5 line-clamp-2 text-[12px] text-[#667781]">
                     {source.snippet}
                   </p>
-                </div>
+                </button>
               ))}
             </div>
           </div>
@@ -164,7 +194,7 @@ export function ChatMessage({ message, messageId, feedback, onFeedback, onReply 
             <button
               onClick={() => handleFeedback(1)}
               className={`rounded p-1 transition-colors cursor-pointer ${
-                localFeedback === 1
+                displayedFeedback === 1
                   ? 'text-[#00A884] bg-[#00A884]/10'
                   : 'text-[#8696A0] hover:text-[#00A884] hover:bg-[#00A884]/5'
               }`}
@@ -176,7 +206,7 @@ export function ChatMessage({ message, messageId, feedback, onFeedback, onReply 
             <button
               onClick={() => handleFeedback(-1)}
               className={`rounded p-1 transition-colors cursor-pointer ${
-                localFeedback === -1
+                displayedFeedback === -1
                   ? 'text-[#EF4444] bg-[#EF4444]/10'
                   : 'text-[#8696A0] hover:text-[#EF4444] hover:bg-[#EF4444]/5'
               }`}
@@ -200,6 +230,162 @@ export function ChatMessage({ message, messageId, feedback, onFeedback, onReply 
           </button>
         )}
       </div>
+
+      {selectedSource && (
+        <SourceInspectorModal
+          source={selectedSource}
+          onClose={() => setSelectedSource(null)}
+          onFollowUp={onSourceFollowUp}
+        />
+      )}
+
+      {feedbackDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => setFeedbackDialogOpen(false)}>
+          <div className="w-full max-w-sm rounded-lg bg-white p-4 shadow-xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-semibold text-[#111B21]">What went wrong?</h3>
+              <button
+                onClick={() => setFeedbackDialogOpen(false)}
+                className="rounded p-1 text-[#667781] hover:bg-[#F0F2F5]"
+                aria-label="Close feedback"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {FEEDBACK_REASONS.map((reason) => (
+                <button
+                  key={reason}
+                  onClick={() => toggleFeedbackReason(reason)}
+                  className={`rounded-full border px-2.5 py-1 text-xs font-medium transition ${
+                    feedbackReasons.includes(reason)
+                      ? 'border-[#EF4444] bg-[#EF4444]/10 text-[#EF4444]'
+                      : 'border-[#E9EDEF] text-[#54656F] hover:bg-[#F5F6F6]'
+                  }`}
+                >
+                  {reason}
+                </button>
+              ))}
+            </div>
+            <textarea
+              value={feedbackComment}
+              onChange={(event) => setFeedbackComment(event.target.value)}
+              rows={3}
+              placeholder="Add details for the admin"
+              className="mt-3 w-full resize-none rounded-md border border-[#E9EDEF] px-3 py-2 text-sm text-[#111B21] placeholder:text-[#8696A0] focus:outline-none focus:ring-2 focus:ring-[#00A884]/30"
+            />
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                onClick={() => setFeedbackDialogOpen(false)}
+                className="rounded-md px-3 py-1.5 text-xs font-semibold text-[#54656F] hover:bg-[#F0F2F5]"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={submitNegativeFeedback}
+                className="rounded-md bg-[#EF4444] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#DC2626]"
+              >
+                Submit
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SourceInspectorModal({
+  source,
+  onClose,
+  onFollowUp,
+}: {
+  source: RetrievalSource
+  onClose: () => void
+  onFollowUp?: (prompt: string) => void
+}) {
+  const breadcrumb = Array.isArray(source.breadcrumb_path)
+    ? source.breadcrumb_path.join(' / ')
+    : source.breadcrumb_path
+  const pageLabel = source.page_start && source.page_end && source.page_start !== source.page_end
+    ? `Pages ${source.page_start}-${source.page_end}`
+    : source.page_start
+      ? `Page ${source.page_start}`
+      : null
+  const sourceName = source.filename || `Document ${(source.document_id ?? '').slice(0, 8) || 'Unknown'}`
+
+  const makeFollowUp = (kind: 'focus' | 'support') => {
+    const section = source.heading ? ` section "${source.heading}"` : ''
+    return kind === 'focus'
+      ? `Ask a follow-up using ${sourceName}${section}: `
+      : `Explain how this source supports the previous answer: ${sourceName}${section}`
+  }
+
+  const handleFollowUp = (kind: 'focus' | 'support') => {
+    onFollowUp?.(makeFollowUp(kind))
+    onClose()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4" onClick={onClose}>
+      <div className="w-full max-w-2xl rounded-lg bg-white shadow-xl" onClick={(event) => event.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3 border-b border-[#E9EDEF] px-5 py-4">
+          <div className="min-w-0">
+            <h3 className="truncate text-sm font-semibold text-[#111B21]">{sourceName}</h3>
+            <p className="mt-1 text-xs text-[#667781]">
+              {source.retrieval_mode} · {source.score_family || 'score'} · {(source.score ?? 0).toFixed(3)}
+            </p>
+          </div>
+          <button onClick={onClose} className="rounded p-1 text-[#667781] hover:bg-[#F0F2F5]" aria-label="Close source details">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="max-h-[70vh] overflow-y-auto px-5 py-4">
+          <div className="grid gap-2 sm:grid-cols-2">
+            <SourceMeta label="Chunk" value={source.chunk_id} />
+            <SourceMeta label="Document" value={source.document_id} />
+            <SourceMeta label="Heading" value={source.heading || undefined} />
+            <SourceMeta label="Location" value={pageLabel || undefined} />
+            <SourceMeta label="Type" value={source.structural_type || undefined} />
+            <SourceMeta label="Table" value={source.table_id || undefined} />
+          </div>
+          {breadcrumb && (
+            <div className="mt-3 rounded-md border border-[#E9EDEF] bg-[#F5F6F6] px-3 py-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-[#667781]">Breadcrumb</p>
+              <p className="mt-1 text-xs text-[#111B21]">{breadcrumb}</p>
+            </div>
+          )}
+          <div className="mt-3 rounded-md border border-[#E9EDEF] bg-[#F5F6F6] px-3 py-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-[#667781]">Snippet</p>
+            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-[#111B21]">{source.snippet || 'No snippet captured'}</p>
+          </div>
+        </div>
+        {onFollowUp && (
+          <div className="flex flex-wrap justify-end gap-2 border-t border-[#E9EDEF] px-5 py-3">
+            <button
+              onClick={() => handleFollowUp('support')}
+              className="rounded-md border border-[#D8E8E4] px-3 py-1.5 text-xs font-semibold text-[#008069] hover:bg-[#F0F2F5]"
+            >
+              Explain evidence
+            </button>
+            <button
+              onClick={() => handleFollowUp('focus')}
+              className="rounded-md bg-[#00A884] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#008F72]"
+            >
+              Ask follow-up
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SourceMeta({ label, value }: { label: string; value?: string | number | null }) {
+  return (
+    <div className="rounded-md border border-[#E9EDEF] bg-[#F5F6F6] px-3 py-2">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-[#667781]">{label}</p>
+      <p className="mt-1 truncate text-xs text-[#111B21]">{value || 'n/a'}</p>
     </div>
   )
 }

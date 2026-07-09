@@ -1,5 +1,8 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+from fastapi import HTTPException
 
 from app.models.rag_quality import RagQualityRetrievalLog
 from app.routers import admin
@@ -326,6 +329,81 @@ class RagQualityAdminEndpointTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, payload)
         mock.assert_called_once_with("tenant-1", window_hours=24, limit=10)
+
+    async def test_dismiss_flagged_message_requires_admin(self):
+        user = SimpleNamespace(role="client", tenant_id="tenant-1", status="approved")
+
+        with self.assertRaises(HTTPException) as ctx:
+            await admin.dismiss_flagged_message("message-1", request=SimpleNamespace(), user=user)
+
+        self.assertEqual(ctx.exception.status_code, 403)
+
+    async def test_dismiss_flagged_message_returns_404_when_not_tenant_flagged(self):
+        user = SimpleNamespace(
+            id="admin-1",
+            email="admin@example.com",
+            role="admin",
+            tenant_id="tenant-1",
+            status="approved",
+        )
+
+        with (
+            patch.object(admin, "clear_attention_flag", return_value=None) as clear,
+            patch.object(admin, "log_operation") as log,
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                await admin.dismiss_flagged_message("message-1", request=SimpleNamespace(), user=user)
+
+        self.assertEqual(ctx.exception.status_code, 404)
+        clear.assert_called_once_with("tenant-1", "message-1")
+        log.assert_not_called()
+
+    async def test_dismiss_flagged_message_logs_operation(self):
+        user = SimpleNamespace(
+            id="admin-1",
+            email="admin@example.com",
+            role="admin",
+            tenant_id="tenant-1",
+            status="approved",
+        )
+        dismissed = {"id": "message-1", "tenant_id": "tenant-1", "attention_status": "dismissed"}
+        request = SimpleNamespace(client=None, headers={})
+
+        with (
+            patch.object(admin, "clear_attention_flag", return_value=dismissed) as clear,
+            patch.object(admin, "log_operation") as log,
+        ):
+            result = await admin.dismiss_flagged_message("message-1", request=request, user=user)
+
+        self.assertEqual(result, {"status": "dismissed", "message_id": "message-1"})
+        clear.assert_called_once_with("tenant-1", "message-1")
+        log.assert_called_once()
+        self.assertEqual(log.call_args.kwargs["tenant_id"], "tenant-1")
+        self.assertEqual(log.call_args.kwargs["action"], "flagged_message.dismiss")
+        self.assertEqual(log.call_args.kwargs["resource_id"], "message-1")
+        self.assertEqual(log.call_args.kwargs["after"], dismissed)
+
+    async def test_audit_logs_endpoint_applies_filters(self):
+        user = SimpleNamespace(role="admin", tenant_id="tenant-1", status="approved")
+        rows = [{"id": "audit-1", "action": "flagged_message.dismiss"}]
+
+        with patch.object(admin, "list_operation_audit_logs", return_value=rows) as list_logs:
+            result = await admin.list_audit_logs(
+                limit=25,
+                action="flagged_message.dismiss",
+                resource_type="message",
+                resource_id="message-1",
+                user=user,
+            )
+
+        self.assertEqual(result, {"logs": rows})
+        list_logs.assert_called_once_with(
+            "tenant-1",
+            limit=25,
+            action="flagged_message.dismiss",
+            resource_type="message",
+            resource_id="message-1",
+        )
 
 
 class DocRagFallbackPolicyTests(unittest.IsolatedAsyncioTestCase):
