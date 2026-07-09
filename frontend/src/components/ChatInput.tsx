@@ -12,14 +12,16 @@ export function ChatInput({
   hasDocuments,
   replyTo,
   onCancelReply,
+  initialValue = '',
 }: {
   onSend: (msg: string, useDocuments: boolean, retrievalMode: string, images?: string[]) => void
   disabled: boolean
   hasDocuments: boolean
   replyTo?: ChatReplyTarget | null
   onCancelReply?: () => void
+  initialValue?: string
 }) {
-  const [value, setValue] = useState('')
+  const [value, setValue] = useState(initialValue)
   const [useDocuments, setUseDocuments] = useState(true)
   const [images, setImages] = useState<string[]>([])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -146,6 +148,7 @@ export function ChatInput({
           <textarea
             ref={textareaRef}
             value={value}
+            autoFocus={Boolean(initialValue)}
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}

@@ -22,10 +22,13 @@ import {
   updateRagEvalCase,
   getRagQualityThumbsDown,
   getRagQualitySignals,
+  dismissFlaggedMessage,
+  getAdminAuditLogs,
   type AdminClient,
   type AdminMessage,
   type FlaggedMessage,
   type AdminUser,
+  type AdminAuditLog,
   type SystemSettings,
   type RagEvalCase,
   type RagEvalRunSummary,
@@ -58,11 +61,31 @@ import {
   Plus,
   CheckCircle,
   XCircle,
+  Eye,
 } from 'lucide-react'
+
+type QualityInboxItem = {
+  key: string
+  type: 'flagged' | 'feedback' | 'signal'
+  severity: 'critical' | 'watch' | 'attention'
+  reviewed: boolean
+  title: string
+  client: string
+  createdAt: string
+  summary: string
+  threadId?: string | null
+  threadTitle?: string | null
+  messageId?: string | null
+  feedback?: RagQualityFeedbackItem
+  signal?: RagQualitySignal
+  signalExample?: RagQualitySignalExample
+  flagged?: FlaggedMessage
+}
 
 export function AdminPage() {
   const { user, session, signOut } = useAuth()
   const navigate = useNavigate()
+  const accessToken = session?.access_token
   const {
     documents,
     uploadDocument,
@@ -112,12 +135,19 @@ export function AdminPage() {
   const [evalCases, setEvalCases] = useState<RagEvalCase[]>([])
   const [evalRuns, setEvalRuns] = useState<RagEvalRunSummary[]>([])
   const [selectedEvalRun, setSelectedEvalRun] = useState<RagEvalRunDetail | null>(null)
-  const [evalWorkspaceView, setEvalWorkspaceView] = useState<'runs' | 'signals' | 'feedback'>('runs')
+  const [evalWorkspaceView, setEvalWorkspaceView] = useState<'inbox' | 'runs' | 'signals' | 'feedback'>('inbox')
   const [qualityFeedback, setQualityFeedback] = useState<RagQualityFeedbackItem[]>([])
   const [ragSignals, setRagSignals] = useState<RagQualitySignalsResponse | null>(null)
+  const [auditLogs, setAuditLogs] = useState<AdminAuditLog[]>([])
   const [selectedQualityFeedbackId, setSelectedQualityFeedbackId] = useState<string | null>(null)
+  const [qualityInboxType, setQualityInboxType] = useState<'all' | 'flagged' | 'feedback' | 'signal'>('all')
+  const [qualityInboxSeverity, setQualityInboxSeverity] = useState<'all' | 'critical' | 'watch' | 'attention'>('all')
+  const [qualityInboxReviewState, setQualityInboxReviewState] = useState<'all' | 'unreviewed' | 'reviewed'>('all')
+  const [qualityInboxClientFilter, setQualityInboxClientFilter] = useState('')
   const [qualityLoading, setQualityLoading] = useState(false)
   const [signalsLoading, setSignalsLoading] = useState(false)
+  const [auditLoading, setAuditLoading] = useState(false)
+  const [dismissingFlagId, setDismissingFlagId] = useState<string | null>(null)
   const [expandedQualityChunks, setExpandedQualityChunks] = useState<Record<string, boolean>>({})
   const [evalLoading, setEvalLoading] = useState(false)
   const [evalRunning, setEvalRunning] = useState(false)
@@ -277,13 +307,29 @@ export function AdminPage() {
     }
   }, [session?.access_token])
 
+  const fetchAuditLogs = useCallback(async () => {
+    if (!accessToken) return
+    setAuditLoading(true)
+    try {
+      const data = await getAdminAuditLogs(accessToken, { limit: 30 })
+      setAuditLogs(data.logs)
+    } catch (err) {
+      console.error('Failed to fetch audit logs:', err)
+      setEvalMessage('Failed to load audit activity')
+    } finally {
+      setAuditLoading(false)
+    }
+  }, [accessToken])
+
   useEffect(() => {
     if (activeTab === 'evals') {
       fetchEvals()
       fetchRagSignals()
       fetchQualityFeedback()
+      fetchFlagged()
+      fetchAuditLogs()
     }
-  }, [activeTab, fetchEvals, fetchQualityFeedback, fetchRagSignals])
+  }, [activeTab, fetchAuditLogs, fetchEvals, fetchFlagged, fetchQualityFeedback, fetchRagSignals])
 
   const handleSettingChange = (key: keyof SystemSettings, value: string) => {
     setSettings((prev) => ({ ...prev, [key]: value }))
@@ -473,6 +519,90 @@ export function AdminPage() {
     return qualityDraftBySource.get(`thumbs_down_feedback:${selectedQualityFeedback.feedback_id}`) ?? null
   }, [qualityDraftBySource, selectedQualityFeedback])
 
+  const qualityInboxItems = useMemo(() => {
+    const items: QualityInboxItem[] = []
+
+    for (const flagged of flaggedMessages) {
+      items.push({
+        key: `flagged:${flagged.message_id}`,
+        type: 'flagged',
+        severity: flagged.has_admin_response ? 'watch' : 'attention',
+        reviewed: flagged.has_admin_response,
+        title: flagged.thread_title,
+        client: flagged.client_email,
+        createdAt: flagged.created_at,
+        summary: flagged.content,
+        threadId: flagged.thread_id,
+        threadTitle: flagged.thread_title,
+        messageId: flagged.message_id,
+        flagged,
+      })
+    }
+
+    for (const feedback of qualityFeedback) {
+      const draft = qualityDraftBySource.get(`thumbs_down_feedback:${feedback.feedback_id}`)
+      items.push({
+        key: `feedback:${feedback.feedback_id}`,
+        type: 'feedback',
+        severity: feedback.summary.groundedness_flag || feedback.summary.zero_source ? 'critical' : 'watch',
+        reviewed: Boolean(draft),
+        title: feedback.question || feedback.thread_title,
+        client: feedback.client_email,
+        createdAt: feedback.feedback_created_at,
+        summary: feedback.feedback_comment || feedback.answer,
+        threadId: feedback.thread_id,
+        threadTitle: feedback.thread_title,
+        messageId: feedback.resolved_message_id || feedback.message_id || null,
+        feedback,
+      })
+    }
+
+    for (const signal of ragSignals?.signals || []) {
+      if (signal.status === 'ok') continue
+      for (const example of signal.examples.slice(0, 3)) {
+        const threadId = signalExampleThreadId(example)
+        items.push({
+          key: `signal:${signal.id}:${example.id || example.query || example.reason}`,
+          type: 'signal',
+          severity: signal.status === 'critical' ? 'critical' : 'watch',
+          reviewed: false,
+          title: signal.label,
+          client: String(example.details?.channel || 'unknown channel'),
+          createdAt: example.created_at || new Date().toISOString(),
+          summary: example.query || signal.description,
+          threadId,
+          threadTitle: signalExampleTitle(example),
+          signal,
+          signalExample: example,
+        })
+      }
+    }
+
+    const normalizedClientFilter = qualityInboxClientFilter.trim().toLowerCase()
+    return items
+      .filter((item) => qualityInboxType === 'all' || item.type === qualityInboxType)
+      .filter((item) => qualityInboxSeverity === 'all' || item.severity === qualityInboxSeverity)
+      .filter((item) => (
+        qualityInboxReviewState === 'all'
+        || (qualityInboxReviewState === 'reviewed' ? item.reviewed : !item.reviewed)
+      ))
+      .filter((item) => (
+        !normalizedClientFilter
+        || item.client.toLowerCase().includes(normalizedClientFilter)
+        || item.title.toLowerCase().includes(normalizedClientFilter)
+      ))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+  }, [
+    flaggedMessages,
+    qualityDraftBySource,
+    qualityFeedback,
+    qualityInboxClientFilter,
+    qualityInboxReviewState,
+    qualityInboxSeverity,
+    qualityInboxType,
+    ragSignals,
+  ])
+
   const handleSeedEvalCase = (item: RagQualityFeedbackItem) => {
     setEditingEvalCaseId(null)
     setEvalWorkspaceView('runs')
@@ -539,6 +669,25 @@ export function AdminPage() {
       console.error('Failed to submit admin response:', err)
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  const handleDismissFlaggedMessage = async (messageId: string) => {
+    if (!session?.access_token || dismissingFlagId) return
+    setDismissingFlagId(messageId)
+    setEvalMessage(null)
+    try {
+      await dismissFlaggedMessage(messageId, session.access_token)
+      setFlaggedMessages((prev) => prev.filter((message) => message.message_id !== messageId))
+      dismissFlag()
+      await refreshCount()
+      await fetchAuditLogs()
+      setEvalMessage('Flag dismissed')
+    } catch (err) {
+      console.error('Failed to dismiss flagged message:', err)
+      setEvalMessage(err instanceof Error ? err.message : 'Failed to dismiss flagged message')
+    } finally {
+      setDismissingFlagId(null)
     }
   }
 
@@ -1118,11 +1267,13 @@ export function AdminPage() {
                   fetchEvals()
                   fetchRagSignals()
                   fetchQualityFeedback()
+                  fetchFlagged()
+                  fetchAuditLogs()
                 }}
-                disabled={evalLoading || evalRunning || qualityLoading || signalsLoading}
+                disabled={evalLoading || evalRunning || qualityLoading || signalsLoading || auditLoading}
                 className="flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors disabled:opacity-50"
               >
-                <RefreshCw className={`h-3.5 w-3.5 ${evalLoading || qualityLoading || signalsLoading ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`h-3.5 w-3.5 ${evalLoading || qualityLoading || signalsLoading || auditLoading ? 'animate-spin' : ''}`} />
                 Refresh
               </button>
               <button
@@ -1143,6 +1294,19 @@ export function AdminPage() {
               )}
 
               <div className="inline-flex rounded-lg border border-border bg-card p-1">
+                <button
+                  onClick={() => setEvalWorkspaceView('inbox')}
+                  className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                    evalWorkspaceView === 'inbox'
+                      ? 'bg-primary text-primary-foreground'
+                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                  }`}
+                >
+                  Quality Inbox
+                  {qualityInboxItems.length > 0 && (
+                    <span className="ml-1 text-[10px] opacity-80">({qualityInboxItems.length})</span>
+                  )}
+                </button>
                 <button
                   onClick={() => setEvalWorkspaceView('runs')}
                   className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
@@ -1183,7 +1347,37 @@ export function AdminPage() {
                 </button>
               </div>
 
-              {evalWorkspaceView === 'runs' ? (
+              {evalWorkspaceView === 'inbox' ? (
+                <QualityInboxPanel
+                  items={qualityInboxItems}
+                  auditLogs={auditLogs}
+                  auditLoading={auditLoading}
+                  typeFilter={qualityInboxType}
+                  severityFilter={qualityInboxSeverity}
+                  reviewState={qualityInboxReviewState}
+                  clientFilter={qualityInboxClientFilter}
+                  dismissingFlagId={dismissingFlagId}
+                  onTypeFilterChange={setQualityInboxType}
+                  onSeverityFilterChange={setQualityInboxSeverity}
+                  onReviewStateChange={setQualityInboxReviewState}
+                  onClientFilterChange={setQualityInboxClientFilter}
+                  onOpenConversation={handleOpenSignalConversation}
+                  onOpenFeedback={(item) => {
+                    setSelectedQualityFeedbackId(item.feedback_id)
+                    setEvalWorkspaceView('feedback')
+                  }}
+                  onSeedFeedback={(item) => {
+                    const draft = qualityDraftBySource.get(`thumbs_down_feedback:${item.feedback_id}`)
+                    if (draft) {
+                      handleEditEvalCase(draft)
+                      setEvalWorkspaceView('runs')
+                    } else {
+                      handleSeedEvalCase(item)
+                    }
+                  }}
+                  onDismissFlag={handleDismissFlaggedMessage}
+                />
+              ) : evalWorkspaceView === 'runs' ? (
                 <>
               <section className="rounded-lg border border-border bg-card p-4">
                 <div className="flex items-center justify-between">
@@ -1724,6 +1918,222 @@ function SettingInput({
       />
     </label>
   )
+}
+
+function QualityInboxPanel({
+  items,
+  auditLogs,
+  auditLoading,
+  typeFilter,
+  severityFilter,
+  reviewState,
+  clientFilter,
+  dismissingFlagId,
+  onTypeFilterChange,
+  onSeverityFilterChange,
+  onReviewStateChange,
+  onClientFilterChange,
+  onOpenConversation,
+  onOpenFeedback,
+  onSeedFeedback,
+  onDismissFlag,
+}: {
+  items: QualityInboxItem[]
+  auditLogs: AdminAuditLog[]
+  auditLoading: boolean
+  typeFilter: 'all' | 'flagged' | 'feedback' | 'signal'
+  severityFilter: 'all' | 'critical' | 'watch' | 'attention'
+  reviewState: 'all' | 'unreviewed' | 'reviewed'
+  clientFilter: string
+  dismissingFlagId: string | null
+  onTypeFilterChange: (value: 'all' | 'flagged' | 'feedback' | 'signal') => void
+  onSeverityFilterChange: (value: 'all' | 'critical' | 'watch' | 'attention') => void
+  onReviewStateChange: (value: 'all' | 'unreviewed' | 'reviewed') => void
+  onClientFilterChange: (value: string) => void
+  onOpenConversation: (threadId: string, title: string) => void
+  onOpenFeedback: (item: RagQualityFeedbackItem) => void
+  onSeedFeedback: (item: RagQualityFeedbackItem) => void
+  onDismissFlag: (messageId: string) => void
+}) {
+  return (
+    <section className="grid gap-5 lg:grid-cols-[1fr_360px]">
+      <div className="rounded-lg border border-border bg-card p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-foreground">Quality Inbox</h2>
+            <p className="mt-1 text-[10px] text-muted-foreground">Flagged answers, thumbs-down feedback, and active RAG signals</p>
+          </div>
+          <span className="rounded-full bg-muted px-2.5 py-1 text-[10px] text-muted-foreground">
+            {items.length} visible
+          </span>
+        </div>
+
+        <div className="mt-4 grid gap-2 md:grid-cols-4">
+          <select
+            aria-label="Quality inbox type"
+            value={typeFilter}
+            onChange={(event) => onTypeFilterChange(event.target.value as typeof typeFilter)}
+            className="rounded-md border border-border bg-input px-3 py-2 text-xs text-foreground"
+          >
+            <option value="all">All types</option>
+            <option value="flagged">Flagged</option>
+            <option value="feedback">Feedback</option>
+            <option value="signal">Signals</option>
+          </select>
+          <select
+            aria-label="Quality inbox severity"
+            value={severityFilter}
+            onChange={(event) => onSeverityFilterChange(event.target.value as typeof severityFilter)}
+            className="rounded-md border border-border bg-input px-3 py-2 text-xs text-foreground"
+          >
+            <option value="all">All severity</option>
+            <option value="critical">Critical</option>
+            <option value="attention">Needs attention</option>
+            <option value="watch">Watch</option>
+          </select>
+          <select
+            aria-label="Quality inbox review state"
+            value={reviewState}
+            onChange={(event) => onReviewStateChange(event.target.value as typeof reviewState)}
+            className="rounded-md border border-border bg-input px-3 py-2 text-xs text-foreground"
+          >
+            <option value="all">All states</option>
+            <option value="unreviewed">Unreviewed</option>
+            <option value="reviewed">Reviewed</option>
+          </select>
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input
+              value={clientFilter}
+              onChange={(event) => onClientFilterChange(event.target.value)}
+              placeholder="Client or title"
+              className="w-full rounded-md border border-border bg-input py-2 pl-8 pr-3 text-xs text-foreground placeholder:text-muted-foreground"
+            />
+          </div>
+        </div>
+
+        <div className="mt-4 space-y-2">
+          {items.length === 0 ? (
+            <div className="rounded-md border border-border bg-background p-8 text-center text-xs text-muted-foreground">
+              No quality items match these filters
+            </div>
+          ) : (
+            items.map((item) => (
+              <div key={item.key} className="rounded-md border border-border bg-background p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <QualityInboxPill type={item.type} />
+                      <QualityInboxSeverityPill severity={item.severity} />
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                        item.reviewed ? 'bg-green-500/10 text-green-500' : 'bg-muted text-muted-foreground'
+                      }`}>
+                        {item.reviewed ? 'Reviewed' : 'Unreviewed'}
+                      </span>
+                    </div>
+                    <h3 className="mt-2 line-clamp-2 text-xs font-semibold text-foreground">{item.title}</h3>
+                    <p className="mt-1 text-[10px] text-muted-foreground">
+                      {item.client} · {new Date(item.createdAt).toLocaleString()}
+                    </p>
+                  </div>
+                  <div className="flex flex-shrink-0 items-center gap-1">
+                    {item.threadId && (
+                      <button
+                        onClick={() => onOpenConversation(item.threadId!, item.threadTitle || item.title)}
+                        className="rounded-md border border-border bg-card px-2 py-1 text-[10px] font-semibold text-muted-foreground hover:bg-muted hover:text-foreground"
+                      >
+                        Open
+                      </button>
+                    )}
+                    {item.feedback && (
+                      <button
+                        onClick={() => onOpenFeedback(item.feedback!)}
+                        className="flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[10px] font-semibold text-muted-foreground hover:bg-muted hover:text-foreground"
+                      >
+                        <Eye className="h-3 w-3" />
+                        Evidence
+                      </button>
+                    )}
+                    {item.feedback && (
+                      <button
+                        onClick={() => onSeedFeedback(item.feedback!)}
+                        className="rounded-md bg-primary px-2 py-1 text-[10px] font-semibold text-primary-foreground hover:opacity-90"
+                      >
+                        {item.reviewed ? 'Draft' : 'Seed'}
+                      </button>
+                    )}
+                    {item.flagged && !item.flagged.has_admin_response && (
+                      <button
+                        onClick={() => onDismissFlag(item.flagged!.message_id)}
+                        disabled={dismissingFlagId === item.flagged.message_id}
+                        className="rounded-md border border-border bg-card px-2 py-1 text-[10px] font-semibold text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                      >
+                        {dismissingFlagId === item.flagged.message_id ? 'Dismissing' : 'Dismiss'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-xs text-muted-foreground">{item.summary}</p>
+                {item.signalExample && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {signalExampleDetailChips(item.signalExample).map((chip) => (
+                      <span key={chip} className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{chip}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-border bg-card p-4">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold text-foreground">Audit Activity</h2>
+          {auditLoading && <RefreshCw className="h-4 w-4 animate-spin text-muted-foreground" />}
+        </div>
+        <div className="mt-3 space-y-2">
+          {auditLogs.length === 0 ? (
+            <div className="rounded-md border border-border bg-background p-6 text-center text-xs text-muted-foreground">
+              No recent audit entries
+            </div>
+          ) : (
+            auditLogs.map((log) => (
+              <div key={log.id} className="rounded-md border border-border bg-background p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-semibold text-foreground">{log.action}</p>
+                    <p className="mt-1 text-[10px] text-muted-foreground">
+                      {log.actor_email || log.actor_role || 'system'} · {new Date(log.created_at).toLocaleString()}
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{log.resource_type}</span>
+                </div>
+                {log.resource_id && (
+                  <p className="mt-2 truncate text-[10px] text-muted-foreground">Resource {log.resource_id}</p>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function QualityInboxPill({ type }: { type: QualityInboxItem['type'] }) {
+  const label = type === 'flagged' ? 'Flagged' : type === 'feedback' ? 'Feedback' : 'Signal'
+  return <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">{label}</span>
+}
+
+function QualityInboxSeverityPill({ severity }: { severity: QualityInboxItem['severity'] }) {
+  const className = severity === 'critical'
+    ? 'bg-destructive/10 text-destructive'
+    : severity === 'attention'
+      ? 'bg-amber-500/10 text-amber-500'
+      : 'bg-muted text-muted-foreground'
+  const label = severity === 'critical' ? 'Critical' : severity === 'attention' ? 'Needs attention' : 'Watch'
+  return <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${className}`}>{label}</span>
 }
 
 function splitListInput(value: string): string[] {

@@ -42,6 +42,8 @@ export function ChatPage() {
   const [replyTo, setReplyTo] = useState<ChatReplyTarget | null>(null)
   const [showExportMenu, setShowExportMenu] = useState(false)
   const [showDocUpload, setShowDocUpload] = useState(false)
+  const [inputDraft, setInputDraft] = useState('')
+  const [inputDraftKey, setInputDraftKey] = useState(0)
   const messageViewportRef = useRef<HTMLDivElement>(null)
   const latestMessageRef = useRef<HTMLDivElement>(null)
   const shouldFollowScrollRef = useRef(true)
@@ -103,6 +105,8 @@ export function ChatPage() {
     setSelectedThreadId(null)
     setFeedbackMap({})
     setReplyTo(null)
+    setInputDraft('')
+    setInputDraftKey((key) => key + 1)
     shouldFollowScrollRef.current = true
     previousMessageCountRef.current = 0
   }
@@ -123,12 +127,12 @@ export function ChatPage() {
     }
   }
 
-  const handleFeedback = useCallback(async (messageId: string, rating: 1 | -1) => {
+  const handleFeedback = useCallback(async (messageId: string, rating: 1 | -1, comment?: string) => {
     const feedbackThreadId = selectedThreadId || threadId
     if (!accessToken || !feedbackThreadId) return
     setFeedbackMap((prev) => ({ ...prev, [messageId]: rating }))
     try {
-      await submitFeedback(feedbackThreadId, messageId, rating, accessToken)
+      await submitFeedback(feedbackThreadId, messageId, rating, accessToken, comment)
     } catch (err) {
       console.error('Failed to submit feedback:', err)
     }
@@ -141,6 +145,11 @@ export function ChatPage() {
 
   const handleReply = useCallback((target: ChatReplyTarget) => {
     setReplyTo(target)
+  }, [])
+
+  const handleSourceFollowUp = useCallback((prompt: string) => {
+    setInputDraft(prompt)
+    setInputDraftKey((key) => key + 1)
   }, [])
 
   const handleSendMessage = async (content: string, useDocuments: boolean = false, retrievalMode: string = 'hybrid', images?: string[]) => {
@@ -399,6 +408,7 @@ export function ChatPage() {
                     feedback={msg.id && msg.role === 'assistant' ? feedbackMap[msg.id] ?? null : null}
                     onFeedback={msg.id && msg.role === 'assistant' ? handleFeedback : undefined}
                     onReply={handleReply}
+                    onSourceFollowUp={handleSourceFollowUp}
                   />
                 ))}
 
@@ -423,11 +433,13 @@ export function ChatPage() {
 
         {/* Chat Input */}
         <ChatInput
+          key={inputDraftKey}
           onSend={handleSendMessage}
           disabled={isStreaming}
           hasDocuments={hasProcessed}
           replyTo={replyTo}
           onCancelReply={() => setReplyTo(null)}
+          initialValue={inputDraft}
         />
       </main>
     </div>

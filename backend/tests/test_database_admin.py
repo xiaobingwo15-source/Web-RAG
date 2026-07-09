@@ -90,6 +90,62 @@ class AdminDatabaseTests(unittest.TestCase):
         self.assertEqual(update_query.eq.call_args_list[0].args, ("tenant_id", "tenant-a"))
         self.assertEqual(update_query.eq.call_args_list[1].args, ("id", "case-a"))
 
+    def test_clear_attention_flag_scopes_to_tenant_and_flagged_messages(self):
+        service_db = Mock()
+        table = service_db.table.return_value
+        update_query = table.update.return_value
+        update_query.eq.return_value = update_query
+        update_query.or_.return_value = update_query
+        update_query.execute.return_value.data = [{
+            "id": "message-a",
+            "tenant_id": "tenant-a",
+            "attention_status": "dismissed",
+            "needs_attention": False,
+        }]
+
+        with patch.object(database, "get_db", return_value=service_db):
+            dismissed = database.clear_attention_flag("tenant-a", "message-a")
+
+        self.assertEqual(dismissed["attention_status"], "dismissed")
+        service_db.table.assert_called_once_with("messages")
+        table.update.assert_called_once_with({"needs_attention": False, "attention_status": "dismissed"})
+        self.assertEqual(update_query.eq.call_args_list[0].args, ("id", "message-a"))
+        self.assertEqual(update_query.eq.call_args_list[1].args, ("tenant_id", "tenant-a"))
+        update_query.or_.assert_called_once_with("attention_status.eq.needs_admin,needs_attention.eq.true")
+
+    def test_list_operation_audit_logs_applies_filters_and_bounds_limit(self):
+        service_db = Mock()
+        table = service_db.table.return_value
+        query = table.select.return_value
+        query.eq.return_value = query
+        query.order.return_value = query
+        query.limit.return_value = query
+        query.execute.return_value.data = [{"id": "audit-a"}]
+
+        with patch.object(database, "get_db", return_value=service_db):
+            rows = database.list_operation_audit_logs(
+                "tenant-a",
+                limit=999,
+                action="flagged_message.dismiss",
+                resource_type="message",
+                resource_id="message-a",
+            )
+
+        self.assertEqual(rows, [{"id": "audit-a"}])
+        service_db.table.assert_called_once_with("operation_audit_logs")
+        selected_columns = table.select.call_args.args[0]
+        self.assertIn("actor_email", selected_columns)
+        self.assertNotIn("before_snapshot", selected_columns)
+        self.assertNotIn("after_snapshot", selected_columns)
+        self.assertNotIn("ip_address", selected_columns)
+        self.assertNotIn("user_agent", selected_columns)
+        self.assertEqual(query.eq.call_args_list[0].args, ("tenant_id", "tenant-a"))
+        self.assertEqual(query.eq.call_args_list[1].args, ("action", "flagged_message.dismiss"))
+        self.assertEqual(query.eq.call_args_list[2].args, ("resource_type", "message"))
+        self.assertEqual(query.eq.call_args_list[3].args, ("resource_id", "message-a"))
+        query.order.assert_called_once_with("created_at", desc=True)
+        query.limit.assert_called_once_with(200)
+
     def test_resolve_feedback_answer_message_accepts_real_message_id(self):
         answer_id = "11111111-1111-4111-8111-111111111111"
         fake_db = FakeDb({

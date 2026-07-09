@@ -24,6 +24,15 @@ export interface RetrievalSource {
   score: number
   snippet: string
   retrieval_mode: string
+  score_family?: string | null
+  metadata?: Record<string, unknown> | null
+  heading?: string | null
+  heading_level?: number | null
+  structural_type?: string | null
+  page_start?: number | null
+  page_end?: number | null
+  table_id?: string | null
+  breadcrumb_path?: string | string[] | null
 }
 
 export async function streamChat(
@@ -1066,6 +1075,22 @@ export interface AdminRespondResponse {
   message_id: string
 }
 
+export interface AdminAuditLog {
+  id: string
+  tenant_id?: string | null
+  actor_user_id?: string | null
+  actor_email?: string | null
+  actor_role?: string | null
+  action: string
+  resource_type: string
+  resource_id?: string | null
+  created_at: string
+}
+
+export interface AdminAuditLogsResponse {
+  logs: AdminAuditLog[]
+}
+
 export async function getFlaggedMessages(token: string): Promise<FlaggedMessagesResponse> {
   const response = await fetch('/api/admin/flagged', {
     headers: { Authorization: `Bearer ${token}` },
@@ -1079,6 +1104,33 @@ export async function getFlaggedCount(token: string): Promise<FlaggedCountRespon
     headers: { Authorization: `Bearer ${token}` },
   })
   if (!response.ok) throw new Error(`Fetch flagged count failed: ${response.status}`)
+  return response.json()
+}
+
+export async function dismissFlaggedMessage(
+  messageId: string,
+  token: string,
+): Promise<{ status: string; message_id: string }> {
+  const response = await fetch(`/api/admin/flagged/${encodeURIComponent(messageId)}/dismiss`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Dismiss flagged message failed: ${response.status}`)
+  return response.json()
+}
+
+export async function getAdminAuditLogs(
+  token: string,
+  params: { limit?: number; action?: string; resource_type?: string; resource_id?: string } = {},
+): Promise<AdminAuditLogsResponse> {
+  const search = new URLSearchParams({ limit: String(params.limit || 50) })
+  if (params.action) search.set('action', params.action)
+  if (params.resource_type) search.set('resource_type', params.resource_type)
+  if (params.resource_id) search.set('resource_id', params.resource_id)
+  const response = await fetch(`/api/admin/audit-logs?${search.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Fetch admin audit logs failed: ${response.status}`)
   return response.json()
 }
 

@@ -1282,16 +1282,18 @@ def get_flagged_count(tenant_id: str) -> int:
     return result.count or 0
 
 
-def clear_attention_flag(message_id: str) -> dict:
-    """Clear the admin-attention status on a message."""
+def clear_attention_flag(tenant_id: str, message_id: str) -> dict | None:
+    """Clear the admin-attention status on a tenant-owned flagged message."""
     db = get_db()
     result = (
         db.table("messages")
         .update({"needs_attention": False, "attention_status": "dismissed"})
         .eq("id", message_id)
+        .eq("tenant_id", tenant_id)
+        .or_("attention_status.eq.needs_admin,needs_attention.eq.true")
         .execute()
     )
-    return result.data[0] if result.data else {}
+    return result.data[0] if result.data else None
 
 
 def clear_thread_attention_flags(tenant_id: str, thread_id: str) -> None:
@@ -1305,6 +1307,35 @@ def clear_thread_attention_flags(tenant_id: str, thread_id: str) -> None:
         .or_("attention_status.eq.needs_admin,needs_attention.eq.true")
         .execute()
     )
+
+
+def list_operation_audit_logs(
+    tenant_id: str,
+    limit: int = 50,
+    action: str | None = None,
+    resource_type: str | None = None,
+    resource_id: str | None = None,
+) -> list[dict]:
+    """Fetch redacted audit rows for an admin's tenant."""
+    db = get_db()
+    bounded_limit = min(max(int(limit or 50), 1), 200)
+    query = (
+        db.table("operation_audit_logs")
+        .select(
+            "id, tenant_id, actor_user_id, actor_email, actor_role, action, "
+            "resource_type, resource_id, created_at"
+        )
+        .eq("tenant_id", tenant_id)
+        .order("created_at", desc=True)
+        .limit(bounded_limit)
+    )
+    if action:
+        query = query.eq("action", action)
+    if resource_type:
+        query = query.eq("resource_type", resource_type)
+    if resource_id:
+        query = query.eq("resource_id", resource_id)
+    return query.execute().data or []
 
 
 # --- Retrieval logging ---
