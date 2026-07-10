@@ -109,6 +109,119 @@ class RetrievalSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(log_payload["diagnostics"]["score_family"], "rrf_fallback")
         self.assertEqual(log_payload["diagnostics"]["channel"], "widget")
 
+    async def test_hybrid_cache_hit_skips_vector_search_and_reranking_but_logs_request(self):
+        vector_search = AsyncMock(return_value=[{
+            "id": "chunk-a",
+            "document_id": "doc-a",
+            "content": "The cached passphrase is atlas-77.",
+            "similarity": 0.8,
+        }])
+        rerank = AsyncMock(return_value=[{"index": 0, "score": 0.99}])
+        with (
+            patch.object(retrieval, "get_embedding_client", return_value=Mock()),
+            patch.object(retrieval, "get_embedding", new=AsyncMock(return_value=[0.1, 0.2])),
+            patch.object(retrieval, "search_similar_chunks", new=vector_search),
+            patch.object(retrieval, "search_chunks_fts", return_value=[]),
+            patch.object(
+                retrieval,
+                "get_documents_by_ids",
+                return_value={"doc-a": {"id": "doc-a", "filename": "fixture.md", "status": "processed"}},
+            ),
+            patch.object(retrieval, "rerank_with_cohere", new=rerank),
+            patch.object(
+                retrieval,
+                "log_retrieval",
+                side_effect=[{"id": "log-first"}, {"id": "log-cached"}],
+            ) as log_retrieval,
+        ):
+            first = await retrieval.retrieve_context(
+                token="token",
+                user_id="user-a",
+                target_user_id="admin-a",
+                tenant_id="tenant-a",
+                message="What is the cached passphrase?",
+                mode="hybrid",
+            )
+            cached = await retrieval.retrieve_context(
+                token="token",
+                user_id="user-a",
+                target_user_id="admin-a",
+                tenant_id="tenant-a",
+                message="What is the cached passphrase?",
+                mode="hybrid",
+            )
+
+        self.assertEqual(first["chunks"], cached["chunks"])
+        self.assertEqual(cached["retrieval_log_ids"], ["log-cached"])
+        vector_search.assert_awaited_once()
+        rerank.assert_awaited_once()
+        self.assertEqual(log_retrieval.call_count, 2)
+        cached_log = log_retrieval.call_args_list[1].kwargs
+        self.assertTrue(cached_log["diagnostics"]["cache_hit"])
+
+    async def test_hybrid_retrieval_abstains_when_all_reranker_scores_are_low(self):
+        with (
+            patch.object(retrieval, "get_embedding_client", return_value=Mock()),
+            patch.object(retrieval, "get_embedding", new=AsyncMock(return_value=[0.1, 0.2])),
+            patch.object(
+                retrieval,
+                "search_similar_chunks",
+                new=AsyncMock(return_value=[{
+                    "id": "chunk-a",
+                    "document_id": "doc-a",
+                    "content": "Weakly related content.",
+                    "similarity": 0.4,
+                }]),
+            ),
+            patch.object(retrieval, "search_chunks_fts", return_value=[]),
+            patch.object(retrieval, "rerank_with_cohere", new=AsyncMock(return_value=[{"index": 0, "score": 0.2}])),
+            patch.object(retrieval, "log_retrieval", return_value={"id": "log-low"}) as log_retrieval,
+        ):
+            result = await retrieval.retrieve_context(
+                token="token",
+                user_id="user-a",
+                target_user_id="admin-a",
+                tenant_id="tenant-a",
+                message="A question with no strong match",
+                mode="hybrid",
+            )
+
+        self.assertEqual(result["chunks"], [])
+        self.assertEqual(result["sources"], [])
+        diagnostics = log_retrieval.call_args.kwargs["diagnostics"]
+        self.assertEqual(diagnostics["fallback_reason"], "all_chunks_filtered_by_rerank_threshold")
+        self.assertEqual(diagnostics["score_family"], "cohere_rerank")
+
+    async def test_client_without_explicit_target_searches_tenant_admin_knowledge_base(self):
+        profile_response = Mock(data={"role": "client"})
+        db = Mock()
+        db.table.return_value.select.return_value.eq.return_value.maybe_single.return_value.execute.return_value = profile_response
+        vector_search = AsyncMock(return_value=[])
+
+        with (
+            patch("app.services.supabase.get_supabase_client_with_token", return_value=db),
+            patch("app.services.database.get_tenant_admin_user_id", return_value="admin-a"),
+            patch.object(retrieval, "get_embedding_client", return_value=Mock()),
+            patch.object(retrieval, "get_embedding", new=AsyncMock(return_value=[0.1, 0.2])),
+            patch.object(retrieval, "search_similar_chunks", new=vector_search),
+            patch.object(retrieval, "log_retrieval", return_value={"id": "log-target"}),
+        ):
+            await retrieval.retrieve_context(
+                token="token",
+                user_id="client-a",
+                tenant_id="tenant-a",
+                message="Search the shared knowledge base",
+                mode="vector",
+            )
+
+        vector_search.assert_awaited_once_with(
+            "admin-a",
+            [0.1, 0.2],
+            5,
+            similarity_threshold=retrieval.VECTOR_SIMILARITY_THRESHOLD,
+            tenant_id="tenant-a",
+        )
+
     def test_loggable_retrieval_evidence_is_bounded(self):
         long_text = "x" * 2500
         sources = [

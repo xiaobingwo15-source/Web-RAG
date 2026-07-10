@@ -1145,12 +1145,12 @@ async def execute(
     public_sources = _public_sources(sources)
     print(f"[DOC_RAG] Retrieved {len(context_chunks)} context chunks (RAG-Fusion: {len(all_queries)} variants, {len(fused)} unique) for user_id={user_id}")
 
-    # ── Early exit: skip expensive pipeline when all variants retrieved near-random chunks ──
+    # ── Early exit: skip expensive pipeline when web fallback is unavailable ──
     # When the top RRF score is extremely low, no chunk appeared consistently across variants.
     # Running HyDE / corrective RAG / web fallback / retries on random matches wastes 10-15s
     # and still produces unreliable answers.
     EARLY_EXIT_FUSED_THRESHOLD = 0.01
-    if not context_chunks or top_fused_score < EARLY_EXIT_FUSED_THRESHOLD:
+    if (not context_chunks or top_fused_score < EARLY_EXIT_FUSED_THRESHOLD) and not allow_web_fallback:
         refusal_reason = "no_chunks" if not context_chunks else "near_random"
         logger.info(
             f"Early exit: {refusal_reason} (top_fused_score={top_fused_score:.4f}, "
@@ -1819,12 +1819,15 @@ async def execute(
                 retry_chunks = retry_result["chunks"]
                 retry_sources = retry_result.get("sources", [])
                 added = 0
+                added_sources = []
                 for i, chunk in enumerate(retry_chunks):
                     key = chunk[:500].strip().lower()
                     if key not in seen_keys:
                         context_chunks.append(chunk)
                         if i < len(retry_sources):
-                            context_sources.append(retry_sources[i])
+                            retry_source = retry_sources[i]
+                            context_sources.append(retry_source)
+                            added_sources.append(retry_source)
                         else:
                             context_sources.append({})
                         seen_keys.add(key)
@@ -1837,7 +1840,7 @@ async def execute(
                         "action_source": "doc_rag",
                         "action_data": {"added": added},
                     }
-                    sources = sources + retry_result.get("sources", [])
+                    sources.extend(added_sources)
                     yield {"type": "sources", "sources": _public_sources(sources)}
                 else:
                     yield {
