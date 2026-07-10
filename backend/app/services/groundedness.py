@@ -6,8 +6,6 @@ import re
 logger = logging.getLogger(__name__)
 
 GROUNDEDNESS_THRESHOLD = 0.5
-GROUNDEDNESS_LLM_HIGH = 0.0   # Always run LLM check — token overlap alone is unreliable
-GROUNDEDNESS_LLM_LOW = 0.25   # Below this: call LLM to confirm
 
 GROUNDEDNESS_CHECK_PROMPT = (
     "You are a fact-checker. Compare the ANSWER against the REFERENCE CONTEXT. "
@@ -91,12 +89,7 @@ async def check_groundedness_with_llm(
 
     score = check_groundedness(answer, context_chunks)
 
-    # Fast path: clearly grounded (disabled at 0.0 — LLM check always runs)
-    if score >= GROUNDEDNESS_LLM_HIGH:
-        return score, True
-
-    # Clearly ungrounded by token overlap — still verify with LLM to handle paraphrasing
-    # Borderline zone (0.25-0.5) — use LLM to decide
+    # Token overlap alone is unreliable, so always verify the answer with the LLM.
     system_prompt = GROUNDEDNESS_CHECK_PROMPT_WEB if web_mode else GROUNDEDNESS_CHECK_PROMPT
     prompt_label = "web-aware" if web_mode else "standard"
     try:
