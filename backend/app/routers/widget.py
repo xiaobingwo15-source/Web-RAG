@@ -296,12 +296,38 @@ async def submit_widget_feedback(
     if origin and origin.rstrip("/") != payload["origin"]:
         raise HTTPException(status_code=403, detail="Origin does not match widget session")
 
-    result = save_widget_feedback(
-        client_session_id=payload["session_id"],
-        thread_id=request.thread_id,
-        message_id=request.message_id,
-        rating=request.rating,
-        comment=request.comment,
-        tenant_id=payload["tenant_id"],
-    )
-    return {"status": "ok", "id": result.get("id") if result else None}
+    thread = get_thread_service(payload["tenant_id"], request.thread_id)
+    if not thread or thread.get("client_session_id") != payload["session_id"]:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    messages = get_thread_messages_service(payload["tenant_id"], request.thread_id)
+    if not any(
+        message.get("id") == request.message_id and message.get("role") == "assistant"
+        for message in messages
+    ):
+        raise HTTPException(status_code=404, detail="Assistant message not found.")
+
+    try:
+        result = save_widget_feedback(
+            client_session_id=payload["session_id"],
+            thread_id=request.thread_id,
+            message_id=request.message_id,
+            rating=request.rating,
+            comment=request.comment,
+            tenant_id=payload["tenant_id"],
+        )
+    except Exception:
+        logger.exception(
+            "Widget feedback persistence failed for thread=%s message=%s",
+            request.thread_id,
+            request.message_id,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Feedback could not be saved. Please try again.",
+        ) from None
+    if not result:
+        raise HTTPException(
+            status_code=503,
+            detail="Feedback could not be saved. Please try again.",
+        )
+    return {"status": "ok", "id": result["id"]}

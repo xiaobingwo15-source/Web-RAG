@@ -290,6 +290,19 @@ class RagQualityPolicyTests(unittest.TestCase):
 
 
 class RagQualityAdminEndpointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_feedback_endpoint_can_list_all_ratings(self):
+        user = SimpleNamespace(role="admin", tenant_id="tenant-1", status="approved")
+        rows = [
+            {"feedback_id": "positive-1", "rating": 1},
+            {"feedback_id": "negative-1", "rating": -1},
+        ]
+
+        with patch.object(admin, "list_rag_quality_feedback", return_value=rows) as list_feedback:
+            result = await admin.get_rag_quality_feedback(limit=25, rating=None, user=user)
+
+        self.assertEqual(result, {"items": rows})
+        list_feedback.assert_called_once_with("tenant-1", limit=25, rating=None)
+
     async def test_eval_cases_endpoint_syncs_quality_loop_drafts(self):
         class User:
             role = "admin"
