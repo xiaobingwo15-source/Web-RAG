@@ -1628,21 +1628,22 @@ def _thread_retrieval_logs(db, tenant_id: str, thread_id: str, answer_message_id
     )
 
 
-def list_rag_quality_thumbs_down(tenant_id: str, limit: int = 50) -> list[dict]:
-    """Return recent negative feedback with answer and retrieval evidence."""
+def list_rag_quality_feedback(
+    tenant_id: str,
+    limit: int = 50,
+    rating: int | None = None,
+) -> list[dict]:
+    """Return recent feedback with answer and retrieval evidence."""
     db = get_db()
     limit = min(max(limit, 1), 100)
-    feedback_rows = (
+    feedback_query = (
         db.table("message_feedback")
         .select("*")
         .eq("tenant_id", tenant_id)
-        .eq("rating", -1)
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
-        .data
-        or []
     )
+    if rating in {-1, 1}:
+        feedback_query = feedback_query.eq("rating", rating)
+    feedback_rows = feedback_query.order("created_at", desc=True).limit(limit).execute().data or []
 
     items = []
     user_emails: dict[str, str] = {}
@@ -1718,6 +1719,11 @@ def list_rag_quality_thumbs_down(tenant_id: str, limit: int = 50) -> list[dict]:
     return items
 
 
+def list_rag_quality_thumbs_down(tenant_id: str, limit: int = 50) -> list[dict]:
+    """Return recent negative feedback with answer and retrieval evidence."""
+    return list_rag_quality_feedback(tenant_id, limit=limit, rating=-1)
+
+
 # --- Message feedback ---
 
 def save_message_feedback(
@@ -1729,25 +1735,21 @@ def save_message_feedback(
     tenant_id: str | None = None,
 ) -> dict | None:
     """Save thumbs up (1) or thumbs down (-1) feedback for a message."""
-    try:
-        db = get_db()
-        row = {
-            "user_id": user_id,
-            "thread_id": thread_id,
-            "message_id": message_id,
-            "rating": rating,
-            **({"comment": comment} if comment else {}),
-            **({"tenant_id": tenant_id} if tenant_id else {}),
-        }
-        result = (
-            db.table("message_feedback")
-            .upsert(row, on_conflict="user_id,thread_id,message_id")
-            .execute()
-        )
-        return result.data[0] if result.data else None
-    except Exception as e:
-        logger.warning("Failed to save message feedback: %s", e)
-        return None
+    db = get_db()
+    row = {
+        "user_id": user_id,
+        "thread_id": thread_id,
+        "message_id": message_id,
+        "rating": rating,
+        **({"comment": comment} if comment else {}),
+        **({"tenant_id": tenant_id} if tenant_id else {}),
+    }
+    result = (
+        db.table("message_feedback")
+        .upsert(row, on_conflict="user_id,thread_id,message_id")
+        .execute()
+    )
+    return result.data[0] if result.data else None
 
 
 def save_widget_feedback(
@@ -1759,25 +1761,21 @@ def save_widget_feedback(
     tenant_id: str | None = None,
 ) -> dict | None:
     """Save feedback for an anonymous widget message. Uses service-role (bypasses RLS)."""
-    try:
-        db = get_db()
-        row = {
-            "client_session_id": client_session_id,
-            "thread_id": thread_id,
-            "message_id": message_id,
-            "rating": rating,
-            **({"comment": comment} if comment else {}),
-            **({"tenant_id": tenant_id} if tenant_id else {}),
-        }
-        result = (
-            db.table("message_feedback")
-            .upsert(row, on_conflict="client_session_id,thread_id,message_id")
-            .execute()
-        )
-        return result.data[0] if result.data else None
-    except Exception as e:
-        logger.warning("Failed to save widget feedback: %s", e)
-        return None
+    db = get_db()
+    row = {
+        "client_session_id": client_session_id,
+        "thread_id": thread_id,
+        "message_id": message_id,
+        "rating": rating,
+        **({"comment": comment} if comment else {}),
+        **({"tenant_id": tenant_id} if tenant_id else {}),
+    }
+    result = (
+        db.table("message_feedback")
+        .upsert(row, on_conflict="client_session_id,thread_id,message_id")
+        .execute()
+    )
+    return result.data[0] if result.data else None
 
 
 def get_message_feedback(

@@ -129,13 +129,11 @@ export function ChatPage() {
 
   const handleFeedback = useCallback(async (messageId: string, rating: 1 | -1, comment?: string) => {
     const feedbackThreadId = selectedThreadId || threadId
-    if (!accessToken || !feedbackThreadId) return
-    setFeedbackMap((prev) => ({ ...prev, [messageId]: rating }))
-    try {
-      await submitFeedback(feedbackThreadId, messageId, rating, accessToken, comment)
-    } catch (err) {
-      console.error('Failed to submit feedback:', err)
+    if (!accessToken || !feedbackThreadId) {
+      throw new Error('Feedback is unavailable for this conversation.')
     }
+    await submitFeedback(feedbackThreadId, messageId, rating, accessToken, comment)
+    setFeedbackMap((prev) => ({ ...prev, [messageId]: rating }))
   }, [accessToken, selectedThreadId, threadId])
 
   const handleDeleteThread = async (tid: string) => {

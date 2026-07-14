@@ -2,6 +2,7 @@
 
 import logging
 from datetime import UTC, datetime
+from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from app.middleware.auth import get_current_user
@@ -14,6 +15,7 @@ from app.services.database import (
     list_rag_eval_results,
     list_rag_eval_runs,
     list_rag_quality_signals,
+    list_rag_quality_feedback,
     list_rag_quality_thumbs_down,
     get_tenant_admin_invite,
     get_thread_messages_admin,
@@ -355,6 +357,22 @@ async def start_rag_eval_run(request_body: RagEvalRunCreate, request: Request, u
 async def get_rag_quality_thumbs_down(limit: int = 50, user=Depends(get_current_user)):
     _verify_admin(user)
     return {"items": list_rag_quality_thumbs_down(user.tenant_id, limit=limit)}
+
+
+@router.get("/rag-quality/feedback", response_model=RagQualityThumbsDownResponse)
+async def get_rag_quality_feedback(
+    limit: int = Query(default=50, ge=1, le=100),
+    rating: Literal[-1, 1] | None = Query(default=None),
+    user=Depends(get_current_user),
+):
+    _verify_admin(user)
+    return {
+        "items": list_rag_quality_feedback(
+            user.tenant_id,
+            limit=limit,
+            rating=rating,
+        )
+    }
 
 
 @router.get("/rag-quality/signals", response_model=RagQualitySignalsResponse)

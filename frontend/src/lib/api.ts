@@ -1099,6 +1099,19 @@ export async function getFlaggedMessages(token: string): Promise<FlaggedMessages
   return response.json()
 }
 
+export async function getRagQualityFeedback(
+  token: string,
+  params: { limit?: number; rating?: 1 | -1 } = {},
+): Promise<RagQualityThumbsDownResponse> {
+  const search = new URLSearchParams({ limit: String(params.limit || 50) })
+  if (params.rating) search.set('rating', String(params.rating))
+  const response = await fetch(`/api/admin/rag-quality/feedback?${search.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`Fetch RAG quality feedback failed: ${response.status}`)
+  return response.json()
+}
+
 export async function getFlaggedCount(token: string): Promise<FlaggedCountResponse> {
   const response = await fetch('/api/admin/flagged/count', {
     headers: { Authorization: `Bearer ${token}` },

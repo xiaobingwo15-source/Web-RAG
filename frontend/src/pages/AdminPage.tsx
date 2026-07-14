@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/hooks/useAuth'
 import { useDocuments } from '@/hooks/useDocuments'
@@ -20,7 +20,7 @@ import {
   getRagEvalRun,
   runRagEval,
   updateRagEvalCase,
-  getRagQualityThumbsDown,
+  getRagQualityFeedback,
   getRagQualitySignals,
   dismissFlaggedMessage,
   getAdminAuditLogs,
@@ -82,6 +82,13 @@ type QualityInboxItem = {
   flagged?: FlaggedMessage
 }
 
+type ConversationReviewTarget = {
+  messageId: string
+  badgeLabel: string
+  contextLabel: string
+  summary?: string | null
+}
+
 export function AdminPage() {
   const { user, session, signOut } = useAuth()
   const navigate = useNavigate()
@@ -114,8 +121,11 @@ export function AdminPage() {
   const [loading, setLoading] = useState(true)
   const [expandedClient, setExpandedClient] = useState<string | null>(null)
   const [selectedThread, setSelectedThread] = useState<{ threadId: string; title: string } | null>(null)
+  const [conversationReviewTarget, setConversationReviewTarget] = useState<ConversationReviewTarget | null>(null)
   const [threadMessages, setThreadMessages] = useState<AdminMessage[]>([])
   const [messagesLoading, setMessagesLoading] = useState(false)
+  const [threadMessagesError, setThreadMessagesError] = useState<string | null>(null)
+  const feedbackTargetRef = useRef<HTMLDivElement | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
 
   // Admin Manual Answer state
@@ -278,7 +288,7 @@ export function AdminPage() {
     if (!session?.access_token) return
     setQualityLoading(true)
     try {
-      const data = await getRagQualityThumbsDown(session.access_token, { limit: 50 })
+      const data = await getRagQualityFeedback(session.access_token, { limit: 50 })
       setQualityFeedback(data.items)
       setSelectedQualityFeedbackId((current) => (
         current && data.items.some((item) => item.feedback_id === current)
@@ -515,7 +525,7 @@ export function AdminPage() {
   )
 
   const selectedFeedbackDraft = useMemo(() => {
-    if (!selectedQualityFeedback) return null
+    if (!selectedQualityFeedback || selectedQualityFeedback.rating !== -1) return null
     return qualityDraftBySource.get(`thumbs_down_feedback:${selectedQualityFeedback.feedback_id}`) ?? null
   }, [qualityDraftBySource, selectedQualityFeedback])
 
@@ -540,6 +550,7 @@ export function AdminPage() {
     }
 
     for (const feedback of qualityFeedback) {
+      if (feedback.rating !== -1) continue
       const draft = qualityDraftBySource.get(`thumbs_down_feedback:${feedback.feedback_id}`)
       items.push({
         key: `feedback:${feedback.feedback_id}`,
@@ -628,25 +639,46 @@ export function AdminPage() {
     }
   }
 
-  const handleSelectThread = async (threadId: string, title: string) => {
+  const handleSelectThread = async (
+    threadId: string,
+    title: string,
+    reviewTarget: ConversationReviewTarget | null = null,
+  ) => {
     if (!session?.access_token) return
     markInteraction('admin.thread.select')
     setSelectedThread({ threadId, title })
+    setConversationReviewTarget(reviewTarget)
+    setThreadMessages([])
+    setThreadMessagesError(null)
     setMessagesLoading(true)
     try {
       const data = await getAdminThreadMessages(threadId, session.access_token)
       setThreadMessages(data.messages)
     } catch (err) {
       console.error('Failed to fetch messages:', err)
+      setThreadMessagesError('Conversation could not be loaded. Please try again.')
     } finally {
       setMessagesLoading(false)
     }
   }
 
-  const handleOpenSignalConversation = (threadId: string, title: string) => {
+  const handleOpenSignalConversation = (
+    threadId: string,
+    title: string,
+    reviewTarget?: ConversationReviewTarget | null,
+  ) => {
+    const owner = clients.find((client) => client.threads.some((thread) => thread.id === threadId))
+    if (owner) setExpandedClient(owner.user_id)
     switchTab('conversations')
-    void handleSelectThread(threadId, title)
+    void handleSelectThread(threadId, title, reviewTarget || null)
   }
+
+  const selectedFeedbackMessageId = conversationReviewTarget?.messageId ?? null
+
+  useEffect(() => {
+    if (activeTab !== 'conversations' || messagesLoading || !selectedFeedbackMessageId) return
+    feedbackTargetRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }, [activeTab, messagesLoading, selectedFeedbackMessageId])
 
   const handleLogout = async () => {
     await signOut()
@@ -1009,12 +1041,26 @@ export function AdminPage() {
                       </p>
                     </div>
                   </div>
+                  {conversationReviewTarget && (
+                    <div className="border-b border-primary/20 bg-primary/5 px-5 py-2.5">
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-primary">
+                        {conversationReviewTarget.contextLabel}
+                      </p>
+                      {conversationReviewTarget.summary && (
+                        <p className="mt-1 text-xs text-foreground">{conversationReviewTarget.summary}</p>
+                      )}
+                    </div>
+                  )}
 
                   {/* Messages */}
                   <div className="flex-1 overflow-y-auto p-5">
                     {messagesLoading ? (
                       <div className="flex items-center justify-center py-12">
                         <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
+                      </div>
+                    ) : threadMessagesError ? (
+                      <div className="py-12 text-center text-xs text-destructive">
+                        {threadMessagesError}
                       </div>
                     ) : threadMessages.length === 0 ? (
                       <div className="py-12 text-center text-xs text-muted-foreground">
@@ -1026,17 +1072,20 @@ export function AdminPage() {
                           const isAdmin = msg.role === 'admin'
                           const isUser = msg.role === 'user'
                           const isFlagged = flaggedMessages.some((f) => f.message_id === msg.id)
+                          const isFeedbackTarget = msg.id === selectedFeedbackMessageId
 
                           return (
                             <div
                               key={msg.id}
+                              ref={isFeedbackTarget ? feedbackTargetRef : undefined}
+                              data-admin-message-id={msg.id}
                               className={`flex gap-3 rounded-xl p-4 ${
                                 isAdmin
                                   ? 'bg-amber-500/5 border border-amber-500/20'
                                   : isUser
                                     ? 'bg-primary/5 border border-primary/10'
                                     : 'bg-muted/30 border border-border/50'
-                              }`}
+                              } ${isFeedbackTarget ? 'ring-2 ring-primary/50 ring-offset-2 ring-offset-background' : ''}`}
                             >
                               <div
                                 className={`flex h-7 w-7 items-center justify-center rounded-full flex-shrink-0 ${
@@ -1076,6 +1125,11 @@ export function AdminPage() {
                                       minute: '2-digit',
                                     })}
                                   </span>
+                                  {isFeedbackTarget && (
+                                    <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold text-primary">
+                                      {conversationReviewTarget?.badgeLabel}
+                                    </span>
+                                  )}
                                 </div>
                                 <p className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
                                   {msg.content}
@@ -1607,7 +1661,7 @@ export function AdminPage() {
                 <section className="grid gap-5 lg:grid-cols-[380px_1fr]">
                   <div className="rounded-lg border border-border bg-card p-4">
                     <div className="flex items-center justify-between gap-3">
-                      <h2 className="text-sm font-semibold text-foreground">Recent Thumbs-Down</h2>
+                      <h2 className="text-sm font-semibold text-foreground">Recent Feedback</h2>
                       <span className="text-[10px] text-muted-foreground">{qualityFeedback.length} item{qualityFeedback.length !== 1 ? 's' : ''}</span>
                     </div>
                     <div className="mt-3 space-y-2">
@@ -1616,7 +1670,7 @@ export function AdminPage() {
                           <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
                         </div>
                       ) : qualityFeedback.length === 0 ? (
-                        <div className="py-10 text-center text-xs text-muted-foreground">No thumbs-down feedback yet</div>
+                        <div className="py-10 text-center text-xs text-muted-foreground">No feedback yet</div>
                       ) : (
                         qualityFeedback.map((item) => {
                           const draft = qualityDraftBySource.get(`thumbs_down_feedback:${item.feedback_id}`)
@@ -1634,25 +1688,39 @@ export function AdminPage() {
                                 <span className="line-clamp-2 text-xs font-semibold text-foreground">
                                   {item.question || item.thread_title}
                                 </span>
-                                {(item.summary.groundedness_flag || item.summary.zero_source) && (
-                                  <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 text-destructive" />
-                                )}
+                                <div className="flex flex-shrink-0 items-center gap-1.5">
+                                  <FeedbackRatingPill rating={item.rating} />
+                                  {(item.summary.groundedness_flag || item.summary.zero_source) && (
+                                    <AlertTriangle className="h-3.5 w-3.5 text-destructive" />
+                                  )}
+                                </div>
                               </div>
                               <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
                                 <span className="truncate">{item.client_email}</span>
                                 <span>{new Date(item.feedback_created_at).toLocaleDateString()}</span>
                               </div>
+                              <p className="mt-1 line-clamp-2 text-[11px] text-muted-foreground">
+                                {item.feedback_comment || (item.rating === 1
+                                  ? 'Thumbs-up without comment'
+                                  : 'Thumbs-down without comment')}
+                              </p>
                               <div className="mt-1 flex flex-wrap gap-1.5">
                                 <QualityPill active={item.summary.zero_source} label="No sources" />
                                 <QualityPill active={item.summary.groundedness_flag} label="Grounding" />
                                 <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
                                   {item.summary.source_count} source{item.summary.source_count !== 1 ? 's' : ''}
                                 </span>
-                                <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                                  draft ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
-                                }`}>
-                                  {draft ? 'Draft exists' : 'No draft'}
-                                </span>
+                                {item.rating === -1 ? (
+                                  <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                                    draft ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'
+                                  }`}>
+                                    {draft ? 'Draft exists' : 'No draft'}
+                                  </span>
+                                ) : (
+                                  <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-[10px] font-semibold text-green-500">
+                                    Reference
+                                  </span>
+                                )}
                               </div>
                             </button>
                           )
@@ -1682,29 +1750,56 @@ export function AdminPage() {
                               {selectedQualityFeedback.client_email} · {new Date(selectedQualityFeedback.feedback_created_at).toLocaleString()}
                             </p>
                           </div>
-                          <button
-                            onClick={() => {
-                              if (selectedFeedbackDraft) {
-                                handleEditEvalCase(selectedFeedbackDraft)
-                                setEvalWorkspaceView('runs')
-                              } else {
-                                handleSeedEvalCase(selectedQualityFeedback)
-                              }
-                            }}
-                            className="flex flex-shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90"
-                          >
-                            <Plus className="h-3.5 w-3.5" />
-                            {selectedFeedbackDraft ? 'Review draft' : 'Seed draft'}
-                          </button>
+                          <div className="flex flex-shrink-0 items-center gap-2">
+                            <button
+                              onClick={() => {
+                                const messageId = selectedQualityFeedback.resolved_message_id || selectedQualityFeedback.message_id
+                                handleOpenSignalConversation(
+                                  selectedQualityFeedback.thread_id,
+                                  selectedQualityFeedback.thread_title,
+                                  messageId ? {
+                                    messageId,
+                                    badgeLabel: 'Feedback target',
+                                    contextLabel: selectedQualityFeedback.rating === 1 ? 'Positive feedback' : 'Negative feedback',
+                                    summary: selectedQualityFeedback.feedback_comment,
+                                  } : null,
+                                )
+                              }}
+                              className="flex items-center gap-1.5 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-semibold text-muted-foreground hover:bg-muted hover:text-foreground"
+                            >
+                              <MessageSquare className="h-3.5 w-3.5" />
+                              Open conversation
+                            </button>
+                            {selectedQualityFeedback.rating === -1 && (
+                              <button
+                                onClick={() => {
+                                  if (selectedFeedbackDraft) {
+                                    handleEditEvalCase(selectedFeedbackDraft)
+                                    setEvalWorkspaceView('runs')
+                                  } else {
+                                    handleSeedEvalCase(selectedQualityFeedback)
+                                  }
+                                }}
+                                className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90"
+                              >
+                                <Plus className="h-3.5 w-3.5" />
+                                {selectedFeedbackDraft ? 'Review draft' : 'Seed draft'}
+                              </button>
+                            )}
+                          </div>
                         </div>
                         <div className={`rounded-md border px-3 py-2 text-xs ${
                           selectedFeedbackDraft
                             ? 'border-primary/40 bg-primary/5 text-primary'
+                            : selectedQualityFeedback.rating === 1
+                              ? 'border-green-500/30 bg-green-500/5 text-green-600'
                             : 'border-border bg-background text-muted-foreground'
                         }`}>
                           {selectedFeedbackDraft
                             ? `Quality-loop draft exists: ${selectedFeedbackDraft.question}`
-                            : 'No quality-loop draft exists for this feedback yet'}
+                            : selectedQualityFeedback.rating === 1
+                              ? 'Positive feedback retained as a successful reference'
+                              : 'No quality-loop draft exists for this feedback yet'}
                         </div>
 
                         <div className="grid gap-2 sm:grid-cols-4">
@@ -1721,7 +1816,11 @@ export function AdminPage() {
                           </div>
                           <div className="rounded-md border border-border bg-background p-3">
                             <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Feedback</p>
-                            <p className="mt-2 whitespace-pre-wrap text-xs text-foreground">{selectedQualityFeedback.feedback_comment || 'Thumbs-down without comment'}</p>
+                            <p className="mt-2 whitespace-pre-wrap text-xs text-foreground">
+                              {selectedQualityFeedback.feedback_comment || (selectedQualityFeedback.rating === 1
+                                ? 'Thumbs-up without comment'
+                                : 'Thumbs-down without comment')}
+                            </p>
                           </div>
                         </div>
 
@@ -1950,7 +2049,11 @@ function QualityInboxPanel({
   onSeverityFilterChange: (value: 'all' | 'critical' | 'watch' | 'attention') => void
   onReviewStateChange: (value: 'all' | 'unreviewed' | 'reviewed') => void
   onClientFilterChange: (value: string) => void
-  onOpenConversation: (threadId: string, title: string) => void
+  onOpenConversation: (
+    threadId: string,
+    title: string,
+    reviewTarget?: ConversationReviewTarget | null,
+  ) => void
   onOpenFeedback: (item: RagQualityFeedbackItem) => void
   onSeedFeedback: (item: RagQualityFeedbackItem) => void
   onDismissFlag: (messageId: string) => void
@@ -2039,7 +2142,24 @@ function QualityInboxPanel({
                   <div className="flex flex-shrink-0 items-center gap-1">
                     {item.threadId && (
                       <button
-                        onClick={() => onOpenConversation(item.threadId!, item.threadTitle || item.title)}
+                        onClick={() => onOpenConversation(
+                          item.threadId!,
+                          item.threadTitle || item.title,
+                          item.messageId ? {
+                            messageId: item.messageId,
+                            badgeLabel: item.type === 'feedback'
+                              ? 'Feedback target'
+                              : item.type === 'flagged'
+                                ? 'Flagged message'
+                                : 'Quality target',
+                            contextLabel: item.type === 'feedback'
+                              ? (item.feedback?.rating === 1 ? 'Positive feedback' : 'Negative feedback')
+                              : item.type === 'flagged'
+                                ? 'Flagged for review'
+                                : 'Quality signal',
+                            summary: item.summary,
+                          } : null,
+                        )}
                         className="rounded-md border border-border bg-card px-2 py-1 text-[10px] font-semibold text-muted-foreground hover:bg-muted hover:text-foreground"
                       >
                         Open
@@ -2605,6 +2725,18 @@ function QualityPill({ active, label }: { active: boolean; label: string }) {
       active ? 'bg-destructive/10 text-destructive' : 'bg-green-500/10 text-green-500'
     }`}>
       {active ? label : okLabel}
+    </span>
+  )
+}
+
+function FeedbackRatingPill({ rating }: { rating: 1 | -1 }) {
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+      rating === 1
+        ? 'bg-green-500/10 text-green-500'
+        : 'bg-destructive/10 text-destructive'
+    }`}>
+      {rating === 1 ? 'Positive' : 'Negative'}
     </span>
   )
 }

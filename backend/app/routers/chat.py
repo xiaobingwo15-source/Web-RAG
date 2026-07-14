@@ -459,15 +459,40 @@ async def delete_thread_endpoint(thread_id: str, user=Depends(get_current_user))
 async def submit_feedback(request: FeedbackRequest, user=Depends(get_current_user)):
     if user.status != "approved":
         raise HTTPException(status_code=403, detail="Account pending approval.")
-    result = save_message_feedback(
-        user_id=user.id,
-        thread_id=request.thread_id,
-        message_id=request.message_id,
-        rating=request.rating,
-        comment=request.comment,
-        tenant_id=user.tenant_id,
-    )
-    return {"status": "ok", "id": result.get("id") if result else None}
+    thread = get_thread(user.access_token, request.thread_id, tenant_id=user.tenant_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    messages = get_thread_messages(user.access_token, request.thread_id, tenant_id=user.tenant_id)
+    if not any(
+        message.get("id") == request.message_id and message.get("role") == "assistant"
+        for message in messages
+    ):
+        raise HTTPException(status_code=404, detail="Assistant message not found.")
+    try:
+        result = save_message_feedback(
+            user_id=user.id,
+            thread_id=request.thread_id,
+            message_id=request.message_id,
+            rating=request.rating,
+            comment=request.comment,
+            tenant_id=user.tenant_id,
+        )
+    except Exception:
+        logger.exception(
+            "Feedback persistence failed for thread=%s message=%s",
+            request.thread_id,
+            request.message_id,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Feedback could not be saved. Please try again.",
+        ) from None
+    if not result:
+        raise HTTPException(
+            status_code=503,
+            detail="Feedback could not be saved. Please try again.",
+        )
+    return {"status": "ok", "id": result["id"]}
 
 
 @router.get("/threads/{thread_id}/feedback")

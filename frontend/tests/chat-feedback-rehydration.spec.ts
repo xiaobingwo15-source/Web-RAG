@@ -173,6 +173,57 @@ test('rehydrates saved assistant feedback after reopening a thread', async ({ pa
   await expect(poorButtons.nth(1)).toHaveClass(/(^| )bg-\[#EF4444\]\/10( |$)/)
 })
 
+test('keeps failed negative feedback unsaved and allows retry', async ({ page }) => {
+  const supabaseUrl = readEnvValue('VITE_SUPABASE_URL') ?? readEnvValue('SUPABASE_URL')
+  test.skip(!supabaseUrl, 'Set VITE_SUPABASE_URL or SUPABASE_URL so Supabase auth storage can be seeded.')
+
+  let attempts = 0
+
+  await seedSupabaseSession(page, supabaseStorageKey(supabaseUrl!))
+  await page.route('**/api/auth/me', (route) =>
+    json(route, { email: 'client@example.com', role: 'client', status: 'approved', tenant_id: 'tenant-1' }),
+  )
+  await page.route('**/api/documents', (route) => json(route, { documents: [] }))
+  await page.route('**/api/chat/threads', (route) =>
+    json(route, {
+      threads: [{ id: THREAD_ID, title: 'Feedback Retry', created_at: '2026-01-01T00:00:00.000Z' }],
+    }),
+  )
+  await page.route(`**/api/chat/threads/${THREAD_ID}/messages`, (route) =>
+    json(route, {
+      messages: [
+        { id: 'question-1', role: 'user', content: 'Question', created_at: '2026-01-01T00:00:00.000Z', reply_to: null },
+        { id: 'answer-1', role: 'assistant', content: 'Answer to review', created_at: '2026-01-01T00:01:00.000Z', reply_to: null },
+      ],
+    }),
+  )
+  await page.route(`**/api/chat/threads/${THREAD_ID}/feedback`, (route) => json(route, { feedback: [] }))
+  await page.route('**/api/chat/feedback', async (route) => {
+    attempts += 1
+    if (attempts === 1) {
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'Feedback could not be saved. Please try again.' }),
+      })
+      return
+    }
+    await json(route, { status: 'ok', id: 'feedback-1' })
+  })
+
+  await page.goto('/chat')
+  await page.getByText('Feedback Retry', { exact: true }).click()
+  await page.getByLabel('Poor response').click()
+  await page.getByRole('button', { name: 'Submit', exact: true }).click()
+
+  await expect(page.getByText('Feedback could not be saved. Please try again.')).toBeVisible()
+  await expect(page.getByLabel('Poor response')).not.toHaveClass(/(^| )bg-\[#EF4444\]\/10( |$)/)
+
+  await page.getByRole('button', { name: 'Submit', exact: true }).click()
+  await expect(page.getByText('Feedback could not be saved. Please try again.')).not.toBeVisible()
+  await expect(page.getByLabel('Poor response')).toHaveClass(/(^| )bg-\[#EF4444\]\/10( |$)/)
+})
+
 test('uses stream created_at metadata for new chat bubbles', async ({ page }) => {
   const supabaseUrl = readEnvValue('VITE_SUPABASE_URL') ?? readEnvValue('SUPABASE_URL')
   test.skip(!supabaseUrl, 'Set VITE_SUPABASE_URL or SUPABASE_URL so Supabase auth storage can be seeded.')

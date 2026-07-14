@@ -89,6 +89,28 @@ test('admin Quality Inbox filters items, dismisses a flag, and renders audit act
       }],
     }),
   )
+  await page.route('**/api/admin/conversations/thread-1/messages', (route) =>
+    json(route, {
+      messages: [
+        {
+          id: 'question-1',
+          thread_id: 'thread-1',
+          user_id: 'client-user',
+          role: 'user',
+          content: 'What is the refund rule?',
+          created_at: '2026-01-01T00:01:00.000Z',
+        },
+        {
+          id: 'answer-1',
+          thread_id: 'thread-1',
+          user_id: 'client-user',
+          role: 'assistant',
+          content: 'Refunds are available anytime.',
+          created_at: '2026-01-01T00:02:00.000Z',
+        },
+      ],
+    }),
+  )
   await page.route('**/api/admin/flagged/count', (route) => json(route, { count: dismissed ? 0 : 1 }))
   await page.route('**/api/admin/flagged', (route) =>
     json(route, {
@@ -112,32 +134,58 @@ test('admin Quality Inbox filters items, dismisses a flag, and renders audit act
   })
   await page.route('**/api/admin/rag-evals/cases', (route) => json(route, []))
   await page.route('**/api/admin/rag-evals/runs', (route) => json(route, []))
-  await page.route('**/api/admin/rag-quality/thumbs-down?*', (route) =>
+  await page.route('**/api/admin/rag-quality/feedback?*', (route) =>
     json(route, {
-      items: [{
-        feedback_id: 'feedback-1',
-        feedback_created_at: '2026-01-01T00:03:00.000Z',
-        feedback_comment: 'Wrong refund window',
-        rating: -1,
-        message_id: 'answer-1',
-        resolved_message_id: 'answer-1',
-        thread_id: 'thread-1',
-        thread_title: 'Refund issue',
-        client_user_id: 'client-user',
-        client_email: 'client@example.com',
-        question: 'What is the refund rule?',
-        answer: 'Refunds are available anytime.',
-        retrieval_logs: [],
-        summary: {
-          retrieval_count: 1,
-          chunk_count: 0,
-          source_count: 0,
-          top_score: null,
-          groundedness_score: 0.25,
-          groundedness_flag: true,
-          zero_source: true,
+      items: [
+        {
+          feedback_id: 'feedback-positive',
+          feedback_created_at: '2026-01-01T00:04:00.000Z',
+          feedback_comment: 'Helpful and correct',
+          rating: 1,
+          message_id: 'answer-2',
+          resolved_message_id: 'answer-2',
+          thread_id: 'thread-1',
+          thread_title: 'Refund issue',
+          client_user_id: 'client-user',
+          client_email: 'client@example.com',
+          question: 'What documents are required?',
+          answer: 'Include the original invoice.',
+          retrieval_logs: [],
+          summary: {
+            retrieval_count: 1,
+            chunk_count: 1,
+            source_count: 1,
+            top_score: 0.91,
+            groundedness_score: 0.96,
+            groundedness_flag: false,
+            zero_source: false,
+          },
         },
-      }],
+        {
+          feedback_id: 'feedback-1',
+          feedback_created_at: '2026-01-01T00:03:00.000Z',
+          feedback_comment: 'Wrong refund window',
+          rating: -1,
+          message_id: 'answer-1',
+          resolved_message_id: 'answer-1',
+          thread_id: 'thread-1',
+          thread_title: 'Refund issue',
+          client_user_id: 'client-user',
+          client_email: 'client@example.com',
+          question: 'What is the refund rule?',
+          answer: 'Refunds are available anytime.',
+          retrieval_logs: [],
+          summary: {
+            retrieval_count: 1,
+            chunk_count: 0,
+            source_count: 0,
+            top_score: null,
+            groundedness_score: 0.25,
+            groundedness_flag: true,
+            zero_source: true,
+          },
+        },
+      ],
     }),
   )
   await page.route('**/api/admin/rag-quality/signals?*', (route) =>
@@ -183,6 +231,7 @@ test('admin Quality Inbox filters items, dismisses a flag, and renders audit act
 
   await expect(page.getByRole('button', { name: /Quality Inbox/i })).toHaveClass(/bg-primary/)
   await expect(page.getByText('Wrong refund window')).toBeVisible()
+  await expect(page.getByText('Helpful and correct')).not.toBeVisible()
   await expect(page.getByText('flagged_message.dismiss')).toBeVisible()
 
   await page.getByLabel('Quality inbox type').selectOption('flagged')
@@ -191,4 +240,17 @@ test('admin Quality Inbox filters items, dismisses a flag, and renders audit act
 
   await page.getByRole('button', { name: 'Dismiss' }).click()
   await expect(page.getByText('Flag dismissed')).toBeVisible()
+
+  await page.getByRole('button', { name: /Feedback Review/i }).click()
+  await expect(page.getByText('Helpful and correct').first()).toBeVisible()
+  await expect(page.getByText('Wrong refund window')).toBeVisible()
+
+  await page.getByRole('button', { name: /Quality Inbox/i }).click()
+  await page.getByLabel('Quality inbox type').selectOption('feedback')
+  await page.getByRole('button', { name: 'Open', exact: true }).click()
+
+  await expect(page.getByText('Client Conversations')).toBeVisible()
+  await expect(page.getByText('Refunds are available anytime.', { exact: true })).toBeVisible()
+  await expect(page.getByText('Feedback target', { exact: true })).toBeVisible()
+  await expect(page.getByText('Wrong refund window', { exact: true })).toBeVisible()
 })

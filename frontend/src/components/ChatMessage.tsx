@@ -10,7 +10,7 @@ interface ChatMessageProps {
   message: ChatMessageType
   messageId?: string
   feedback?: 1 | -1 | null
-  onFeedback?: (messageId: string, rating: 1 | -1, comment?: string) => void
+  onFeedback?: (messageId: string, rating: 1 | -1, comment?: string) => Promise<void>
   onReply?: (target: ChatReplyTarget) => void
   onSourceFollowUp?: (prompt: string) => void
 }
@@ -41,19 +41,44 @@ export function ChatMessage({ message, messageId, feedback, onFeedback, onReply,
   const [feedbackDialogOpen, setFeedbackDialogOpen] = useState(false)
   const [feedbackReasons, setFeedbackReasons] = useState<string[]>([])
   const [feedbackComment, setFeedbackComment] = useState('')
+  const [feedbackSubmission, setFeedbackSubmission] = useState<{
+    messageId?: string
+    pending: boolean
+    error: string | null
+  }>({ pending: false, error: null })
   const canReply = Boolean(message.content && messageId && onReply)
   const displayedFeedback = optimisticFeedback.messageId === messageId ? optimisticFeedback.value : normalizedFeedback
+  const feedbackPending = feedbackSubmission.messageId === messageId && feedbackSubmission.pending
+  const feedbackError = feedbackSubmission.messageId === messageId ? feedbackSubmission.error : null
 
-  const handleFeedback = (rating: 1 | -1) => {
+  const persistFeedback = async (rating: 1 | -1, comment?: string) => {
+    if (!messageId || !onFeedback || feedbackPending) return false
+    setOptimisticFeedback({ messageId, value: rating })
+    setFeedbackSubmission({ messageId, pending: true, error: null })
+    try {
+      await onFeedback(messageId, rating, comment)
+      setFeedbackSubmission({ messageId, pending: false, error: null })
+      return true
+    } catch (error) {
+      console.error('Failed to submit feedback:', error)
+      setOptimisticFeedback({ messageId, value: normalizedFeedback })
+      setFeedbackSubmission({
+        messageId,
+        pending: false,
+        error: 'Feedback could not be saved. Please try again.',
+      })
+      return false
+    }
+  }
+
+  const handleFeedback = async (rating: 1 | -1) => {
+    if (feedbackPending || displayedFeedback === rating) return
     if (rating === -1 && displayedFeedback !== -1) {
+      setFeedbackSubmission({ messageId, pending: false, error: null })
       setFeedbackDialogOpen(true)
       return
     }
-    const newRating = displayedFeedback === rating ? null : rating
-    setOptimisticFeedback({ messageId, value: newRating })
-    if (newRating && messageId && onFeedback) {
-      onFeedback(messageId, newRating)
-    }
+    await persistFeedback(rating)
   }
 
   const toggleFeedbackReason = (reason: string) => {
@@ -62,15 +87,18 @@ export function ChatMessage({ message, messageId, feedback, onFeedback, onReply,
       : [...prev, reason])
   }
 
-  const submitNegativeFeedback = () => {
+  const submitNegativeFeedback = async () => {
     if (!messageId || !onFeedback) return
     const detail = [
       ...feedbackReasons,
       feedbackComment.trim(),
     ].filter(Boolean).join('; ')
-    setOptimisticFeedback({ messageId, value: -1 })
-    onFeedback(messageId, -1, detail || undefined)
-    setFeedbackDialogOpen(false)
+    const saved = await persistFeedback(-1, detail || undefined)
+    if (saved) {
+      setFeedbackDialogOpen(false)
+      setFeedbackReasons([])
+      setFeedbackComment('')
+    }
   }
 
   const timestamp = formatMessageTime(message.created_at)
@@ -193,11 +221,12 @@ export function ChatMessage({ message, messageId, feedback, onFeedback, onReply,
           <div className="mt-0.5 flex items-center gap-0.5">
             <button
               onClick={() => handleFeedback(1)}
+              disabled={feedbackPending}
               className={`rounded p-1 transition-colors cursor-pointer ${
                 displayedFeedback === 1
                   ? 'text-[#00A884] bg-[#00A884]/10'
                   : 'text-[#8696A0] hover:text-[#00A884] hover:bg-[#00A884]/5'
-              }`}
+              } disabled:cursor-not-allowed disabled:opacity-50`}
               title="Good response"
               aria-label="Good response"
             >
@@ -205,17 +234,21 @@ export function ChatMessage({ message, messageId, feedback, onFeedback, onReply,
             </button>
             <button
               onClick={() => handleFeedback(-1)}
+              disabled={feedbackPending}
               className={`rounded p-1 transition-colors cursor-pointer ${
                 displayedFeedback === -1
                   ? 'text-[#EF4444] bg-[#EF4444]/10'
                   : 'text-[#8696A0] hover:text-[#EF4444] hover:bg-[#EF4444]/5'
-              }`}
+              } disabled:cursor-not-allowed disabled:opacity-50`}
               title="Poor response"
               aria-label="Poor response"
             >
               <ThumbsDown className="h-3.5 w-3.5" />
             </button>
           </div>
+        )}
+        {!feedbackDialogOpen && feedbackError && (
+          <p className="mt-1 text-[11px] text-[#B91C1C]" role="alert">{feedbackError}</p>
         )}
         </div>
 
@@ -240,13 +273,19 @@ export function ChatMessage({ message, messageId, feedback, onFeedback, onReply,
       )}
 
       {feedbackDialogOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" onClick={() => setFeedbackDialogOpen(false)}>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4"
+          onClick={() => {
+            if (!feedbackPending) setFeedbackDialogOpen(false)
+          }}
+        >
           <div className="w-full max-w-sm rounded-lg bg-white p-4 shadow-xl" onClick={(event) => event.stopPropagation()}>
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-sm font-semibold text-[#111B21]">What went wrong?</h3>
               <button
                 onClick={() => setFeedbackDialogOpen(false)}
-                className="rounded p-1 text-[#667781] hover:bg-[#F0F2F5]"
+                disabled={feedbackPending}
+                className="rounded p-1 text-[#667781] hover:bg-[#F0F2F5] disabled:cursor-not-allowed disabled:opacity-50"
                 aria-label="Close feedback"
               >
                 <X className="h-4 w-4" />
@@ -257,6 +296,7 @@ export function ChatMessage({ message, messageId, feedback, onFeedback, onReply,
                 <button
                   key={reason}
                   onClick={() => toggleFeedbackReason(reason)}
+                  disabled={feedbackPending}
                   className={`rounded-full border px-2.5 py-1 text-xs font-medium transition ${
                     feedbackReasons.includes(reason)
                       ? 'border-[#EF4444] bg-[#EF4444]/10 text-[#EF4444]'
@@ -270,22 +310,28 @@ export function ChatMessage({ message, messageId, feedback, onFeedback, onReply,
             <textarea
               value={feedbackComment}
               onChange={(event) => setFeedbackComment(event.target.value)}
+              disabled={feedbackPending}
               rows={3}
               placeholder="Add details for the admin"
               className="mt-3 w-full resize-none rounded-md border border-[#E9EDEF] px-3 py-2 text-sm text-[#111B21] placeholder:text-[#8696A0] focus:outline-none focus:ring-2 focus:ring-[#00A884]/30"
             />
+            {feedbackError && (
+              <p className="mt-2 text-xs text-[#B91C1C]" role="alert">{feedbackError}</p>
+            )}
             <div className="mt-3 flex justify-end gap-2">
               <button
                 onClick={() => setFeedbackDialogOpen(false)}
-                className="rounded-md px-3 py-1.5 text-xs font-semibold text-[#54656F] hover:bg-[#F0F2F5]"
+                disabled={feedbackPending}
+                className="rounded-md px-3 py-1.5 text-xs font-semibold text-[#54656F] hover:bg-[#F0F2F5] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 onClick={submitNegativeFeedback}
-                className="rounded-md bg-[#EF4444] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#DC2626]"
+                disabled={feedbackPending}
+                className="rounded-md bg-[#EF4444] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#DC2626] disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Submit
+                {feedbackPending ? 'Submitting...' : 'Submit'}
               </button>
             </div>
           </div>
