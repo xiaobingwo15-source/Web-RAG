@@ -12,6 +12,62 @@ from app.services.semantic_cache import clear_semantic_cache, get_semantic_cache
 
 
 class RagQualityPolicyTests(unittest.TestCase):
+    def test_completion_latency_handles_an_empty_window(self):
+        result = rag_quality_policy.build_rag_quality_signals(
+            retrieval_logs=[],
+            feedback_rows=[],
+        )
+
+        signal = next(item for item in result["signals"] if item["id"] == "completion_latency")
+        self.assertEqual(signal["status"], "ok")
+        self.assertEqual(signal["description"], "No latency samples (0/10).")
+
+    def test_completion_latency_requires_enough_samples_before_alerting(self):
+        result = rag_quality_policy.build_rag_quality_signals(
+            retrieval_logs=[{
+                "id": "single-slow-request",
+                "query": "slow request",
+                "retrieval_mode": "hybrid",
+                "source_count": 0,
+                "chunk_count": 0,
+                "duration_ms": 8013,
+                "created_at": "2026-07-11T05:32:37Z",
+                "diagnostics": {"channel": "authenticated"},
+            }],
+            feedback_rows=[],
+        )
+
+        signal = next(item for item in result["signals"] if item["id"] == "completion_latency")
+        self.assertEqual(signal["status"], "ok")
+        self.assertNotIn("value", signal)
+        self.assertIn("1/10", signal["description"])
+        self.assertIsNone(result["totals"]["latency_p95_ms"])
+        self.assertEqual(result["totals"]["observed_latency_p95_ms"], 8013)
+        self.assertFalse(result["totals"]["latency_sample_sufficient"])
+
+    def test_completion_latency_alerts_after_minimum_sample_count(self):
+        result = rag_quality_policy.build_rag_quality_signals(
+            retrieval_logs=[
+                {
+                    "id": f"slow-{index}",
+                    "query": f"slow request {index}",
+                    "retrieval_mode": "hybrid",
+                    "source_count": 1,
+                    "chunk_count": 1,
+                    "duration_ms": 7000,
+                    "created_at": f"2026-07-11T05:{index:02d}:00Z",
+                    "diagnostics": {"channel": "authenticated"},
+                }
+                for index in range(10)
+            ],
+            feedback_rows=[],
+        )
+
+        signal = next(item for item in result["signals"] if item["id"] == "completion_latency")
+        self.assertEqual(signal["status"], "critical")
+        self.assertEqual(signal["value"], 7000)
+        self.assertTrue(result["totals"]["latency_sample_sufficient"])
+
     def test_builds_split_signals_from_retrieval_and_feedback_rows(self):
         retrieval_logs = [
             {
@@ -101,7 +157,8 @@ class RagQualityPolicyTests(unittest.TestCase):
         self.assertEqual(signals["zero_sources"]["count"], 1)
         self.assertEqual(signals["weak_sources"]["count"], 1)
         self.assertEqual(signals["groundedness"]["count"], 1)
-        self.assertEqual(signals["completion_latency"]["value"], 3500)
+        self.assertNotIn("value", signals["completion_latency"])
+        self.assertEqual(result["totals"]["observed_latency_p95_ms"], 3500)
         self.assertEqual(signals["negative_feedback"]["count"], 1)
         self.assertEqual(signals["web_fallback"]["count"], 1)
         self.assertEqual(signals["widget_policy_violation"]["count"], 0)

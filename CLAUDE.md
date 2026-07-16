@@ -46,7 +46,7 @@ $env:NODE_ENV = ""; npm run dev
 ### Supabase Migrations
 Migrations live in `backend/supabase/migrations/`. Apply via Supabase MCP (`mcp__supabase__apply_migration`) or the Supabase dashboard. The project uses Supabase MCP for all project management when 2FA dashboard lockout is active.
 
-Latest migration: **036** — adds `status` column to `messages` table (`text NOT NULL DEFAULT 'complete'`). Used by persistent streaming to track in-flight responses (`status='streaming'` during generation, `'complete'` when done).
+Latest migration: **037** — adds UNIQUE constraints on `message_feedback` for PostgREST upsert conflict targets (`user_id,thread_id,message_id` and `client_session_id,thread_id,message_id`). Replaces prior partial unique indexes.
 
 ## Technical Stack
 - Frontend: React + TypeScript + Vite + Tailwind + shadcn/ui
@@ -153,6 +153,27 @@ The RAG pipeline survives client disconnects (navigation, refresh, tab close):
 6. Frontend `loadThread()` detects pending responses (last message is `role='user'`) and polls every 3s
 
 Key functions: `save_message_streaming()`, `save_widget_message_streaming()`, `update_message_content()` in `database.py`
+
+### Feedback Pipeline
+Thumbs-up/thumbs-down feedback on assistant messages, with validation and error handling:
+
+**Backend flow** (`routers/chat.py`, `routers/widget.py`):
+1. Validate thread exists and belongs to user/session before writing
+2. Validate target message exists and has `role='assistant'`
+3. `save_message_feedback()` / `save_widget_feedback()` propagate DB errors (not swallowed)
+4. On failure: 503 with retryable detail message
+
+**Frontend flow** (`ChatMessage.tsx`):
+- Feedback buttons show pending/disabled state during submission
+- On save failure: inline error message, optimistic state reverted, dialog stays open for retry
+- Negative feedback dialog collects reasons + comment before submission
+
+**Admin review** (`AdminPage.tsx`, `routers/admin.py`):
+- `/rag-quality/feedback` endpoint returns both positive and negative feedback with optional `rating` filter
+- Quality inbox shows rating pills (green "Positive" / red "Negative")
+- "Open conversation" button navigates to thread with scroll-to-feedback-target and context banner
+
+**Database**: `message_feedback` table with UNIQUE constraints for dedup (migration 037). Upsert on `(user_id,thread_id,message_id)` for authenticated users, `(client_session_id,thread_id,message_id)` for widget sessions.
 
 ### Groundedness & Faithfulness (`backend/app/services/groundedness.py`)
 Multi-layer verification to ensure answers are grounded in retrieved context:

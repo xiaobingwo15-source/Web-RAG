@@ -2501,6 +2501,11 @@ function RagSignalsPanel({
             <div>
               <p className="font-semibold uppercase tracking-wider">P95</p>
               <p className="mt-1 text-sm font-bold text-foreground">{formatLatency(data.totals.latency_p95_ms)}</p>
+              {!data.totals.latency_sample_sufficient && (
+                <p className="mt-0.5 text-[9px] text-amber-500">
+                  {data.totals.latency_sample_count ?? 0}/{data.totals.latency_minimum_samples ?? 10} samples
+                </p>
+              )}
             </div>
             <div>
               <p className="font-semibold uppercase tracking-wider">Widget</p>

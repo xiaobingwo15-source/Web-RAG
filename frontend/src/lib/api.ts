@@ -927,9 +927,12 @@ export interface RagQualitySignalsTotals {
   staleness_ratio?: number | null
   staleness_score_family?: string | null
   latency_sample_count?: number | null
+  latency_minimum_samples?: number | null
+  latency_sample_sufficient?: boolean | null
   latency_p95_ms?: number | null
+  observed_latency_p95_ms?: number | null
   channel_breakdown?: Record<string, RagQualityChannelBreakdown>
-  [key: string]: number | string | null | Record<string, RagQualityChannelBreakdown> | undefined
+  [key: string]: number | string | boolean | null | Record<string, RagQualityChannelBreakdown> | undefined
 }
 
 export interface RagQualitySignalsResponse {

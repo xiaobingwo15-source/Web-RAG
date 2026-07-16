@@ -13,6 +13,8 @@ def settings_for(provider: str = "gemini", dimension: int = 768) -> SimpleNamesp
         get_embedding_dimension=dimension,
         get_local_embedding_model="intfloat/multilingual-e5-base",
         get_local_embedding_device="cpu",
+        get_jina_api_key="jina-key",
+        get_jina_embedding_model="jina-embeddings-v5-text-small",
     )
 
 
@@ -101,6 +103,19 @@ class EmbeddingProviderSelectionTests(unittest.TestCase):
         self.assertIsInstance(client, embeddings.LocalSentenceTransformersClient)
         self.assertEqual(client.model_name, "intfloat/multilingual-e5-base")
         self.assertEqual(client.device, "cpu")
+
+    def test_jina_provider_reuses_a_persistent_http_client(self):
+        pooled_http_client = object()
+        with (
+            patch.object(embeddings, "Settings", return_value=settings_for("jina")),
+            patch.object(embeddings.httpx, "Client", return_value=pooled_http_client) as client_cls,
+        ):
+            client_one = embeddings.get_embedding_client()
+            client_two = embeddings.get_embedding_client()
+
+        self.assertIs(client_one, client_two)
+        self.assertIs(client_one.http_client, pooled_http_client)
+        client_cls.assert_called_once()
 
 
 class GeminiEmbeddingTests(unittest.IsolatedAsyncioTestCase):

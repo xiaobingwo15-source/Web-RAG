@@ -44,6 +44,12 @@ def _embedding_key(embedding: list[float], namespace: str = "") -> str:
     return hashlib.md5(raw.encode()).hexdigest()[:12]
 
 
+def _exact_query_key(query: str, namespace: str = "") -> str:
+    """Create a tenant-scoped key for an identical normalized query."""
+    normalized = " ".join((query or "").casefold().split())
+    return hashlib.sha256(f"{namespace}|{normalized}".encode()).hexdigest()
+
+
 class SemanticCache:
     """In-memory semantic cache with TTL and similarity-based lookup."""
 
@@ -57,8 +63,36 @@ class SemanticCache:
         self.ttl_seconds = ttl_seconds
         self.max_entries = max_entries
         self._entries: dict[str, list[CacheEntry]] = {}  # bucket_key -> entries
+        self._exact_entries: dict[str, CacheEntry] = {}
         self._total_hits = 0
         self._total_misses = 0
+
+    def lookup_exact(self, query: str, namespace: str = "") -> dict | None:
+        """Return a cached identical-query result without generating an embedding."""
+        key = _exact_query_key(query, namespace)
+        entry = self._exact_entries.get(key)
+        if entry is None:
+            self._total_misses += 1
+            return None
+        if time.monotonic() - entry.created_at > self.ttl_seconds:
+            del self._exact_entries[key]
+            self._total_misses += 1
+            return None
+        entry.hit_count += 1
+        self._total_hits += 1
+        logger.info("Exact-query cache HIT (hits=%d)", entry.hit_count)
+        return entry.result
+
+    def store_exact(self, query: str, result: dict, namespace: str = "") -> None:
+        """Cache a successful retrieval under its normalized query text."""
+        key = _exact_query_key(query, namespace)
+        self._exact_entries[key] = CacheEntry(embedding=[], result=result)
+        if len(self._exact_entries) > self.max_entries:
+            oldest_key = min(
+                self._exact_entries,
+                key=lambda item: self._exact_entries[item].created_at,
+            )
+            del self._exact_entries[oldest_key]
 
     def lookup(self, query_embedding: list[float], namespace: str = "") -> dict | None:
         """Find a cached result for a semantically similar query."""
@@ -115,6 +149,7 @@ class SemanticCache:
 
     def clear(self) -> None:
         self._entries.clear()
+        self._exact_entries.clear()
         self._total_hits = 0
         self._total_misses = 0
 
@@ -151,6 +186,14 @@ class SemanticCache:
         for key in empty_buckets:
             del self._entries[key]
 
+        for key, entry in list(self._exact_entries.items()):
+            if any(
+                source.get("document_id") == document_id
+                for source in entry.result.get("sources", [])
+            ):
+                del self._exact_entries[key]
+                invalidated += 1
+
         if invalidated:
             logger.info(
                 "Semantic cache: invalidated %d entries for document %s",
@@ -163,6 +206,7 @@ class SemanticCache:
         total_entries = sum(len(v) for v in self._entries.values())
         return {
             "entries": total_entries,
+            "exact_entries": len(self._exact_entries),
             "hits": self._total_hits,
             "misses": self._total_misses,
             "hit_rate": (

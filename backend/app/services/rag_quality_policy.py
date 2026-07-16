@@ -12,6 +12,7 @@ WEB_FALLBACK_WARNING_RATE = 0.10
 CRITICAL_RATE = 0.25
 LATENCY_WARNING_MS = 3000
 LATENCY_CRITICAL_MS = 6000
+MIN_LATENCY_SAMPLES = 10
 MAX_EXAMPLES_PER_SIGNAL = 5
 STALENESS_DEGRADATION_RATIO = 0.50
 STALENESS_ABSOLUTE_THRESHOLD = 0.30
@@ -361,7 +362,9 @@ def build_rag_quality_signals(
         row for row in retrieval_logs
         if _safe_int(row.get("duration_ms")) >= LATENCY_WARNING_MS
     ]
-    latency_p95 = _percentile(duration_values, 0.95)
+    observed_latency_p95 = _percentile(duration_values, 0.95)
+    latency_sample_sufficient = len(duration_values) >= MIN_LATENCY_SAMPLES
+    latency_p95 = observed_latency_p95 if latency_sample_sufficient else None
 
     thumbs_down_rows = [row for row in feedback_rows if _safe_int(row.get("rating")) == -1]
     web_fallback_logs = [row for row in retrieval_logs if _is_web_fallback_log(row)]
@@ -413,7 +416,16 @@ def build_rag_quality_signals(
         _signal(
             signal_id="completion_latency",
             label="Completion Latency",
-            description="Retrieval completion latency based on stored retrieval duration.",
+            description=(
+                "Retrieval completion latency based on stored retrieval duration."
+                if latency_sample_sufficient
+                else f"No latency samples (0/{MIN_LATENCY_SAMPLES})."
+                if observed_latency_p95 is None
+                else (
+                    f"Insufficient latency samples ({len(duration_values)}/{MIN_LATENCY_SAMPLES}); "
+                    f"observed p95 is {observed_latency_p95}ms."
+                )
+            ),
             status=_latency_status(latency_p95),
             count=len(slow_logs),
             rate=_rate(len(slow_logs), len(duration_values)),
@@ -499,7 +511,10 @@ def build_rag_quality_signals(
             "staleness_score_family": staleness["family"],
             "channel_breakdown": channel_breakdown,
             "latency_sample_count": len(duration_values),
+            "latency_minimum_samples": MIN_LATENCY_SAMPLES,
+            "latency_sample_sufficient": latency_sample_sufficient,
             "latency_p95_ms": latency_p95,
+            "observed_latency_p95_ms": observed_latency_p95,
         },
         "signals": signals,
     }
