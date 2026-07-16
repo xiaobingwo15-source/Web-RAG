@@ -10,6 +10,10 @@ from app.config import Settings
 logger = logging.getLogger(__name__)
 
 COHERE_MODEL = "rerank-v3.5"
+COHERE_TIMEOUT_SECONDS = 1.5
+
+_cohere_client: cohere.ClientV2 | None = None
+_cohere_client_key: str | None = None
 
 # Abstention threshold: if the highest reranker score is below this value,
 # return an empty list rather than feeding low-relevance context to the LLM.
@@ -48,10 +52,17 @@ def _keyword_overlap_score(query: str, document: str) -> float:
 
 
 def _get_cohere_client() -> cohere.ClientV2:
+    global _cohere_client, _cohere_client_key
     api_key = Settings().get_cohere_api_key
     if not api_key:
         raise RuntimeError("COHERE_API_KEY is not configured")
-    return cohere.ClientV2(api_key=api_key)
+    if _cohere_client is None or _cohere_client_key != api_key:
+        _cohere_client = cohere.ClientV2(
+            api_key=api_key,
+            timeout=COHERE_TIMEOUT_SECONDS,
+        )
+        _cohere_client_key = api_key
+    return _cohere_client
 
 
 @observe(name="rerank_with_cohere", as_type="generation")

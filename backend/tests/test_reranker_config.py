@@ -6,6 +6,10 @@ from app.services import reranker
 
 
 class RerankerConfigTests(unittest.TestCase):
+    def tearDown(self):
+        reranker._cohere_client = None
+        reranker._cohere_client_key = None
+
     def test_uses_current_cohere_rerank_model(self):
         self.assertEqual(reranker.COHERE_MODEL, "rerank-v3.5")
 
@@ -21,7 +25,10 @@ class RerankerConfigTests(unittest.TestCase):
         ):
             reranker._get_cohere_client()
 
-        client_cls.assert_called_once_with(api_key="cohere-from-settings")
+        client_cls.assert_called_once_with(
+            api_key="cohere-from-settings",
+            timeout=reranker.COHERE_TIMEOUT_SECONDS,
+        )
 
 
 if __name__ == "__main__":

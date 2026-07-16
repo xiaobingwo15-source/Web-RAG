@@ -110,6 +110,8 @@ class RetrievalSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(log_payload["diagnostics"]["channel"], "widget")
 
     async def test_hybrid_cache_hit_skips_vector_search_and_reranking_but_logs_request(self):
+        embedding = AsyncMock(return_value=[0.1, 0.2])
+        fts_search = Mock(return_value=[])
         vector_search = AsyncMock(return_value=[{
             "id": "chunk-a",
             "document_id": "doc-a",
@@ -119,9 +121,9 @@ class RetrievalSourceTests(unittest.IsolatedAsyncioTestCase):
         rerank = AsyncMock(return_value=[{"index": 0, "score": 0.99}])
         with (
             patch.object(retrieval, "get_embedding_client", return_value=Mock()),
-            patch.object(retrieval, "get_embedding", new=AsyncMock(return_value=[0.1, 0.2])),
+            patch.object(retrieval, "get_embedding", new=embedding),
             patch.object(retrieval, "search_similar_chunks", new=vector_search),
-            patch.object(retrieval, "search_chunks_fts", return_value=[]),
+            patch.object(retrieval, "search_chunks_fts", new=fts_search),
             patch.object(
                 retrieval,
                 "get_documents_by_ids",
@@ -153,6 +155,8 @@ class RetrievalSourceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first["chunks"], cached["chunks"])
         self.assertEqual(cached["retrieval_log_ids"], ["log-cached"])
+        embedding.assert_awaited_once()
+        fts_search.assert_called_once()
         vector_search.assert_awaited_once()
         rerank.assert_awaited_once()
         self.assertEqual(log_retrieval.call_count, 2)
@@ -191,6 +195,81 @@ class RetrievalSourceTests(unittest.IsolatedAsyncioTestCase):
         diagnostics = log_retrieval.call_args.kwargs["diagnostics"]
         self.assertEqual(diagnostics["fallback_reason"], "all_chunks_filtered_by_rerank_threshold")
         self.assertEqual(diagnostics["score_family"], "cohere_rerank")
+
+    async def test_hybrid_retrieval_caps_remote_rerank_candidates(self):
+        vector_results = [
+            {
+                "id": f"chunk-{index}",
+                "document_id": "doc-a",
+                "content": f"Candidate document {index}",
+                "similarity": 0.9 - index / 100,
+            }
+            for index in range(16)
+        ]
+
+        async def rerank(_query, documents, **_kwargs):
+            self.assertEqual(len(documents), retrieval.MAX_RERANK_CANDIDATES)
+            return [{"index": 0, "score": 0.99}]
+
+        with (
+            patch.object(retrieval, "get_embedding_client", return_value=Mock()),
+            patch.object(retrieval, "get_embedding", new=AsyncMock(return_value=[0.1, 0.2])),
+            patch.object(retrieval, "search_similar_chunks", new=AsyncMock(return_value=vector_results)),
+            patch.object(retrieval, "search_chunks_fts", return_value=[]),
+            patch.object(
+                retrieval,
+                "get_documents_by_ids",
+                return_value={"doc-a": {"id": "doc-a", "filename": "fixture.md", "status": "processed"}},
+            ),
+            patch.object(retrieval, "rerank_with_cohere", new=rerank),
+            patch.object(retrieval, "log_retrieval", return_value={"id": "log-capped"}),
+        ):
+            result = await retrieval.retrieve_context(
+                token="token",
+                user_id="user-a",
+                target_user_id="admin-a",
+                tenant_id="tenant-a",
+                message="Compare every relevant candidate",
+                mode="hybrid",
+                match_count=8,
+            )
+
+        self.assertEqual(len(result["sources"]), 1)
+
+    async def test_hybrid_retrieval_abstains_from_weak_timeout_fallback(self):
+        with (
+            patch.object(retrieval, "get_embedding_client", return_value=Mock()),
+            patch.object(retrieval, "get_embedding", new=AsyncMock(return_value=[0.1, 0.2])),
+            patch.object(
+                retrieval,
+                "search_similar_chunks",
+                new=AsyncMock(return_value=[{
+                    "id": "chunk-a",
+                    "document_id": "doc-a",
+                    "content": "Semantically weak fallback content.",
+                    "similarity": 0.4,
+                }]),
+            ),
+            patch.object(retrieval, "search_chunks_fts", return_value=[]),
+            patch.object(
+                retrieval,
+                "rerank_with_cohere",
+                new=AsyncMock(return_value=[{"index": 0, "score": 0.011, "fallback": True}]),
+            ),
+            patch.object(retrieval, "log_retrieval", return_value={"id": "log-fallback"}) as log_retrieval,
+        ):
+            result = await retrieval.retrieve_context(
+                token="token",
+                user_id="user-a",
+                target_user_id="admin-a",
+                tenant_id="tenant-a",
+                message="Question during reranker timeout",
+                mode="hybrid",
+            )
+
+        self.assertEqual(result["sources"], [])
+        diagnostics = log_retrieval.call_args.kwargs["diagnostics"]
+        self.assertEqual(diagnostics["fallback_reason"], "weak_local_rerank_fallback")
 
     async def test_client_without_explicit_target_searches_tenant_admin_knowledge_base(self):
         profile_response = Mock(data={"role": "client"})

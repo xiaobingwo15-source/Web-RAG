@@ -18,6 +18,7 @@ JINA_PROVIDER = "jina"
 GEMINI_EMBEDDING_MAX_BATCH_SIZE = 100
 JINA_API_URL = "https://api.jina.ai/v1/embeddings"
 JINA_MAX_BATCH_SIZE = 100
+JINA_TIMEOUT_SECONDS = 10.0
 
 _embedding_client: object | None = None
 _embedding_client_key: tuple[str, str, str | None, str | None] | None = None
@@ -57,10 +58,11 @@ class JinaClient:
     api_key: str
     model: str
     dimension: int
+    http_client: httpx.Client
 
     def embed(self, texts: list[str], task: str) -> list[list[float]]:
         task_type = "retrieval.query" if task == "query" else "retrieval.passage"
-        response = httpx.post(
+        response = self.http_client.post(
             JINA_API_URL,
             headers={
                 "Content-Type": "application/json",
@@ -73,7 +75,6 @@ class JinaClient:
                 "dimensions": self.dimension,
                 "input": texts,
             },
-            timeout=60.0,
         )
         response.raise_for_status()
         data = response.json()
@@ -115,6 +116,9 @@ def get_embedding_client() -> object:
             api_key=settings.get_jina_api_key,
             model=info["model"],
             dimension=info["dimension"],
+            http_client=httpx.Client(
+                timeout=httpx.Timeout(JINA_TIMEOUT_SECONDS, connect=3.0),
+            ),
         )
     else:
         _embedding_client = genai.Client(api_key=settings.get_google_api_key)

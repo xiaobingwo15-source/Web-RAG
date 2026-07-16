@@ -12,6 +12,27 @@ class RerankerFallbackTests(unittest.TestCase):
     def _run(self, coro):
         return asyncio.run(coro)
 
+    def tearDown(self):
+        reranker._cohere_client = None
+        reranker._cohere_client_key = None
+
+    def test_public_reranker_reuses_client_with_latency_budget(self):
+        mock_client = MagicMock()
+        mock_client.rerank.return_value = SimpleNamespace(
+            results=[SimpleNamespace(index=0, relevance_score=0.95)]
+        )
+        settings = SimpleNamespace(get_cohere_api_key="cohere-key")
+
+        with (
+            patch.object(reranker, "Settings", return_value=settings),
+            patch.object(reranker.cohere, "ClientV2", return_value=mock_client) as client_cls,
+        ):
+            first = self._run(reranker.rerank_with_cohere("query", ["document"], top_n=1))
+            second = self._run(reranker.rerank_with_cohere("query", ["document"], top_n=1))
+
+        self.assertEqual(first, second)
+        client_cls.assert_called_once_with(api_key="cohere-key", timeout=reranker.COHERE_TIMEOUT_SECONDS)
+
     # -- Cohere success: fallback_scores ignored --------------------------
 
     @patch.object(reranker, "_get_cohere_client")

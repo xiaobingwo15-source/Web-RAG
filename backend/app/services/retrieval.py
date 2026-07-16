@@ -15,6 +15,8 @@ VECTOR_SIMILARITY_THRESHOLD = 0.1
 MMR_LAMBDA = 0.5  # Balance between relevance (1.0) and diversity (0.0)
 MAX_RETRIEVAL_LOG_ITEMS = 10
 MAX_RETRIEVAL_LOG_TEXT_CHARS = 2000
+MAX_RERANK_CANDIDATES = 8
+RRF_FALLBACK_RELEVANCE_THRESHOLD = 0.015
 SCORE_FAMILY_COHERE = "cohere_rerank"
 SCORE_FAMILY_RRF = "rrf_fallback"
 SCORE_FAMILY_VECTOR = "vector_similarity"
@@ -391,6 +393,12 @@ async def retrieve_context(
     def _empty():
         return _log_and_return({"chunks": [], "sources": []})
 
+    exact_cached = cache.lookup_exact(message, namespace=cache_namespace)
+    if exact_cached is not None:
+        retrieval_diagnostics["cache_hit"] = True
+        retrieval_diagnostics["cache_kind"] = "exact_query"
+        return _log_and_return(exact_cached)
+
     if mode == "fts":
         fts_start = monotonic_ms()
         chunks = await asyncio.to_thread(search_chunks_fts, token, target_user_id, message, match_count, tenant_id)
@@ -414,7 +422,10 @@ async def retrieve_context(
         sources = _finalize_sources(token, raw_sources, mode, tenant_id)
         sources = await _resolve_parents(sources)
         logger.info(f"FTS retrieval: {len(sources)} chunks")
-        return _log_and_return({"chunks": [s["content"] for s in sources], "sources": sources})
+        result = {"chunks": [s["content"] for s in sources], "sources": sources}
+        if sources:
+            cache.store_exact(message, result, namespace=cache_namespace)
+        return _log_and_return(result)
 
     print(f"[RETRIEVAL] query='{message[:80]}...', mode={mode}, target_user_id={target_user_id}")
     logger.info(f"Retrieval: query='{message[:80]}...', mode={mode}, user_id={target_user_id}, tenant_id={tenant_id}")
@@ -463,6 +474,7 @@ async def retrieve_context(
         cached = cache.lookup(query_embedding, namespace=cache_namespace)
         if cached is not None:
             retrieval_diagnostics["cache_hit"] = True
+            retrieval_diagnostics["cache_kind"] = "semantic"
             logger.info("Semantic cache hit — returning cached retrieval result")
             log_latency(
                 "retrieval.cache_hit",
@@ -473,6 +485,7 @@ async def retrieve_context(
                 tenant_id=tenant_id,
                 thread_id=thread_id,
             )
+            cache.store_exact(message, cached, namespace=cache_namespace)
             return _log_and_return(cached)
 
         # Vector search starts only after embedding completes
@@ -547,7 +560,11 @@ async def retrieve_context(
         retrieval_diagnostics["top_fused_score"] = sorted_results[0]["score"] if sorted_results else 0.0
 
         # MMR diversification: reduce redundancy in candidates before reranking
-        diverse_results = _mmr_diversify(sorted_results, lambda_param=MMR_LAMBDA, top_n=match_count * 2)
+        diverse_results = _mmr_diversify(
+            sorted_results,
+            lambda_param=MMR_LAMBDA,
+            top_n=min(match_count * 2, MAX_RERANK_CANDIDATES),
+        )
         candidates = [r["content"] for r in diverse_results]
         candidate_metas = diverse_results
         retrieval_diagnostics["candidate_count"] = len(candidates)
@@ -578,6 +595,14 @@ async def retrieve_context(
             is_fallback = any(s.get("fallback") for s in scored)
             score_family = SCORE_FAMILY_RRF if is_fallback else SCORE_FAMILY_COHERE
             retrieval_diagnostics["score_family"] = score_family
+            if is_fallback:
+                scored = [
+                    item for item in scored
+                    if item.get("score", 0) >= RRF_FALLBACK_RELEVANCE_THRESHOLD
+                ]
+                if not scored:
+                    retrieval_diagnostics["fallback_reason"] = "weak_local_rerank_fallback"
+                    return _empty()
             if not is_fallback and scored:
                 pre_filter_count = len(scored)
                 scored = [s for s in scored if s.get("score", 0) >= RERANK_SCORE_THRESHOLD]
@@ -615,6 +640,7 @@ async def retrieve_context(
             result = {"chunks": [s["content"] for s in sources], "sources": sources}
             if query_embedding_for_cache:
                 cache.store(query_embedding_for_cache, result, namespace=cache_namespace)
+            cache.store_exact(message, result, namespace=cache_namespace)
             return _log_and_return(result)
 
         # Fallback to vector-only
@@ -667,6 +693,7 @@ async def retrieve_context(
     cached = cache.lookup(query_embedding, namespace=cache_namespace)
     if cached is not None:
         retrieval_diagnostics["cache_hit"] = True
+        retrieval_diagnostics["cache_kind"] = "semantic"
         logger.info("Semantic cache hit (vector mode) — returning cached result")
         log_latency(
             "retrieval.cache_hit",
@@ -677,6 +704,7 @@ async def retrieve_context(
             tenant_id=tenant_id,
             thread_id=thread_id,
         )
+        cache.store_exact(message, cached, namespace=cache_namespace)
         return _log_and_return(cached)
 
     vector_start = monotonic_ms()
@@ -710,4 +738,5 @@ async def retrieve_context(
     result = {"chunks": [s["content"] for s in sources], "sources": sources}
     if query_embedding_for_cache:
         cache.store(query_embedding_for_cache, result, namespace=cache_namespace)
+    cache.store_exact(message, result, namespace=cache_namespace)
     return _log_and_return(result)
