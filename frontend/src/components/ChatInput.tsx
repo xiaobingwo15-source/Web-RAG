@@ -13,6 +13,7 @@ export function ChatInput({
   replyTo,
   onCancelReply,
   initialValue = '',
+  initialImages = [],
 }: {
   onSend: (msg: string, useDocuments: boolean, retrievalMode: string, images?: string[]) => void
   disabled: boolean
@@ -20,10 +21,11 @@ export function ChatInput({
   replyTo?: ChatReplyTarget | null
   onCancelReply?: () => void
   initialValue?: string
+  initialImages?: string[]
 }) {
   const [value, setValue] = useState(initialValue)
   const [useDocuments, setUseDocuments] = useState(true)
-  const [images, setImages] = useState<string[]>([])
+  const [images, setImages] = useState<string[]>(initialImages)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {

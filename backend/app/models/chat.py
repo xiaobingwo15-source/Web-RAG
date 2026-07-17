@@ -5,6 +5,7 @@ from typing import Literal, Optional
 MAX_MESSAGE_LENGTH = 8000
 MAX_IMAGE_COUNT = 4
 MAX_IMAGE_DATA_URL_LENGTH = 5_000_000
+MessageStatus = Literal["streaming", "complete", "failed"]
 
 
 class ChatMessage(BaseModel):
@@ -78,6 +79,7 @@ class MessageResponse(BaseModel):
     content: str
     created_at: str
     reply_to: Optional[str] = None
+    status: MessageStatus = "complete"
 
 
 class MessageListResponse(BaseModel):

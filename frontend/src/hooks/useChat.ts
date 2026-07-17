@@ -1,6 +1,14 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useAuth } from './useAuth'
-import { streamChat, getThreadMessages, type RetrievalSource, type StreamError, type StreamHandle } from '@/lib/api'
+import {
+  streamChat,
+  getThreadMessages,
+  type MessageResponse,
+  type MessageStatus,
+  type RetrievalSource,
+  type StreamError,
+  type StreamHandle,
+} from '@/lib/api'
 import type { AgentAction, ActionType, ActionSource } from '@/lib/agent-types'
 import { LatencyTimer } from '@/lib/performance'
 
@@ -25,7 +33,13 @@ export interface ChatMessage {
   actions?: AgentAction[]
   sources?: RetrievalSource[]
   adminResponse?: string
+  status: MessageStatus
 }
+
+const RESPONSE_POLL_INTERVAL_MS = 3000
+const RESPONSE_STALE_AFTER_MS = 135_000
+const INTERRUPTED_RESPONSE = 'This response was interrupted. Please try again.'
+const EMPTY_RESPONSE = 'The AI returned an empty response. Please try again.'
 
 function parseStoredMessageContent(content: string): { text: string; images?: string[] } {
   try {
@@ -39,6 +53,86 @@ function parseStoredMessageContent(content: string): { text: string; images?: st
   return { text: content }
 }
 
+function normalizedStatus(message: MessageResponse): MessageStatus {
+  if (message.status === 'streaming' || message.status === 'complete' || message.status === 'failed') {
+    return message.status
+  }
+  return message.role === 'assistant' && !message.content ? 'streaming' : 'complete'
+}
+
+function isStale(createdAt?: string): boolean {
+  if (!createdAt) return false
+  const createdMs = Date.parse(createdAt)
+  return Number.isFinite(createdMs) && Date.now() - createdMs >= RESPONSE_STALE_AFTER_MS
+}
+
+function hydrateMessages(messages: MessageResponse[]): ChatMessage[] {
+  const contentMap: Record<string, string> = {}
+  const roleMap: Record<string, ChatMessageRole> = {}
+
+  for (const message of messages) {
+    const role = message.role === 'user' || message.role === 'assistant' ? message.role : null
+    const parsedContent = parseStoredMessageContent(message.content)
+    contentMap[message.id] = parsedContent.text
+    if (role) roleMap[message.id] = role
+  }
+
+  const hydrated: ChatMessage[] = []
+  for (const message of messages) {
+    if (message.role === 'admin') {
+      const previous = hydrated[hydrated.length - 1]
+      if (previous?.role === 'assistant') previous.adminResponse = message.content
+      continue
+    }
+
+    const parsedContent = parseStoredMessageContent(message.content)
+    let status = normalizedStatus(message)
+    let content = parsedContent.text
+    if (message.role === 'assistant' && status === 'streaming' && isStale(message.created_at)) {
+      status = 'failed'
+      content = content || INTERRUPTED_RESPONSE
+    } else if (message.role === 'assistant' && status === 'failed' && !content) {
+      content = INTERRUPTED_RESPONSE
+    } else if (message.role === 'assistant' && status === 'complete' && !content) {
+      status = 'failed'
+      content = EMPTY_RESPONSE
+    }
+
+    hydrated.push({
+      id: message.id,
+      role: message.role as ChatMessageRole,
+      content,
+      created_at: message.created_at,
+      images: parsedContent.images,
+      replyTo: message.reply_to || undefined,
+      replyToContent: message.reply_to ? contentMap[message.reply_to] : undefined,
+      replyToRole: message.reply_to ? roleMap[message.reply_to] : undefined,
+      status,
+    })
+  }
+  return hydrated
+}
+
+function failPendingResponse(messages: ChatMessage[]): ChatMessage[] {
+  const updated = [...messages]
+  const last = updated[updated.length - 1]
+  if (last?.role === 'assistant') {
+    updated[updated.length - 1] = {
+      ...last,
+      content: last.content || INTERRUPTED_RESPONSE,
+      status: 'failed',
+    }
+  } else if (last?.role === 'user') {
+    updated.push({
+      role: 'assistant',
+      content: INTERRUPTED_RESPONSE,
+      created_at: new Date().toISOString(),
+      status: 'failed',
+    })
+  }
+  return updated
+}
+
 export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
@@ -50,7 +144,8 @@ export function useChat() {
   const rafId = useRef<number | null>(null)
   const latencyTimer = useRef<LatencyTimer | null>(null)
   const abortRef = useRef<(() => void) | null>(null)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const loadGenerationRef = useRef(0)
   const { session } = useAuth()
   const accessToken = session?.access_token
 
@@ -70,122 +165,96 @@ export function useChat() {
     })
   }, [])
 
-  useEffect(() => {
-    return () => {
-      if (rafId.current !== null) cancelAnimationFrame(rafId.current)
-      if (pollRef.current !== null) clearInterval(pollRef.current)
+  const stopPolling = useCallback(() => {
+    if (pollRef.current !== null) {
+      clearTimeout(pollRef.current)
+      pollRef.current = null
     }
   }, [])
+
+  useEffect(() => {
+    return () => {
+      loadGenerationRef.current += 1
+      if (rafId.current !== null) cancelAnimationFrame(rafId.current)
+      stopPolling()
+      abortRef.current?.()
+    }
+  }, [stopPolling])
 
   const loadThread = useCallback(async (id: string) => {
     if (!accessToken) return
 
-    // Stop any existing poll when switching threads
-    if (pollRef.current !== null) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
+    const generation = ++loadGenerationRef.current
+    stopPolling()
 
     try {
-      const msgs = await getThreadMessages(id, accessToken)
-      // Build a lookup map of message ID → content for reply previews
-      const contentMap: Record<string, string> = {}
-      const roleMap: Record<string, ChatMessageRole> = {}
-      for (const m of msgs) {
-        const role = m.role === 'user' || m.role === 'assistant' ? m.role : null
-        const parsedContent = parseStoredMessageContent(m.content)
-        contentMap[m.id] = parsedContent.text
-        if (role) roleMap[m.id] = role
+      const storedMessages = await getThreadMessages(id, accessToken)
+      if (generation !== loadGenerationRef.current) return
+
+      let hydrated = hydrateMessages(storedMessages)
+      let latest = hydrated[hydrated.length - 1]
+      if (latest?.role === 'user' && isStale(latest.created_at)) {
+        hydrated = failPendingResponse(hydrated)
+        latest = hydrated[hydrated.length - 1]
       }
-      const parsed: ChatMessage[] = []
-      for (const m of msgs) {
-        if (m.role === 'admin') {
-          // Attach admin response to the preceding assistant message
-          const prev = parsed[parsed.length - 1]
-          if (prev && prev.role === 'assistant') {
-            prev.adminResponse = m.content
-          }
-          continue
-        }
-        const parsedContent = parseStoredMessageContent(m.content)
-        parsed.push({
-          id: m.id,
-          role: m.role as ChatMessageRole,
-          content: parsedContent.text,
-          created_at: m.created_at,
-          images: parsedContent.images,
-          replyTo: m.reply_to || undefined,
-          replyToContent: m.reply_to ? contentMap[m.reply_to] : undefined,
-          replyToRole: m.reply_to ? roleMap[m.reply_to] : undefined,
-        })
-      }
-      setMessages(parsed)
+
+      setMessages(hydrated)
       setThreadId(id)
 
-      // ── Pending-response polling ──
-      // If the last message is an empty assistant placeholder (created by
-      // save_message_streaming before the pipeline starts), the backend is
-      // still generating.  Poll every 3 s until the content is filled in.
-      const lastMsg = parsed[parsed.length - 1]
-      const isStreamingPlaceholder = lastMsg?.role === 'assistant' && !lastMsg?.content && !!lastMsg?.id
-      if (isStreamingPlaceholder || lastMsg?.role === 'user') {
-        setIsStreaming(true)
-        const pollId = setInterval(async () => {
-          try {
-            const updated = await getThreadMessages(id, accessToken)
-            // Check if: (a) the placeholder got content filled in, or
-            // (b) a new assistant message appeared after the last user message
-            const lastUserTime = lastMsg.created_at || ''
-            const placeholderFilled = isStreamingPlaceholder && updated.some(
-              m => m.id === lastMsg.id && m.content && m.status === 'complete'
-            )
-            const hasNewAssistant = updated.some(
-              m => m.role === 'assistant' && (m.created_at || '') > lastUserTime && m.content
-            )
-            if (placeholderFilled || hasNewAssistant) {
-              clearInterval(pollId)
-              pollRef.current = null
-              setIsStreaming(false)
-              // Re-hydrate the full thread with the new assistant message
-              const reloaded: ChatMessage[] = []
-              const cMap: Record<string, string> = {}
-              const rMap: Record<string, ChatMessageRole> = {}
-              for (const m of updated) {
-                const role = m.role === 'user' || m.role === 'assistant' ? m.role : null
-                const pc = parseStoredMessageContent(m.content)
-                cMap[m.id] = pc.text
-                if (role) rMap[m.id] = role
-              }
-              for (const m of updated) {
-                if (m.role === 'admin') {
-                  const prev = reloaded[reloaded.length - 1]
-                  if (prev && prev.role === 'assistant') prev.adminResponse = m.content
-                  continue
-                }
-                const pc = parseStoredMessageContent(m.content)
-                reloaded.push({
-                  id: m.id,
-                  role: m.role as ChatMessageRole,
-                  content: pc.text,
-                  created_at: m.created_at,
-                  images: pc.images,
-                  replyTo: m.reply_to || undefined,
-                  replyToContent: m.reply_to ? cMap[m.reply_to] : undefined,
-                  replyToRole: m.reply_to ? rMap[m.reply_to] : undefined,
-                })
-              }
-              setMessages(reloaded)
-            }
-          } catch {
-            // ignore poll errors, will retry
-          }
-        }, 3000)
-        pollRef.current = pollId
+      const pending = latest?.role === 'user'
+        || (latest?.role === 'assistant' && latest.status === 'streaming')
+      if (!pending) {
+        setIsStreaming(false)
+        return
       }
+
+      setIsStreaming(true)
+      const parsedStartedAt = latest?.created_at ? Date.parse(latest.created_at) : Number.NaN
+      const pendingStartedAt = Number.isFinite(parsedStartedAt) ? parsedStartedAt : Date.now()
+
+      const pollPendingResponse = async () => {
+        if (generation !== loadGenerationRef.current) return
+        try {
+          const polled = hydrateMessages(await getThreadMessages(id, accessToken))
+          if (generation !== loadGenerationRef.current) return
+
+          let nextMessages = polled
+          let nextLatest = nextMessages[nextMessages.length - 1]
+          const stillPending = nextLatest?.role === 'user'
+            || (nextLatest?.role === 'assistant' && nextLatest.status === 'streaming')
+          if (stillPending && Date.now() - pendingStartedAt >= RESPONSE_STALE_AFTER_MS) {
+            nextMessages = failPendingResponse(nextMessages)
+            nextLatest = nextMessages[nextMessages.length - 1]
+          }
+
+          setMessages(nextMessages)
+          const terminal = nextLatest?.role === 'assistant' && nextLatest.status !== 'streaming'
+          if (terminal) {
+            pollRef.current = null
+            setIsStreaming(false)
+            return
+          }
+        } catch (error) {
+          if (generation !== loadGenerationRef.current) return
+          if (Date.now() - pendingStartedAt >= RESPONSE_STALE_AFTER_MS) {
+            setMessages((current) => failPendingResponse(current))
+            pollRef.current = null
+            setIsStreaming(false)
+            return
+          }
+          console.warn('Pending response status check failed; retrying', error)
+        }
+
+        pollRef.current = setTimeout(pollPendingResponse, RESPONSE_POLL_INTERVAL_MS)
+      }
+
+      pollRef.current = setTimeout(pollPendingResponse, RESPONSE_POLL_INTERVAL_MS)
     } catch (err) {
+      if (generation !== loadGenerationRef.current) return
+      setIsStreaming(false)
       console.error('Failed to load thread:', err)
     }
-  }, [accessToken])
+  }, [accessToken, stopPolling])
 
   const sendMessage = async (
     content: string,
@@ -198,11 +267,8 @@ export function useChat() {
   ) => {
     if (!accessToken) return
 
-    // Stop any pending-response poll when sending a new message
-    if (pollRef.current !== null) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
+    loadGenerationRef.current += 1
+    stopPolling()
 
     const now = new Date().toISOString()
     const userClientId = crypto.randomUUID()
@@ -215,13 +281,21 @@ export function useChat() {
       replyTo,
       replyToContent,
       replyToRole,
+      status: 'complete',
     }
     setMessages((prev) => [...prev, userMsg])
     setIsStreaming(true)
     currentThoughts.current = []
     currentActionRef.current = null
 
-    setMessages((prev) => [...prev, { role: 'assistant', content: '', created_at: new Date().toISOString(), thoughts: [], actions: [] }])
+    setMessages((prev) => [...prev, {
+      role: 'assistant',
+      content: '',
+      created_at: new Date().toISOString(),
+      thoughts: [],
+      actions: [],
+      status: 'streaming',
+    }])
 
     latencyTimer.current = new LatencyTimer('chat.send')
     await streamChat(
@@ -270,12 +344,14 @@ export function useChat() {
             actions = [...actions]
             actions[actions.length - 1] = { ...actions[actions.length - 1], status: "completed" }
           }
+          const content = last.content + buffered
           updated[updated.length - 1] = {
             ...last,
-            content: last.content + buffered,
+            content: content || EMPTY_RESPONSE,
             ...(meta?.messageId ? { id: meta.messageId } : {}),
             ...(meta?.createdAt ? { created_at: meta.createdAt } : {}),
             actions,
+            status: content ? 'complete' : 'failed',
           }
           return updated
         })
@@ -302,6 +378,7 @@ export function useChat() {
               ...last,
               content: last.content || message,
               actions: last.actions?.map(a => ({ ...a, status: "completed" as const })),
+              status: 'failed',
             }
           }
           return updated
@@ -383,6 +460,21 @@ export function useChat() {
           }
         }))
       },
+      (meta) => {
+        setMessages((prev) => {
+          const updated = [...prev]
+          for (let index = updated.length - 1; index >= 0; index -= 1) {
+            if (updated[index].role !== 'assistant' || updated[index].status !== 'streaming') continue
+            updated[index] = {
+              ...updated[index],
+              ...(meta.messageId ? { id: meta.messageId } : {}),
+              ...(meta.createdAt ? { created_at: meta.createdAt } : {}),
+            }
+            break
+          }
+          return updated
+        })
+      },
     )
   }
 
@@ -393,16 +485,16 @@ export function useChat() {
       cancelAnimationFrame(rafId.current)
       rafId.current = null
     }
-    if (pollRef.current !== null) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
+    loadGenerationRef.current += 1
+    stopPolling()
     tokenBuffer.current = ''
     latencyTimer.current = null
     setIsStreaming(false)
-  }, [])
+  }, [stopPolling])
 
   const clearMessages = () => {
+    loadGenerationRef.current += 1
+    stopPolling()
     setMessages([])
     setThreadId(null)
   }

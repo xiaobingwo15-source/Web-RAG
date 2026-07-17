@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useChat, type ChatReplyTarget } from '@/hooks/useChat'
+import { useChat, type ChatMessage as ChatMessageType, type ChatReplyTarget } from '@/hooks/useChat'
 import { useDocuments } from '@/hooks/useDocuments'
 import { useThreads } from '@/hooks/useThreads'
 import { useAuth } from '@/hooks/useAuth'
@@ -22,7 +22,7 @@ import {
 } from 'lucide-react'
 
 export function ChatPage() {
-  const { messages, sendMessage, isStreaming, threadId, clearMessages, loadThread, currentAction } = useChat()
+  const { messages, sendMessage, isStreaming, threadId, clearMessages, loadThread } = useChat()
   const {
     documents,
     uploadDocument,
@@ -43,6 +43,7 @@ export function ChatPage() {
   const [showExportMenu, setShowExportMenu] = useState(false)
   const [showDocUpload, setShowDocUpload] = useState(false)
   const [inputDraft, setInputDraft] = useState('')
+  const [inputDraftImages, setInputDraftImages] = useState<string[]>([])
   const [inputDraftKey, setInputDraftKey] = useState(0)
   const messageViewportRef = useRef<HTMLDivElement>(null)
   const latestMessageRef = useRef<HTMLDivElement>(null)
@@ -106,6 +107,7 @@ export function ChatPage() {
     setFeedbackMap({})
     setReplyTo(null)
     setInputDraft('')
+    setInputDraftImages([])
     setInputDraftKey((key) => key + 1)
     shouldFollowScrollRef.current = true
     previousMessageCountRef.current = 0
@@ -147,6 +149,22 @@ export function ChatPage() {
 
   const handleSourceFollowUp = useCallback((prompt: string) => {
     setInputDraft(prompt)
+    setInputDraftImages([])
+    setInputDraftKey((key) => key + 1)
+  }, [])
+
+  const handleRetryMessage = useCallback((message: ChatMessageType) => {
+    setInputDraft(message.content)
+    setInputDraftImages(message.images || [])
+    if (message.replyTo && message.replyToContent && message.replyToRole) {
+      setReplyTo({
+        id: message.replyTo,
+        content: message.replyToContent,
+        role: message.replyToRole,
+      })
+    } else {
+      setReplyTo(null)
+    }
     setInputDraftKey((key) => key + 1)
   }, [])
 
@@ -398,29 +416,23 @@ export function ChatPage() {
               </div>
             ) : (
               <div className="px-4 py-3 space-y-1 max-w-4xl mx-auto">
-                {messages.map((msg, i) => (
-                  <ChatMessage
-                    key={i}
-                    message={msg}
-                    messageId={msg.id}
-                    feedback={msg.id && msg.role === 'assistant' ? feedbackMap[msg.id] ?? null : null}
-                    onFeedback={msg.id && msg.role === 'assistant' ? handleFeedback : undefined}
-                    onReply={handleReply}
-                    onSourceFollowUp={handleSourceFollowUp}
-                  />
-                ))}
-
-                {isStreaming && !currentAction && !(messages.length > 0 && messages[messages.length - 1].role === 'assistant' && messages[messages.length - 1].content) && (
-                  <div className="flex items-start gap-2">
-                    <div className="bg-bubble-in rounded-lg px-3 py-2 shadow-sm max-w-[65%]">
-                      <div className="flex items-center gap-1">
-                        <div className="h-2 w-2 rounded-full bg-[#8696A0] animate-bounce" style={{ animationDelay: '0ms' }} />
-                        <div className="h-2 w-2 rounded-full bg-[#8696A0] animate-bounce" style={{ animationDelay: '150ms' }} />
-                        <div className="h-2 w-2 rounded-full bg-[#8696A0] animate-bounce" style={{ animationDelay: '300ms' }} />
-                      </div>
-                    </div>
-                  </div>
-                )}
+                {messages.map((msg, i) => {
+                  const retryMessage = msg.role === 'assistant' && msg.status === 'failed'
+                    ? [...messages.slice(0, i)].reverse().find((candidate) => candidate.role === 'user')
+                    : undefined
+                  return (
+                    <ChatMessage
+                      key={msg.id || i}
+                      message={msg}
+                      messageId={msg.id}
+                      feedback={msg.id && msg.role === 'assistant' ? feedbackMap[msg.id] ?? null : null}
+                      onFeedback={msg.id && msg.role === 'assistant' ? handleFeedback : undefined}
+                      onReply={handleReply}
+                      onSourceFollowUp={handleSourceFollowUp}
+                      onRetry={retryMessage ? () => handleRetryMessage(retryMessage) : undefined}
+                    />
+                  )
+                })}
 
                 <div ref={latestMessageRef} className="h-px" />
               </div>
@@ -438,6 +450,7 @@ export function ChatPage() {
           replyTo={replyTo}
           onCancelReply={() => setReplyTo(null)}
           initialValue={inputDraft}
+          initialImages={inputDraftImages}
         />
       </main>
     </div>

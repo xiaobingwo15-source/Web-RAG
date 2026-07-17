@@ -13,6 +13,7 @@ interface ChatMessageProps {
   onFeedback?: (messageId: string, rating: 1 | -1, comment?: string) => Promise<void>
   onReply?: (target: ChatReplyTarget) => void
   onSourceFollowUp?: (prompt: string) => void
+  onRetry?: () => void
 }
 
 const FEEDBACK_REASONS = ['Missing source', 'Wrong fact', 'Outdated', 'Hard to follow']
@@ -33,8 +34,10 @@ function formatMessageTime(createdAt?: string) {
   })
 }
 
-export function ChatMessage({ message, messageId, feedback, onFeedback, onReply, onSourceFollowUp }: ChatMessageProps) {
+export function ChatMessage({ message, messageId, feedback, onFeedback, onReply, onSourceFollowUp, onRetry }: ChatMessageProps) {
   const isUser = message.role === 'user'
+  const isStreaming = !isUser && message.status === 'streaming'
+  const isFailed = !isUser && message.status === 'failed'
   const normalizedFeedback = feedback ?? null
   const [optimisticFeedback, setOptimisticFeedback] = useState<{ messageId?: string; value: 1 | -1 | null }>({ value: null })
   const [selectedSource, setSelectedSource] = useState<RetrievalSource | null>(null)
@@ -156,6 +159,13 @@ export function ChatMessage({ message, messageId, feedback, onFeedback, onReply,
           )}
 
           {/* Content */}
+          {isStreaming && !message.content && (
+            <div className="flex items-center gap-1 py-1" role="status" aria-label="Assistant is typing">
+              <div className="h-2 w-2 rounded-full bg-[#8696A0] animate-bounce" style={{ animationDelay: '0ms' }} />
+              <div className="h-2 w-2 rounded-full bg-[#8696A0] animate-bounce" style={{ animationDelay: '150ms' }} />
+              <div className="h-2 w-2 rounded-full bg-[#8696A0] animate-bounce" style={{ animationDelay: '300ms' }} />
+            </div>
+          )}
           {message.content && (
             isUser ? (
               <p className="whitespace-pre-wrap text-[14.2px] leading-[1.35]">{message.content}</p>
@@ -251,6 +261,16 @@ export function ChatMessage({ message, messageId, feedback, onFeedback, onReply,
           <p className="mt-1 text-[11px] text-[#B91C1C]" role="alert">{feedbackError}</p>
         )}
         </div>
+
+        {isFailed && onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="mt-1 rounded-md border border-[#D8E8E4] bg-white px-2.5 py-1 text-xs font-semibold text-[#008069] hover:bg-[#F0F2F5]"
+          >
+            Retry question
+          </button>
+        )}
 
         {canReply && (
           <button

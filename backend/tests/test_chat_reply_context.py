@@ -83,7 +83,15 @@ class ChatStreamReplyContextTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with (
-            patch.object(chat, "Settings", return_value=SimpleNamespace(rate_limit_chat_requests=10, rate_limit_chat_window=60)),
+            patch.object(
+                chat,
+                "Settings",
+                return_value=SimpleNamespace(
+                    rate_limit_chat_requests=10,
+                    rate_limit_chat_window=60,
+                    chat_pipeline_timeout_seconds=120,
+                ),
+            ),
             patch.object(chat, "check_rate_limit"),
             patch.object(chat, "propagate_attributes", return_value=nullcontext()),
             patch.object(chat, "save_message", return_value={"id": "user-b", "created_at": "2026-01-01T00:00:00Z"}),

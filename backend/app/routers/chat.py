@@ -13,6 +13,7 @@ from app.services.retrieval import retrieve_context
 from app.services.agent_supervisor import execute as agent_execute
 from app.services.database import create_thread, save_message, save_message_streaming, update_message_content, get_thread_messages, get_user_threads, get_thread, delete_thread as db_delete_thread, save_message_feedback, get_message_feedback, get_retrieval_logs, update_retrieval_logs_for_answer
 from app.services.rate_limit import check_rate_limit
+from app.services.streaming_tasks import spawn_streaming_task
 from app.config import Settings
 from sse_starlette.sse import EventSourceResponse
 
@@ -233,42 +234,57 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
             retrieval_quality: str | None = None
             rag_diagnostics: dict | None = None
             try:
-                async for event in agent_execute(
-                    token=token,
-                    user_id=user.id,
-                    message=active_message,
-                    history=history,
-                    thread_id=thread_id,
-                    use_documents=request.use_documents,
-                    retrieval_mode=request.retrieval_mode,
-                    enable_web_search=allow_web_search,
-                    enable_sql=allow_sql,
-                    images=request.images,
-                    tenant_id=user.tenant_id,
-                ):
-                    # Push every event to the SSE queue (best-effort)
-                    try:
-                        queue.put_nowait(event)
-                    except asyncio.QueueFull:
-                        pass  # drop if consumer is too slow
-
-                    if event["type"] == "token":
-                        full_response += event["content"]
-                    elif event["type"] == "error":
-                        # Persist error as the assistant message content
+                async with asyncio.timeout(settings.chat_pipeline_timeout_seconds):
+                    async for event in agent_execute(
+                        token=token,
+                        user_id=user.id,
+                        message=active_message,
+                        history=history,
+                        thread_id=thread_id,
+                        use_documents=request.use_documents,
+                        retrieval_mode=request.retrieval_mode,
+                        enable_web_search=allow_web_search,
+                        enable_sql=allow_sql,
+                        images=request.images,
+                        tenant_id=user.tenant_id,
+                    ):
+                        if event.get("type") == "error" and not str(event.get("content") or "").strip():
+                            event = {
+                                **event,
+                                "content": "The AI provider returned an error. Please try again.",
+                            }
+                        # Push every event to the SSE queue (best-effort)
                         try:
-                            update_message_content(assistant_msg_id, event["content"], status="complete")
-                        except Exception:
-                            logger.warning("Failed to save error message to DB", exc_info=True)
-                        return
-                    elif event["type"] == "rag_quality":
-                        retrieval_log_ids = event.get("retrieval_log_ids", []) or retrieval_log_ids
-                        groundedness_score = event.get("groundedness")
-                        groundedness_flag = bool(event.get("groundedness_flag"))
-                        retrieval_quality = event.get("retrieval_quality")
-                        rag_diagnostics = event.get("diagnostics")
+                            queue.put_nowait(event)
+                        except asyncio.QueueFull:
+                            pass  # drop if consumer is too slow
+
+                        if event["type"] == "token":
+                            full_response += event["content"]
+                        elif event["type"] == "error":
+                            # Persist error as the assistant message content
+                            try:
+                                update_message_content(assistant_msg_id, event["content"], status="failed")
+                            except Exception:
+                                logger.warning("Failed to save error message to DB", exc_info=True)
+                            return
+                        elif event["type"] == "rag_quality":
+                            retrieval_log_ids = event.get("retrieval_log_ids", []) or retrieval_log_ids
+                            groundedness_score = event.get("groundedness")
+                            groundedness_flag = bool(event.get("groundedness_flag"))
+                            retrieval_quality = event.get("retrieval_quality")
+                            rag_diagnostics = event.get("diagnostics")
 
                 # Pipeline completed normally — persist the full answer
+                if not full_response.strip():
+                    empty_message = "The AI returned an empty response. Please try again."
+                    update_message_content(assistant_msg_id, empty_message, status="failed")
+                    queue.put_nowait({
+                        "type": "error",
+                        "content": empty_message,
+                        "error_code": "empty_response",
+                    })
+                    return
                 update_message_content(assistant_msg_id, full_response, status="complete")
                 if retrieval_log_ids:
                     update_retrieval_logs_for_answer(
@@ -280,11 +296,31 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                         retrieval_quality=retrieval_quality,
                         diagnostics=rag_diagnostics,
                     )
+            except TimeoutError:
+                timeout_message = "This response took too long. Please try again."
+                logger.warning("Background pipeline timed out for thread=%s", thread_id)
+                try:
+                    update_message_content(
+                        assistant_msg_id,
+                        full_response or timeout_message,
+                        status="failed",
+                    )
+                except Exception:
+                    logger.warning("Failed to persist timed-out response", exc_info=True)
+                queue.put_nowait({
+                    "type": "error",
+                    "content": timeout_message,
+                    "error_code": "timeout",
+                })
             except asyncio.CancelledError:
                 # Server shutdown / deployment — persist whatever we have so far
                 logger.warning(f"Background pipeline cancelled, persisting partial response for thread={thread_id}")
                 try:
-                    update_message_content(assistant_msg_id, full_response or "", status="complete")
+                    update_message_content(
+                        assistant_msg_id,
+                        full_response or "This response was interrupted. Please try again.",
+                        status="failed",
+                    )
                 except Exception:
                     logger.warning("Failed to persist partial response on cancellation", exc_info=True)
             except Exception as e:
@@ -292,7 +328,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                 # Save whatever we have so far (may be partial)
                 error_text = full_response or "An unexpected error occurred. Please try again."
                 try:
-                    update_message_content(assistant_msg_id, error_text, status="complete")
+                    update_message_content(assistant_msg_id, error_text, status="failed")
                 except Exception:
                     logger.warning("Failed to persist partial response on error", exc_info=True)
                 # Push an error event so the SSE generator yields 'error' instead of 'done'
@@ -312,7 +348,7 @@ async def chat_stream(request: ChatRequest, user=Depends(get_current_user)):
                     pass
 
         # Launch the pipeline as a background task (detached from the SSE stream)
-        pipeline_task = asyncio.create_task(_run_pipeline())
+        spawn_streaming_task(_run_pipeline(), name=f"chat-pipeline:{thread_id}")
 
         async def event_generator():
             """SSE generator: reads events from the pipeline queue and yields to the client.
@@ -440,6 +476,7 @@ async def list_thread_messages(thread_id: str, user=Depends(get_current_user)):
                 content=m["content"],
                 created_at=m["created_at"],
                 reply_to=m.get("reply_to"),
+                status=m.get("status") or "complete",
             )
             for m in messages
         ]

@@ -24,6 +24,7 @@ from app.services.database import (
 )
 from app.services.widget_tokens import create_widget_token, verify_widget_token
 from app.services.rate_limit import check_rate_limit
+from app.services.streaming_tasks import spawn_streaming_task
 from app.config import Settings
 
 logger = logging.getLogger(__name__)
@@ -187,43 +188,58 @@ async def chat_stream(
         retrieval_quality: str | None = None
         rag_diagnostics: dict | None = None
         try:
-            async for event in agent_execute(
-                token="",
-                user_id=session_id,
-                message=request.message,
-                history=history,
-                thread_id=thread_id,
-                use_documents=True,
-                retrieval_mode="hybrid",
-                enable_web_search=False,
-                enable_sql=False,
-                images=request.images,
-                tenant_id=tenant_id,
-                target_user_id=target_user_id,
-            ):
-                try:
-                    queue.put_nowait(event)
-                except asyncio.QueueFull:
-                    pass
+            async with asyncio.timeout(settings.chat_pipeline_timeout_seconds):
+                async for event in agent_execute(
+                    token="",
+                    user_id=session_id,
+                    message=request.message,
+                    history=history,
+                    thread_id=thread_id,
+                    use_documents=True,
+                    retrieval_mode="hybrid",
+                    enable_web_search=False,
+                    enable_sql=False,
+                    images=request.images,
+                    tenant_id=tenant_id,
+                    target_user_id=target_user_id,
+                ):
+                    if event.get("type") == "error" and not str(event.get("content") or "").strip():
+                        event = {
+                            **event,
+                            "content": "The AI provider returned an error. Please try again.",
+                        }
+                    try:
+                        queue.put_nowait(event)
+                    except asyncio.QueueFull:
+                        pass
 
-                if event["type"] == "token":
-                    full_response += event["content"]
-                elif event["type"] == "error":
-                    if assistant_msg_id:
-                        try:
-                            update_message_content(assistant_msg_id, event["content"], status="complete")
-                        except Exception:
-                            logger.warning("Widget: failed to save error message", exc_info=True)
-                    return
-                elif event["type"] == "rag_quality":
-                    retrieval_log_ids = event.get("retrieval_log_ids", []) or retrieval_log_ids
-                    groundedness_score = event.get("groundedness")
-                    groundedness_flag = bool(event.get("groundedness_flag"))
-                    retrieval_quality = event.get("retrieval_quality")
-                    rag_diagnostics = event.get("diagnostics")
+                    if event["type"] == "token":
+                        full_response += event["content"]
+                    elif event["type"] == "error":
+                        if assistant_msg_id:
+                            try:
+                                update_message_content(assistant_msg_id, event["content"], status="failed")
+                            except Exception:
+                                logger.warning("Widget: failed to save error message", exc_info=True)
+                        return
+                    elif event["type"] == "rag_quality":
+                        retrieval_log_ids = event.get("retrieval_log_ids", []) or retrieval_log_ids
+                        groundedness_score = event.get("groundedness")
+                        groundedness_flag = bool(event.get("groundedness_flag"))
+                        retrieval_quality = event.get("retrieval_quality")
+                        rag_diagnostics = event.get("diagnostics")
 
             # Pipeline completed — persist answer
             if assistant_msg_id:
+                if not full_response.strip():
+                    empty_message = "The AI returned an empty response. Please try again."
+                    update_message_content(assistant_msg_id, empty_message, status="failed")
+                    queue.put_nowait({
+                        "type": "error",
+                        "content": empty_message,
+                        "error_code": "empty_response",
+                    })
+                    return
                 update_message_content(assistant_msg_id, full_response, status="complete")
                 if retrieval_log_ids:
                     update_retrieval_logs_for_answer(
@@ -235,18 +251,43 @@ async def chat_stream(
                         retrieval_quality=retrieval_quality,
                         diagnostics=rag_diagnostics,
                     )
+        except TimeoutError:
+            timeout_message = "This response took too long. Please try again."
+            logger.warning("Widget pipeline timed out for thread=%s", thread_id)
+            if assistant_msg_id:
+                try:
+                    update_message_content(
+                        assistant_msg_id,
+                        full_response or timeout_message,
+                        status="failed",
+                    )
+                except Exception:
+                    logger.warning("Widget: failed to persist timed-out response", exc_info=True)
+            queue.put_nowait({
+                "type": "error",
+                "content": timeout_message,
+                "error_code": "timeout",
+            })
         except asyncio.CancelledError:
             logger.warning(f"Widget pipeline cancelled, persisting partial response for thread={thread_id}")
             if assistant_msg_id:
                 try:
-                    update_message_content(assistant_msg_id, full_response or "", status="complete")
+                    update_message_content(
+                        assistant_msg_id,
+                        full_response or "This response was interrupted. Please try again.",
+                        status="failed",
+                    )
                 except Exception:
                     logger.warning("Widget: failed to persist partial response on cancellation", exc_info=True)
         except Exception as e:
             logger.error(f"Widget background pipeline failed: {e}", exc_info=True)
             if assistant_msg_id:
                 try:
-                    update_message_content(assistant_msg_id, full_response or "An unexpected error occurred.", status="complete")
+                    update_message_content(
+                        assistant_msg_id,
+                        full_response or "An unexpected error occurred. Please try again.",
+                        status="failed",
+                    )
                 except Exception:
                     logger.warning("Widget: failed to persist partial response", exc_info=True)
             try:
@@ -259,7 +300,7 @@ async def chat_stream(
             except asyncio.QueueFull:
                 pass
 
-    pipeline_task = asyncio.create_task(_run_pipeline())
+    spawn_streaming_task(_run_pipeline(), name=f"widget-pipeline:{thread_id}")
 
     async def event_generator():
         try:

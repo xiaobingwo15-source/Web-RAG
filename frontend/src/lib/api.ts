@@ -35,6 +35,8 @@ export interface RetrievalSource {
   breadcrumb_path?: string | string[] | null
 }
 
+export type MessageStatus = 'streaming' | 'complete' | 'failed'
+
 export async function streamChat(
   message: string,
   threadId: string | null,
@@ -51,11 +53,12 @@ export async function streamChat(
   replyTo?: string,
   onHandle?: (handle: StreamHandle) => void,
   onUserMessage?: (meta: StreamMessageMeta) => void,
+  onAssistantMessage?: (meta: StreamMessageMeta) => void,
 ): Promise<StreamHandle> {
   const controller = new AbortController()
   const handle: StreamHandle = { abort: () => controller.abort() }
   onHandle?.(handle)
-  const timeout = setTimeout(() => controller.abort(), 120_000)
+  const timeout = setTimeout(() => controller.abort(), 135_000)
 
   let response: Response
   try {
@@ -115,6 +118,8 @@ export async function streamChat(
               return { abort: () => {} }
             } else if (data.type === 'user_message') {
               onUserMessage?.({ messageId: data.message_id, createdAt: data.created_at })
+            } else if (data.type === 'assistant_message') {
+              onAssistantMessage?.({ messageId: data.message_id, createdAt: data.created_at })
             } else if (data.type === 'thought' && onThought) {
               if (data.action_type) {
                 onThought(data.content, {
@@ -181,7 +186,7 @@ export async function streamWidgetChat(
   const controller = new AbortController()
   const handle: StreamHandle = { abort: () => controller.abort() }
   onHandle?.(handle)
-  const timeout = setTimeout(() => controller.abort(), 120_000)
+  const timeout = setTimeout(() => controller.abort(), 135_000)
 
   let response: Response
   try {
@@ -271,7 +276,7 @@ export interface MessageResponse {
   content: string
   created_at: string
   reply_to?: string | null
-  status?: string
+  status?: MessageStatus
 }
 
 export async function getThreads(token: string): Promise<ThreadSummary[]> {
