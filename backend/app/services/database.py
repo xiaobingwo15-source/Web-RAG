@@ -359,6 +359,25 @@ def update_message_content(message_id: str, content: str, status: str = "complet
     return result.data[0] if result.data else {}
 
 
+def expire_stale_streaming_messages(max_age_seconds: int = 135) -> int:
+    """Mark abandoned assistant placeholders as retryable failures."""
+    cutoff = (datetime.now(UTC) - timedelta(seconds=max_age_seconds)).isoformat()
+    result = (
+        get_db()
+        .table("messages")
+        .update(
+            {
+                "status": "failed",
+                "content": "This response was interrupted. Please try again.",
+            }
+        )
+        .eq("status", "streaming")
+        .lt("created_at", cutoff)
+        .execute()
+    )
+    return len(result.data) if result.data else 0
+
+
 def get_thread_messages(access_token: str, thread_id: str, tenant_id: str | None = None) -> list[dict]:
     db = get_user_db(access_token)
     query = db.table("messages").select("*").eq("thread_id", thread_id)

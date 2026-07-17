@@ -117,6 +117,41 @@ class WidgetRagTargetTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(log_update["diagnostics"]["web_fallback_allowed"])
         self.assertFalse(log_update["diagnostics"]["used_web_fallback"])
 
+    async def test_widget_stream_persists_agent_errors_as_failed(self):
+        async def failing_agent(**_kwargs):
+            yield {
+                "type": "error",
+                "content": "",
+                "error_code": "server_error",
+            }
+
+        update_message = Mock(return_value={"id": "streaming-msg-a"})
+        with (
+            patch.object(widget, "verify_widget_token", return_value={"tenant_id": "tenant-a", "session_id": "session-a", "origin": "http://example.test"}),
+            patch.object(widget, "check_rate_limit"),
+            patch.object(widget, "get_db", return_value=Mock(table=Mock(return_value=_Query([])))),
+            patch.object(widget, "_resolve_widget_rag_target_user_id", return_value="admin-a"),
+            patch.object(widget, "create_widget_thread", return_value={"id": "thread-a"}),
+            patch.object(widget, "save_widget_message", return_value={"id": "message-a"}),
+            patch.object(widget, "save_widget_message_streaming", return_value={"id": "streaming-msg-a"}),
+            patch.object(widget, "update_message_content", new=update_message),
+            patch.object(widget, "get_thread_messages_service", return_value=[]),
+            patch.object(widget, "agent_execute", new=failing_agent),
+        ):
+            response = await widget.chat_stream(
+                request=widget.WidgetChatRequest(message="Question"),
+                authorization="Bearer widget-token",
+                origin="http://example.test",
+            )
+            async for _ in response.body_iterator:
+                pass
+
+        update_message.assert_called_once_with(
+            "streaming-msg-a",
+            "The AI provider returned an error. Please try again.",
+            status="failed",
+        )
+
 
 class AgentSupervisorTargetTests(unittest.IsolatedAsyncioTestCase):
     async def test_supervisor_honors_explicit_target_user_id(self):

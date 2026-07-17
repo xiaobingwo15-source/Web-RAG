@@ -45,7 +45,25 @@ async def lifespan(app: FastAPI):
             logging.getLogger(__name__).info("Startup: expired %d stale upload sessions", expired)
     except Exception as e:
         logging.getLogger(__name__).warning("Startup: upload session cleanup failed (%s)", e)
+    # Recover assistant placeholders left behind by a hard process restart.
+    try:
+        from app.services.database import expire_stale_streaming_messages
+        expired = expire_stale_streaming_messages(
+            max_age_seconds=settings.chat_pipeline_timeout_seconds + 15
+        )
+        if expired:
+            logging.getLogger(__name__).info(
+                "Startup: failed %d stale streaming messages", expired
+            )
+    except Exception as e:
+        logging.getLogger(__name__).warning(
+            "Startup: streaming message cleanup failed (%s)", e
+        )
     yield
+    # Cancel and await detached pipelines so their cancellation handlers persist
+    # a terminal status before the process exits.
+    from app.services.streaming_tasks import shutdown_streaming_tasks
+    await shutdown_streaming_tasks()
     # Flush pending Langfuse events on shutdown
     langfuse = get_langfuse()
     langfuse.flush()

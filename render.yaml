@@ -28,6 +28,8 @@ services:
         sync: false
       - key: GOOGLE_API_KEY
         sync: false
+      - key: CHAT_PIPELINE_TIMEOUT_SECONDS
+        value: "120"
       # PDF ingestion limits for the 512 MB free instance
       - key: PDF_MAX_BYTES
         value: "10485760"

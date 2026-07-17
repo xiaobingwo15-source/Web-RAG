@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     rate_limit_widget_requests: int = 20
     rate_limit_widget_window: int = 60
 
+    # Maximum wall-clock time for a complete chat/RAG pipeline.
+    chat_pipeline_timeout_seconds: int = 120
+
     # Free tier: max questions anonymous visitors can ask before sign-up
     widget_free_tier_limit: int = 5
 

@@ -81,6 +81,255 @@ async function expectBubbleTime(page: Page, text: string, iso: string) {
   await expect(messageBubble(page, text)).toContainText(formatBubbleTime(iso))
 }
 
+test('recovers a refreshed streaming response when the persisted message completes', async ({ page }) => {
+  const supabaseUrl = readEnvValue('VITE_SUPABASE_URL') ?? readEnvValue('SUPABASE_URL')
+  test.skip(!supabaseUrl, 'Set VITE_SUPABASE_URL or SUPABASE_URL so Supabase auth storage can be seeded.')
+
+  const startedAt = new Date().toISOString()
+  let messageFetches = 0
+
+  await seedSupabaseSession(page, supabaseStorageKey(supabaseUrl!))
+  await page.route('**/api/auth/me', (route) =>
+    json(route, { email: 'client@example.com', role: 'client', status: 'approved', tenant_id: 'tenant-1' }),
+  )
+  await page.route('**/api/documents', (route) => json(route, { documents: [] }))
+  await page.route('**/api/chat/threads', (route) =>
+    json(route, {
+      threads: [{ id: THREAD_ID, title: 'Refresh Recovery', created_at: startedAt }],
+    }),
+  )
+  await page.route(`**/api/chat/threads/${THREAD_ID}/feedback`, (route) => json(route, { feedback: [] }))
+  await page.route(`**/api/chat/threads/${THREAD_ID}/messages`, (route) => {
+    messageFetches += 1
+    return json(route, {
+      messages: [
+        {
+          id: 'user-refresh',
+          role: 'user',
+          content: 'Why is the information of the PTPTN?',
+          created_at: startedAt,
+          reply_to: null,
+          status: 'complete',
+        },
+        {
+          id: 'assistant-refresh',
+          role: 'assistant',
+          content: messageFetches === 1 ? '' : 'Recovered answer',
+          created_at: startedAt,
+          reply_to: null,
+          status: messageFetches === 1 ? 'streaming' : 'complete',
+        },
+      ],
+    })
+  })
+
+  await page.goto('/chat')
+  await page.getByText('Refresh Recovery', { exact: true }).click()
+
+  await expect(page.getByLabel('Assistant is typing')).toBeVisible()
+  await expect(page.getByText('Recovered answer', { exact: true })).toBeVisible({ timeout: 10_000 })
+  await expect(page.getByLabel('Assistant is typing')).not.toBeVisible()
+  await expect(page.getByText('typing...', { exact: true })).not.toBeVisible()
+  await expect(page.getByPlaceholder('Type a message')).toBeEnabled()
+  expect(messageFetches).toBeGreaterThanOrEqual(2)
+})
+
+test('restores a failed question to the composer without resubmitting it', async ({ page }) => {
+  const supabaseUrl = readEnvValue('VITE_SUPABASE_URL') ?? readEnvValue('SUPABASE_URL')
+  test.skip(!supabaseUrl, 'Set VITE_SUPABASE_URL or SUPABASE_URL so Supabase auth storage can be seeded.')
+
+  let streamRequests = 0
+  await seedSupabaseSession(page, supabaseStorageKey(supabaseUrl!))
+  await page.route('**/api/auth/me', (route) =>
+    json(route, { email: 'client@example.com', role: 'client', status: 'approved', tenant_id: 'tenant-1' }),
+  )
+  await page.route('**/api/documents', (route) => json(route, { documents: [] }))
+  await page.route('**/api/chat/threads', (route) =>
+    json(route, {
+      threads: [{ id: THREAD_ID, title: 'Retry Recovery', created_at: '2026-07-17T00:00:00Z' }],
+    }),
+  )
+  await page.route(`**/api/chat/threads/${THREAD_ID}/feedback`, (route) => json(route, { feedback: [] }))
+  await page.route(`**/api/chat/threads/${THREAD_ID}/messages`, (route) =>
+    json(route, {
+      messages: [
+        {
+          id: 'assistant-context',
+          role: 'assistant',
+          content: 'Earlier answer',
+          created_at: '2026-07-17T00:00:00Z',
+          reply_to: null,
+          status: 'complete',
+        },
+        {
+          id: 'user-retry',
+          role: 'user',
+          content: JSON.stringify({
+            text: 'Retry this question',
+            images: ['data:image/png;base64,YQ=='],
+          }),
+          created_at: '2026-07-17T00:00:01Z',
+          reply_to: 'assistant-context',
+          status: 'complete',
+        },
+        {
+          id: 'assistant-failed',
+          role: 'assistant',
+          content: '',
+          created_at: '2026-07-17T00:00:02Z',
+          reply_to: null,
+          status: 'failed',
+        },
+      ],
+    }),
+  )
+  await page.route('**/api/chat/stream', (route) => {
+    streamRequests += 1
+    return route.abort()
+  })
+
+  await page.goto('/chat')
+  await page.getByText('Retry Recovery', { exact: true }).click()
+  await expect(page.getByText('This response was interrupted. Please try again.', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Retry question' }).click()
+
+  await expect(page.getByPlaceholder('Type a message')).toHaveValue('Retry this question')
+  await expect(page.getByAltText('Pasted 1')).toBeVisible()
+  await expect(page.getByText('Replying to Assistant', { exact: true }).last()).toBeVisible()
+  expect(streamRequests).toBe(0)
+})
+
+test('turns an already stale streaming placeholder into a retryable failure', async ({ page }) => {
+  const supabaseUrl = readEnvValue('VITE_SUPABASE_URL') ?? readEnvValue('SUPABASE_URL')
+  test.skip(!supabaseUrl, 'Set VITE_SUPABASE_URL or SUPABASE_URL so Supabase auth storage can be seeded.')
+
+  await seedSupabaseSession(page, supabaseStorageKey(supabaseUrl!))
+  await page.route('**/api/auth/me', (route) =>
+    json(route, { email: 'client@example.com', role: 'client', status: 'approved', tenant_id: 'tenant-1' }),
+  )
+  await page.route('**/api/documents', (route) => json(route, { documents: [] }))
+  await page.route('**/api/chat/threads', (route) =>
+    json(route, {
+      threads: [{ id: THREAD_ID, title: 'Stale Recovery', created_at: '2020-01-01T00:00:00Z' }],
+    }),
+  )
+  await page.route(`**/api/chat/threads/${THREAD_ID}/feedback`, (route) => json(route, { feedback: [] }))
+  await page.route(`**/api/chat/threads/${THREAD_ID}/messages`, (route) =>
+    json(route, {
+      messages: [
+        {
+          id: 'user-stale',
+          role: 'user',
+          content: 'Question that was interrupted',
+          created_at: '2020-01-01T00:00:00Z',
+          reply_to: null,
+          status: 'complete',
+        },
+        {
+          id: 'assistant-stale',
+          role: 'assistant',
+          content: '',
+          created_at: '2020-01-01T00:00:01Z',
+          reply_to: null,
+          status: 'streaming',
+        },
+      ],
+    }),
+  )
+
+  await page.goto('/chat')
+  await page.getByText('Stale Recovery', { exact: true }).click()
+
+  await expect(page.getByText('This response was interrupted. Please try again.', { exact: true })).toBeVisible({ timeout: 1000 })
+  await expect(page.getByRole('button', { name: 'Retry question' })).toBeVisible()
+  await expect(page.getByText('typing...', { exact: true })).not.toBeVisible()
+  await expect(page.getByPlaceholder('Type a message')).toBeEnabled()
+})
+
+test('continues refresh recovery after a transient polling error', async ({ page }) => {
+  const supabaseUrl = readEnvValue('VITE_SUPABASE_URL') ?? readEnvValue('SUPABASE_URL')
+  test.skip(!supabaseUrl, 'Set VITE_SUPABASE_URL or SUPABASE_URL so Supabase auth storage can be seeded.')
+
+  const startedAt = new Date().toISOString()
+  let messageFetches = 0
+  await seedSupabaseSession(page, supabaseStorageKey(supabaseUrl!))
+  await page.route('**/api/auth/me', (route) =>
+    json(route, { email: 'client@example.com', role: 'client', status: 'approved', tenant_id: 'tenant-1' }),
+  )
+  await page.route('**/api/documents', (route) => json(route, { documents: [] }))
+  await page.route('**/api/chat/threads', (route) =>
+    json(route, { threads: [{ id: THREAD_ID, title: 'Transient Recovery', created_at: startedAt }] }),
+  )
+  await page.route(`**/api/chat/threads/${THREAD_ID}/feedback`, (route) => json(route, { feedback: [] }))
+  await page.route(`**/api/chat/threads/${THREAD_ID}/messages`, (route) => {
+    messageFetches += 1
+    if (messageFetches === 2) {
+      return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'temporary' }) })
+    }
+    return json(route, {
+      messages: [
+        { id: 'user-transient', role: 'user', content: 'Question', created_at: startedAt, reply_to: null, status: 'complete' },
+        {
+          id: 'assistant-transient',
+          role: 'assistant',
+          content: messageFetches >= 3 ? 'Recovered after retry' : '',
+          created_at: startedAt,
+          reply_to: null,
+          status: messageFetches >= 3 ? 'complete' : 'streaming',
+        },
+      ],
+    })
+  })
+
+  await page.goto('/chat')
+  await page.getByText('Transient Recovery', { exact: true }).click()
+
+  await expect(page.getByText('Recovered after retry', { exact: true })).toBeVisible({ timeout: 12_000 })
+  await expect(page.getByPlaceholder('Type a message')).toBeEnabled()
+  expect(messageFetches).toBeGreaterThanOrEqual(3)
+})
+
+test('ignores a slow thread response after the user switches threads', async ({ page }) => {
+  const supabaseUrl = readEnvValue('VITE_SUPABASE_URL') ?? readEnvValue('SUPABASE_URL')
+  test.skip(!supabaseUrl, 'Set VITE_SUPABASE_URL or SUPABASE_URL so Supabase auth storage can be seeded.')
+
+  const threadA = 'thread-slow-a'
+  const threadB = 'thread-fast-b'
+  await seedSupabaseSession(page, supabaseStorageKey(supabaseUrl!))
+  await page.route('**/api/auth/me', (route) =>
+    json(route, { email: 'client@example.com', role: 'client', status: 'approved', tenant_id: 'tenant-1' }),
+  )
+  await page.route('**/api/documents', (route) => json(route, { documents: [] }))
+  await page.route('**/api/chat/threads', (route) =>
+    json(route, {
+      threads: [
+        { id: threadA, title: 'Slow Thread', created_at: '2026-07-17T00:00:00Z' },
+        { id: threadB, title: 'Fast Thread', created_at: '2026-07-17T00:00:01Z' },
+      ],
+    }),
+  )
+  await page.route('**/api/chat/threads/*/feedback', (route) => json(route, { feedback: [] }))
+  await page.route(`**/api/chat/threads/${threadA}/messages`, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    await json(route, {
+      messages: [{ id: 'assistant-a', role: 'assistant', content: 'Slow answer', created_at: '2026-07-17T00:00:00Z', reply_to: null, status: 'complete' }],
+    })
+  })
+  await page.route(`**/api/chat/threads/${threadB}/messages`, (route) =>
+    json(route, {
+      messages: [{ id: 'assistant-b', role: 'assistant', content: 'Fast answer', created_at: '2026-07-17T00:00:01Z', reply_to: null, status: 'complete' }],
+    }),
+  )
+
+  await page.goto('/chat')
+  await page.getByText('Slow Thread', { exact: true }).click()
+  await page.getByText('Fast Thread', { exact: true }).click()
+
+  await expect(page.getByText('Fast answer', { exact: true })).toBeVisible()
+  await page.waitForTimeout(1800)
+  await expect(page.getByText('Slow answer', { exact: true })).not.toBeVisible()
+})
+
 test('rehydrates saved assistant feedback after reopening a thread', async ({ page }) => {
   const supabaseUrl = readEnvValue('VITE_SUPABASE_URL') ?? readEnvValue('SUPABASE_URL')
   test.skip(!supabaseUrl, 'Set VITE_SUPABASE_URL or SUPABASE_URL so Supabase auth storage can be seeded.')
