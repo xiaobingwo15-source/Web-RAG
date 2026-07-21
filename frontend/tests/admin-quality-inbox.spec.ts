@@ -144,6 +144,7 @@ test('admin Quality Inbox filters items, dismisses a flag, and renders audit act
           rating: 1,
           message_id: 'answer-2',
           resolved_message_id: 'answer-2',
+          orphaned: false,
           thread_id: 'thread-1',
           thread_title: 'Refund issue',
           client_user_id: 'client-user',
@@ -168,6 +169,7 @@ test('admin Quality Inbox filters items, dismisses a flag, and renders audit act
           rating: -1,
           message_id: 'answer-1',
           resolved_message_id: 'answer-1',
+          orphaned: false,
           thread_id: 'thread-1',
           thread_title: 'Refund issue',
           client_user_id: 'client-user',
@@ -183,6 +185,34 @@ test('admin Quality Inbox filters items, dismisses a flag, and renders audit act
             groundedness_score: 0.25,
             groundedness_flag: true,
             zero_source: true,
+          },
+        },
+        {
+          feedback_id: 'feedback-orphaned',
+          feedback_created_at: '2026-01-01T00:02:30.000Z',
+          feedback_comment: 'The original answer disappeared',
+          rating: -1,
+          message_id: 'answer-deleted',
+          resolved_message_id: null,
+          orphaned: true,
+          orphan_reason: 'answer_message_missing',
+          thread_id: 'thread-1',
+          thread_title: 'Refund issue',
+          client_user_id: 'client-user',
+          client_email: 'client@example.com',
+          question: 'What happened to my saved answer?',
+          question_message_id: 'question-orphaned',
+          answer: '',
+          answer_created_at: null,
+          retrieval_logs: [],
+          summary: {
+            retrieval_count: 0,
+            chunk_count: 0,
+            source_count: 0,
+            top_score: null,
+            groundedness_score: null,
+            groundedness_flag: false,
+            zero_source: false,
           },
         },
       ],
@@ -244,10 +274,17 @@ test('admin Quality Inbox filters items, dismisses a flag, and renders audit act
   await page.getByRole('button', { name: /Feedback Review/i }).click()
   await expect(page.getByText('Helpful and correct').first()).toBeVisible()
   await expect(page.getByText('Wrong refund window')).toBeVisible()
+  await expect(page.getByText('No retrieval logs resolved for this answer')).toBeVisible()
+
+  await page.getByText('What happened to my saved answer?', { exact: true }).first().click()
+  await expect(page.getByText('Orphaned', { exact: true })).toBeVisible()
+  await expect(page.getByRole('alert')).toContainText('the referenced assistant answer is no longer available')
+  await expect(page.getByText('Referenced assistant answer is no longer available', { exact: true })).toBeVisible()
+  await expect(page.getByText('No retrieval logs remain for this orphaned feedback')).toBeVisible()
 
   await page.getByRole('button', { name: /Quality Inbox/i }).click()
   await page.getByLabel('Quality inbox type').selectOption('feedback')
-  await page.getByRole('button', { name: 'Open', exact: true }).click()
+  await page.getByRole('button', { name: 'Open', exact: true }).first().click()
 
   await expect(page.getByText('Client Conversations')).toBeVisible()
   await expect(page.getByText('Refunds are available anytime.', { exact: true })).toBeVisible()

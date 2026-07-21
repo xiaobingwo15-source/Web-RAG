@@ -19,6 +19,10 @@ class FakeQuery:
         self.rows = [row for row in self.rows if row.get(key) != value]
         return self
 
+    def lt(self, key, value):
+        self.rows = [row for row in self.rows if row.get(key) is not None and row.get(key) < value]
+        return self
+
     def order(self, key, desc=False):
         self.rows = sorted(self.rows, key=lambda row: row.get(key) or "", reverse=desc)
         return self
@@ -206,6 +210,123 @@ class AdminDatabaseTests(unittest.TestCase):
         )
 
         self.assertEqual(resolved["id"], "answer-a")
+
+    def test_list_rag_quality_feedback_returns_orphan_when_answer_is_missing(self):
+        missing_answer_id = "22222222-2222-4222-8222-222222222222"
+        fake_db = FakeDb({
+            "message_feedback": [{
+                "id": "feedback-a",
+                "tenant_id": "tenant-a",
+                "thread_id": "thread-a",
+                "message_id": missing_answer_id,
+                "rating": -1,
+                "comment": "The answer was wrong",
+                "created_at": "2026-06-01T00:02:00Z",
+                "client_session_id": "session-a",
+                "user_id": None,
+            }],
+            "messages": [{
+                "id": "question-a",
+                "tenant_id": "tenant-a",
+                "thread_id": "thread-a",
+                "role": "user",
+                "content": "What is the refund window?",
+                "created_at": "2026-06-01T00:00:00Z",
+            }],
+            "threads": [{
+                "id": "thread-a",
+                "tenant_id": "tenant-a",
+                "title": "Refund policy",
+                "user_id": None,
+                "client_session_id": "session-a",
+                "created_at": "2026-06-01T00:00:00Z",
+            }],
+            "retrieval_logs": [{
+                "id": "log-a",
+                "tenant_id": "tenant-a",
+                "thread_id": "thread-a",
+                "query": "What is the refund window?",
+                "retrieval_mode": "hybrid",
+                "chunk_count": 2,
+                "source_count": 1,
+                "top_score": 0.9,
+                "groundedness_score": None,
+                "created_at": "2026-06-01T00:01:00Z",
+            }],
+        })
+
+        with patch.object(database, "get_db", return_value=fake_db):
+            items = database.list_rag_quality_feedback("tenant-a")
+
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertTrue(item["orphaned"])
+        self.assertEqual(item["orphan_reason"], "answer_message_missing")
+        self.assertEqual(item["message_id"], missing_answer_id)
+        self.assertIsNone(item["resolved_message_id"])
+        self.assertEqual(item["thread_id"], "thread-a")
+        self.assertEqual(item["thread_title"], "Refund policy")
+        self.assertEqual(item["question"], "What is the refund window?")
+        self.assertEqual(item["question_message_id"], "question-a")
+        self.assertEqual(item["answer"], "")
+        self.assertEqual(item["summary"]["retrieval_count"], 1)
+
+    def test_list_rag_quality_feedback_keeps_answer_when_retrieval_log_is_missing(self):
+        answer_id = "33333333-3333-4333-8333-333333333333"
+        fake_db = FakeDb({
+            "message_feedback": [{
+                "id": "feedback-b",
+                "tenant_id": "tenant-a",
+                "thread_id": "thread-b",
+                "message_id": answer_id,
+                "rating": 1,
+                "comment": None,
+                "created_at": "2026-06-01T00:02:00Z",
+                "client_session_id": "session-b",
+                "user_id": None,
+            }],
+            "messages": [
+                {
+                    "id": "question-b",
+                    "tenant_id": "tenant-a",
+                    "thread_id": "thread-b",
+                    "role": "user",
+                    "content": "Which documents are required?",
+                    "created_at": "2026-06-01T00:00:00Z",
+                },
+                {
+                    "id": answer_id,
+                    "tenant_id": "tenant-a",
+                    "thread_id": "thread-b",
+                    "role": "assistant",
+                    "content": "Bring the original invoice.",
+                    "created_at": "2026-06-01T00:01:00Z",
+                },
+            ],
+            "threads": [{
+                "id": "thread-b",
+                "tenant_id": "tenant-a",
+                "title": "Required documents",
+                "user_id": None,
+                "client_session_id": "session-b",
+                "created_at": "2026-06-01T00:00:00Z",
+            }],
+            "retrieval_logs": [],
+        })
+
+        with patch.object(database, "get_db", return_value=fake_db):
+            items = database.list_rag_quality_feedback("tenant-a")
+
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertFalse(item["orphaned"])
+        self.assertIsNone(item["orphan_reason"])
+        self.assertEqual(item["resolved_message_id"], answer_id)
+        self.assertEqual(item["answer"], "Bring the original invoice.")
+        self.assertEqual(item["retrieval_logs"], [])
+        self.assertEqual(item["summary"]["retrieval_count"], 0)
+        self.assertEqual(item["summary"]["source_count"], 0)
+        self.assertFalse(item["summary"]["zero_source"])
 
 
 if __name__ == "__main__":

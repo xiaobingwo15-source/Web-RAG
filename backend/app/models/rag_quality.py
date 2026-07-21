@@ -49,6 +49,8 @@ class RagQualityFeedbackItem(BaseModel):
     rating: int = Field(-1)
     message_id: str | None = None
     resolved_message_id: str | None = None
+    orphaned: bool = False
+    orphan_reason: str | None = None
     thread_id: str
     thread_title: str
     client_user_id: str | None = None

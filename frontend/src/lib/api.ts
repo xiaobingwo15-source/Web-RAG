@@ -850,6 +850,8 @@ export interface RagQualityFeedbackItem {
   rating: -1 | 1
   message_id?: string | null
   resolved_message_id?: string | null
+  orphaned: boolean
+  orphan_reason?: 'answer_message_missing' | null
   thread_id: string
   thread_title: string
   client_user_id?: string | null
