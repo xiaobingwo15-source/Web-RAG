@@ -46,7 +46,7 @@ $env:NODE_ENV = ""; npm run dev
 ### Supabase Migrations
 Migrations live in `backend/supabase/migrations/`. Apply via Supabase MCP (`mcp__supabase__apply_migration`) or the Supabase dashboard. The project uses Supabase MCP for all project management when 2FA dashboard lockout is active.
 
-Latest migration: **037** — adds UNIQUE constraints on `message_feedback` for PostgREST upsert conflict targets (`user_id,thread_id,message_id` and `client_session_id,thread_id,message_id`). Replaces prior partial unique indexes.
+Latest migration: **038** — adds CHECK constraint on `messages.status` (streaming/complete/failed) and repairs stale streaming placeholders.
 
 ## Technical Stack
 - Frontend: React + TypeScript + Vite + Tailwind + shadcn/ui
