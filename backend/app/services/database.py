@@ -1668,10 +1668,8 @@ def list_rag_quality_feedback(
     user_emails: dict[str, str] = {}
     for feedback in feedback_rows:
         answer = _resolve_feedback_answer_message(db, tenant_id, feedback)
-        if not answer:
-            continue
-
-        thread_id = answer["thread_id"]
+        orphaned = answer is None
+        thread_id = str((answer or {}).get("thread_id") or feedback.get("thread_id") or "")
         thread_result = (
             db.table("threads")
             .select("id, title, user_id, client_session_id, created_at")
@@ -1681,7 +1679,7 @@ def list_rag_quality_feedback(
             .execute()
         )
         thread = thread_result.data[0] if thread_result.data else {}
-        client_user_id = thread.get("user_id") or answer.get("user_id") or feedback.get("user_id")
+        client_user_id = thread.get("user_id") or (answer or {}).get("user_id") or feedback.get("user_id")
 
         client_email = None
         if client_user_id:
@@ -1695,8 +1693,17 @@ def list_rag_quality_feedback(
         if not client_email:
             client_email = f"visitor-{str(thread.get('client_session_id') or 'unknown')[:8]}"
 
-        question = _previous_user_question(db, tenant_id, thread_id, answer["created_at"])
-        logs = _thread_retrieval_logs(db, tenant_id, thread_id, answer.get("id"))
+        question_cutoff = (answer or {}).get("created_at") or feedback.get("created_at")
+        question = (
+            _previous_user_question(db, tenant_id, thread_id, question_cutoff)
+            if thread_id and question_cutoff
+            else None
+        )
+        logs = (
+            _thread_retrieval_logs(db, tenant_id, thread_id, (answer or {}).get("id"))
+            if thread_id
+            else []
+        )
         grounded_scores = [
             float(log["groundedness_score"])
             for log in logs
@@ -1710,15 +1717,17 @@ def list_rag_quality_feedback(
             "feedback_comment": feedback.get("comment"),
             "rating": feedback["rating"],
             "message_id": feedback.get("message_id"),
-            "resolved_message_id": answer.get("id"),
+            "resolved_message_id": (answer or {}).get("id"),
+            "orphaned": orphaned,
+            "orphan_reason": "answer_message_missing" if orphaned else None,
             "thread_id": thread_id,
             "thread_title": thread.get("title") or "Untitled",
             "client_user_id": client_user_id,
             "client_email": client_email,
-            "question": question.get("content") if question else "",
+            "question": question.get("content") if question else (logs[0].get("query") if logs else ""),
             "question_message_id": question.get("id") if question else None,
-            "answer": answer.get("content") or "",
-            "answer_created_at": answer.get("created_at"),
+            "answer": (answer or {}).get("content") or "",
+            "answer_created_at": (answer or {}).get("created_at"),
             "retrieval_logs": logs,
             "summary": {
                 "retrieval_count": len(logs),

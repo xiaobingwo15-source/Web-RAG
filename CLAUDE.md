@@ -13,13 +13,29 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows
 pip install -r requirements.txt
 
-# Run dev server (from project root)
-uvicorn app.main:app --reload --port 8000   # from backend/
+# Run dev server (from backend/)
+uvicorn app.main:app --reload --port 8000
 
 # Run tests
 pytest tests/ -v                             # all tests
 pytest tests/test_admin_settings.py -v       # single file
 pytest tests/test_admin_settings.py::test_fn -k "test_name"  # single test
+pytest --cov=app --cov-report=term-missing --cov-fail-under=50  # with coverage (CI threshold: 50%)
+```
+
+### Frontend (React / Vite)
+```powershell
+cd frontend
+npm install
+npm run dev        # dev server on :5173
+npm run build      # production build (tsc -b && vite build)
+npm run lint       # eslint
+npm run perf:e2e   # Playwright performance/E2E tests (requires Chromium)
+```
+
+**Windows gotcha**: VS Code injects `NODE_ENV=production` at the process level, causing `npm` to skip devDependencies (vite not found). Always clear it before npm commands:
+```powershell
+$env:NODE_ENV = ""; npm run dev
 ```
 
 ### RAG Readiness Gate
@@ -29,33 +45,82 @@ python scripts/rag_readiness_check.py --admin-token <token> --chat-token <token>
 ```
 The readiness script intentionally does not delete or archive uploaded documents.
 
-### Frontend (React / Vite)
-```powershell
-cd frontend
-npm install
-npm run dev        # dev server on :5173
-npm run build      # production build (tsc -b && vite build)
-npm run lint       # eslint
-```
-
-**Windows gotcha**: VS Code injects `NODE_ENV=production` at the process level, causing `npm` to skip devDependencies (vite not found). Always clear it before npm commands:
-```powershell
-$env:NODE_ENV = ""; npm run dev
-```
-
 ### Supabase Migrations
 Migrations live in `backend/supabase/migrations/`. Apply via Supabase MCP (`mcp__supabase__apply_migration`) or the Supabase dashboard. The project uses Supabase MCP for all project management when 2FA dashboard lockout is active.
 
 Latest migration: **038** — adds CHECK constraint on `messages.status` (streaming/complete/failed) and repairs stale streaming placeholders.
 
 ## Technical Stack
-- Frontend: React + TypeScript + Vite + Tailwind + shadcn/ui
-- Backend: Python 3 + FastAPI + Uvicorn
+- Frontend: React 19 + TypeScript 6 + Vite 8 + Tailwind 4 + shadcn/ui
+- Backend: Python 3.12 + FastAPI + Uvicorn
 - Database/State: Supabase (Auth, Session Store, Thread Logs, Full-Text Search)
 - Vector Storage: **Qdrant** (cloud-hosted, `document_chunks` collection, 768-dim cosine vectors)
 - Chat LLM: **OpenRouter** (DeepSeek model via `openai`-compatible SDK at `https://openrouter.ai/api/v1`)
-- Embeddings: `google-genai` SDK (`gemini-embedding-001`, 768 dimensions)
+- Embeddings: `google-genai` SDK (`gemini-embedding-001`, 768 dimensions) — also supports local `sentence-transformers` for offline testing
 - Observability: Langfuse Tracing (free tier: 50k observations/month)
+- Reranker: Cohere `rerank-v3.5` (fallback: keyword overlap scorer)
+
+### Embedding Provider Configuration
+The backend supports two embedding providers via `EMBEDDING_PROVIDER` env var:
+
+- `gemini` (default) — Uses Google AI Studio API with `EMBEDDING_MODEL=gemini-embedding-001`
+- `local_sentence_transformers` — Uses Hugging Face SentenceTransformers for offline/testing ingestion
+
+Local settings for CPU-only testing:
+```env
+EMBEDDING_PROVIDER=local_sentence_transformers
+LOCAL_EMBEDDING_MODEL=intfloat/multilingual-e5-base
+LOCAL_EMBEDDING_DEVICE=cpu
+EMBEDDING_DIMENSION=768
+```
+
+If switching to a 384- or 1024-dimensional model, recreate the Qdrant collection with matching dimension before inserting chunks.
+
+## Deployment Architecture
+
+**Two-service split**: Frontend on Vercel, Backend on Render.
+
+| Service | Platform | Config File | Notes |
+|---------|----------|-------------|-------|
+| Frontend | Vercel | `vercel.json` | Builds from `frontend/`, rewrites `/api/*` to Render backend |
+| Backend | Render | `render.yaml` | Python free plan, health check at `/api/health` |
+
+Vercel rewrites all `/api/*` requests to `https://web-rag-163b.onrender.com/api/:path*`. Frontend SPA fallback routes to `/index.html`.
+
+### Backend Startup Behavior (`backend/app/main.py`)
+On startup, the lifespan handler:
+1. Validates environment isolation (non-production must not point at production Supabase)
+2. Ensures Qdrant collection exists (degraded mode on failure — logs warning, continues)
+3. Expires stale upload sessions
+4. Recovers stale streaming messages (handles hard process restarts)
+
+On shutdown:
+1. Cancels and awaits detached streaming pipelines (persists terminal status)
+2. Flushes pending Langfuse events
+
+## CI/CD Pipelines
+
+Three GitHub Actions workflows in `.github/workflows/`:
+
+### `backend-tests.yml` — Backend Unit Tests
+- **Triggers**: PRs to `master`, pushes to `Staging`/`master` (backend paths only)
+- Python 3.12, installs `requirements-dev.txt`
+- Runs `pytest --cov=app --cov-report=term-missing --cov-fail-under=50`
+- 30-minute timeout
+
+### `eval.yml` — RAG Eval Pipeline
+- **Triggers**: PRs to `master` (backend paths), manual dispatch with optional baseline update
+- Runs `scripts/run_eval_ci` with live API keys (OpenRouter, Google, Supabase, Qdrant, Cohere)
+- Posts PR comment with metric table (faithfulness, answer_relevance, context_precision, context_recall, overall)
+- Regression threshold: 0.5 on a 1-5 scale
+- Uploads eval results as artifacts (30-day retention)
+
+### `rag-readiness.yml` — RAG Readiness Gate
+- **Triggers**: Pushes to `Staging`/`master`, manual dispatch
+- Two jobs:
+  1. **frontend-latency**: Builds frontend, runs Playwright perf/e2e tests (Chromium)
+  2. **rag-readiness**: Runs `scripts/rag_readiness_check.py` against a live deployment
+- Both jobs validate required secrets before proceeding
 
 ## Multi-Tenant Auth Model
 
@@ -66,12 +131,14 @@ Three roles with distinct access patterns:
 | **Owner** | `OWNER_USER_EMAILS` env var (comma-separated) | Cross-tenant: approve/reject admins, create/disable tenants. Uses service-role client (bypasses RLS). |
 | **Admin** | `profiles.role='admin'` + `status='approved'` | Tenant-scoped: manage documents, run evals, view conversations, use SQL/web-search tools. |
 | **Client** | `profiles.role='client'` + `status='approved'` | Tenant-scoped: chat only. New signups require admin approval. |
+| **Widget** | Anonymous (Supabase anon sign-in) | Tenant-scoped: chat only via public widget. Uses `widget_tokens.py` for session management. |
 
 Key auth files:
 - `backend/app/middleware/auth.py` — `get_current_user` dependency (JWT → profile lookup)
 - `backend/app/routers/owner.py` — `_verify_owner` checks email allowlist
 - `backend/app/routers/admin.py` — `_verify_admin` checks role + status
 - `backend/app/routers/chat.py` — `_is_approved_admin` gates tool access
+- `backend/app/services/widget_tokens.py` — Widget session token management
 
 **Known gap**: `disable_tenant` sets `tenants.status='disabled'` but no RLS policy or middleware checks tenant status. Disabled-tenant users retain full access.
 
@@ -85,11 +152,13 @@ New in migration 033 — `backend/app/services/environment_guard.py`, `audit.py`
 - **CORS**: Restricted to `["GET", "POST", "PATCH", "DELETE", "OPTIONS"]` methods and `["Authorization", "Content-Type"]` headers.
 - **Security headers**: HSTS (production only), X-Content-Type-Options, X-Frame-Options, Referrer-Policy, Permissions-Policy.
 - **API docs toggle**: `ENABLE_API_DOCS=false` (default) hides `/docs`, `/scalar`, `/openapi.json`.
+- **Rate limiting**: `backend/app/services/rate_limit.py` — per-IP request throttling.
+- **Circuit breaker**: `backend/app/services/circuit_breaker.py` — prevents cascading failures on external service calls.
 
 ## RAG Pipeline Architecture
 
 ### Document Ingestion Flow
-1. Upload (PDF/Excel/CSV/TXT/MD) → `backend/app/services/text_extractor.py`
+1. Upload (PDF/Excel/CSV/TXT/MD/DOCX) → `backend/app/services/text_extractor.py`
 2. Optional OCR via Gemini multimodal → `backend/app/services/ocr_service.py`
 3. Metadata extraction (title, summary, tags, language) → `backend/app/services/metadata_extractor.py`
 4. Chunking (parent-child: 1500/500 chars, 50 overlap) → `backend/app/services/chunker.py`
@@ -152,7 +221,7 @@ The RAG pipeline survives client disconnects (navigation, refresh, tab close):
 5. When pipeline finishes: `update_message_content()` writes the full answer and sets `status='complete'`
 6. Frontend `loadThread()` detects pending responses (last message is `role='user'`) and polls every 3s
 
-Key functions: `save_message_streaming()`, `save_widget_message_streaming()`, `update_message_content()` in `database.py`
+Key functions: `save_message_streaming()`, `save_widget_message_streaming()`, `update_message_content()` in `database.py`; `shutdown_streaming_tasks()` in `streaming_tasks.py`
 
 ### Feedback Pipeline
 Thumbs-up/thumbs-down feedback on assistant messages, with validation and error handling:
@@ -228,6 +297,19 @@ Two evaluation frameworks + production quality monitoring:
 **Quality signals** (`rag_quality_policy.py`): 8 production health signals from retrieval logs and feedback — zero_sources, weak_sources, groundedness, completion_latency, negative_feedback, web_fallback, widget_policy_violation, data_staleness. Retrieval diagnostics include `score_family`, channel breakdowns, stage timings, and `top_fused_score` so signal thresholds compare like-for-like score families.
 
 **Quality loop** (`rag_quality_loop.py`): Auto-drafts eval cases from thumbs-down feedback and web-fallback patterns. Auto-promotes cases with >= 2 negative signals. Skips duplicate queries.
+
+## Testing
+
+### Backend Tests
+- **Framework**: pytest 8.4+ with pytest-asyncio 1.3+ and pytest-cov 7+
+- **Coverage requirement**: 50% minimum (`--cov-fail-under=50`)
+- **Test files**: 40+ files in `backend/tests/` covering RAG pipeline, document processing, chat, infrastructure, agents, security, and quality
+- **Fixtures**: `backend/tests/fixtures/eval_baseline.json`, `backend/tests/fixtures/golden_test_set.json`
+
+### Frontend E2E Tests
+- **Framework**: Playwright with Chromium
+- **Run command**: `npm run perf:e2e` (from `frontend/`)
+- **CI secrets required**: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `E2E_ADMIN_EMAIL`, `E2E_ADMIN_PASSWORD`
 
 ## Rules
 - Write generated review and diff dumps under the repo-relative `.tmp/` directory (for example, `.tmp/rag_review.diff`). Do not use `/tmp`, shell-specific environment-variable syntax, or absolute Windows paths from Bash; those paths are not portable and can create malformed files in the repository root.
