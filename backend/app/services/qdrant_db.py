@@ -130,13 +130,16 @@ async def _validate_collection_dimension(client: AsyncQdrantClient, expected_dim
         )
 
 
-async def ensure_collection():
+async def ensure_collection() -> bool:
     try:
         await asyncio.wait_for(_ensure_collection_inner(), timeout=15)
+        return True
     except asyncio.TimeoutError:
         logger.warning("RAG startup check timed out - server starting in degraded mode")
+        return False
     except Exception as e:
         logger.warning("RAG startup check failed: %s - server starting in degraded mode", e)
+        return False
 
 
 async def insert_chunks(
