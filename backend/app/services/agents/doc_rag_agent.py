@@ -6,7 +6,13 @@ from collections.abc import AsyncGenerator
 from app.services.retrieval import retrieve_context
 from app.services.embeddings import get_embedding_client, get_embedding
 from app.services.qdrant_db import search_similar_chunks
-from app.services.gemini import get_llm_client, generate_chat_response_stream, RAG_SYSTEM_PROMPT, get_primary_model
+from app.services.gemini import (
+    CLIENT_RESPONSE_LANGUAGE_POLICY,
+    RAG_SYSTEM_PROMPT,
+    generate_chat_response_stream,
+    get_llm_client,
+    get_primary_model,
+)
 from app.services.groundedness import GROUNDEDNESS_THRESHOLD, check_groundedness, check_groundedness_with_llm
 from app.services.performance import elapsed_ms, log_latency, monotonic_ms
 from app.services.web_search import search_web
@@ -103,8 +109,7 @@ CLARIFICATION_PROMPT = (
     "1. Acknowledges what the user is looking for\n"
     "2. Lists the available relevant documents/topics (use bullet points)\n"
     "3. Asks which specific topic they'd like to explore\n\n"
-    "IMPORTANT: Match the user's language. If they wrote in Chinese, "
-    "respond in Chinese. If in English, respond in English.\n"
+    f"{CLIENT_RESPONSE_LANGUAGE_POLICY}\n\n"
     "Keep the response concise (under 200 words). "
     'Do NOT say "I don\'t have information" — the documents exist.\n'
     "Do NOT fabricate content from the documents."
@@ -115,7 +120,8 @@ META_CLARIFICATION_PROMPT = (
     "is available in the knowledge base. Here are the documents:\n\n"
     "{document_list}\n\n"
     "Generate a friendly response that lists what's available and asks "
-    "what they'd like to know about. Match the user's language. "
+    "what they'd like to know about.\n\n"
+    f"{CLIENT_RESPONSE_LANGUAGE_POLICY}\n\n"
     "Keep it concise (under 150 words). "
     "Do NOT fabricate content from the documents."
 )
@@ -259,13 +265,7 @@ CORRECTIVE_RAG_SYSTEM_PROMPT = (
     "Prioritize internal document information when it is relevant and sufficient. "
     "Use web search results to fill gaps or provide additional context. "
     "If sources conflict, note the discrepancy honestly.\n\n"
-    "IMPORTANT — Language handling:\n"
-    "- Match the user's language. If they write in Chinese, respond in Chinese. If in English, respond in English.\n"
-    "- If the user asks for content in a language that is NOT present in the reference material, "
-    "answer using the available source language and clearly note that the knowledge base does not contain "
-    "content in the requested language.\n"
-    "- Do NOT fabricate or hallucinate translations as if they were sourced from documents.\n"
-    "- If you provide a translation for convenience, clearly label it as \"(translated for reference)\".\n\n"
+    f"{CLIENT_RESPONSE_LANGUAGE_POLICY}\n\n"
     "Structure your answer:\n"
     "1. A brief direct answer (1-2 sentences)\n"
     "2. Supporting details with source references\n"
@@ -289,13 +289,7 @@ HYBRID_SYSTEM_PROMPT = (
     "\"I don't have that information in my knowledge base\" — do not guess or fabricate.\n\n"
     "When using web search information, naturally mention the source (e.g., 'According to [Source]...'). "
     "Be conversational, warm, and direct.\n\n"
-    "IMPORTANT — Language handling:\n"
-    "- Match the user's language. If they write in Chinese, respond in Chinese. If in English, respond in English.\n"
-    "- If the user asks for content in a language that is NOT present in the reference material, "
-    "answer using the available source language and clearly note that the knowledge base does not contain "
-    "content in the requested language.\n"
-    "- Do NOT fabricate or hallucinate translations as if they were sourced from documents.\n"
-    "- If you provide a translation for convenience, clearly label it as \"(translated for reference)\".\n\n"
+    f"{CLIENT_RESPONSE_LANGUAGE_POLICY}\n\n"
     "Structure your answer:\n"
     "1. A brief direct answer (1-2 sentences)\n"
     "2. Supporting details with source references\n"
