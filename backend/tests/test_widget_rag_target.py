@@ -1,3 +1,5 @@
+import asyncio
+import json
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -68,10 +70,12 @@ class WidgetRagTargetTests(unittest.IsolatedAsyncioTestCase):
     async def test_widget_stream_passes_resolved_target_user_to_supervisor(self):
         captured: dict = {}
         log_update: dict = {}
+        accepted_answer = "The canonical support color is cobalt blue."
+        update_message = Mock(return_value={"id": "streaming-msg-a"})
 
         async def fake_agent_execute(**kwargs):
             captured.update(kwargs)
-            yield {"type": "token", "content": "The canonical support color is cobalt blue."}
+            yield {"type": "token", "content": accepted_answer}
             yield {
                 "type": "rag_quality",
                 "retrieval_log_ids": ["log-a"],
@@ -96,7 +100,7 @@ class WidgetRagTargetTests(unittest.IsolatedAsyncioTestCase):
             patch.object(widget, "create_widget_thread", return_value={"id": "thread-a"}),
             patch.object(widget, "save_widget_message", return_value={"id": "message-a"}),
             patch.object(widget, "save_widget_message_streaming", return_value={"id": "streaming-msg-a"}),
-            patch.object(widget, "update_message_content", return_value={"id": "streaming-msg-a"}),
+            patch.object(widget, "update_message_content", new=update_message),
             patch.object(widget, "update_retrieval_logs_for_answer", side_effect=fake_update_logs),
             patch.object(widget, "get_thread_messages_service", return_value=[]),
             patch.object(widget, "agent_execute", new=fake_agent_execute),
@@ -106,8 +110,10 @@ class WidgetRagTargetTests(unittest.IsolatedAsyncioTestCase):
                 authorization="Bearer widget-token",
                 origin="http://example.test",
             )
-            async for _ in response.body_iterator:
-                pass
+            events = [
+                json.loads(item["data"])
+                async for item in response.body_iterator
+            ]
 
         self.assertEqual(captured["target_user_id"], "admin-a")
         self.assertEqual(captured["tenant_id"], "tenant-a")
@@ -116,6 +122,17 @@ class WidgetRagTargetTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(log_update["diagnostics"]["channel"], "widget")
         self.assertFalse(log_update["diagnostics"]["web_fallback_allowed"])
         self.assertFalse(log_update["diagnostics"]["used_web_fallback"])
+        streamed_answer = "".join(
+            event["content"]
+            for event in events
+            if event["type"] == "token"
+        )
+        self.assertEqual(streamed_answer, accepted_answer)
+        update_message.assert_called_once_with(
+            "streaming-msg-a",
+            accepted_answer,
+            status="complete",
+        )
 
     async def test_widget_stream_persists_agent_errors_as_failed(self):
         async def failing_agent(**_kwargs):
@@ -150,6 +167,67 @@ class WidgetRagTargetTests(unittest.IsolatedAsyncioTestCase):
             "streaming-msg-a",
             "The AI provider returned an error. Please try again.",
             status="failed",
+        )
+
+    async def test_widget_disconnect_during_verification_still_persists_accepted_answer(self):
+        verification_reached = asyncio.Event()
+        release_verification = asyncio.Event()
+        persisted = asyncio.Event()
+        accepted_answer = "The canonical support color is cobalt blue."
+
+        async def verifying_agent(**_kwargs):
+            verification_reached.set()
+            yield {
+                "type": "thought",
+                "content": "Checking groundedness before delivering answer (attempt 2)...",
+                "action_type": "verifying",
+            }
+            await release_verification.wait()
+            yield {"type": "token", "content": accepted_answer}
+
+        def persist_message(*_args, **_kwargs):
+            persisted.set()
+            return {"id": "streaming-msg-a"}
+
+        update_message = Mock(side_effect=persist_message)
+        settings = Mock(
+            rate_limit_widget_requests=10,
+            rate_limit_widget_window=60,
+            widget_free_tier_limit=10,
+            chat_pipeline_timeout_seconds=120,
+        )
+
+        with (
+            patch.object(widget, "Settings", return_value=settings),
+            patch.object(widget, "verify_widget_token", return_value={"tenant_id": "tenant-a", "session_id": "session-a", "origin": "http://example.test"}),
+            patch.object(widget, "check_rate_limit"),
+            patch.object(widget, "get_db", return_value=Mock(table=Mock(return_value=_Query([])))),
+            patch.object(widget, "_resolve_widget_rag_target_user_id", return_value="admin-a"),
+            patch.object(widget, "create_widget_thread", return_value={"id": "thread-a"}),
+            patch.object(widget, "save_widget_message", return_value={"id": "message-a"}),
+            patch.object(widget, "save_widget_message_streaming", return_value={"id": "streaming-msg-a"}),
+            patch.object(widget, "update_message_content", new=update_message),
+            patch.object(widget, "get_thread_messages_service", return_value=[]),
+            patch.object(widget, "agent_execute", new=verifying_agent),
+        ):
+            response = await widget.chat_stream(
+                request=widget.WidgetChatRequest(message="Question"),
+                authorization="Bearer widget-token",
+                origin="http://example.test",
+            )
+            stream = response.body_iterator
+            progress = json.loads((await anext(stream))["data"])
+            await verification_reached.wait()
+
+            self.assertEqual(progress["action_type"], "verifying")
+            await stream.aclose()
+            release_verification.set()
+            await asyncio.wait_for(persisted.wait(), timeout=1)
+
+        update_message.assert_called_once_with(
+            "streaming-msg-a",
+            accepted_answer,
+            status="complete",
         )
 
 

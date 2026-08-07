@@ -1,4 +1,5 @@
 import asyncio
+import json
 from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -71,6 +72,175 @@ def test_expire_stale_streaming_messages_marks_rows_failed(monkeypatch):
     }
     assert ("eq", "status", "streaming") in fake_db.messages.filters
     assert any(item[:2] == ("lt", "created_at") for item in fake_db.messages.filters)
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_sends_and_persists_one_accepted_answer():
+    accepted_answer = "Atlas is operational."
+
+    async def successful_agent(**_kwargs):
+        yield {
+            "type": "thought",
+            "content": "Checking groundedness before delivering answer (attempt 2)...",
+            "action_type": "verifying",
+        }
+        yield {"type": "token", "content": "Atlas is "}
+        yield {"type": "token", "content": "operational."}
+        yield {
+            "type": "rag_quality",
+            "retrieval_log_ids": ["log-a"],
+            "groundedness": 0.95,
+            "groundedness_flag": False,
+            "retrieval_quality": "retrieved",
+            "diagnostics": {"channel": "authenticated"},
+        }
+
+    user = SimpleNamespace(
+        id="user-a",
+        status="approved",
+        role="client",
+        access_token="token-a",
+        tenant_id="tenant-a",
+    )
+
+    with (
+        patch.object(
+            chat,
+            "Settings",
+            return_value=SimpleNamespace(
+                rate_limit_chat_requests=10,
+                rate_limit_chat_window=60,
+                sql_tools_enabled=False,
+                chat_pipeline_timeout_seconds=120,
+            ),
+        ),
+        patch.object(chat, "check_rate_limit"),
+        patch.object(chat, "propagate_attributes", return_value=nullcontext()),
+        patch.object(
+            chat,
+            "save_message",
+            return_value={"id": "user-message", "created_at": "2026-07-17T00:00:00Z"},
+        ),
+        patch.object(
+            chat,
+            "save_message_streaming",
+            return_value={"id": "assistant-message", "created_at": "2026-07-17T00:00:01Z"},
+        ),
+        patch.object(
+            chat,
+            "get_thread_messages",
+            return_value=[{"id": "user-message", "role": "user", "content": "Question"}],
+        ),
+        patch.object(chat, "agent_execute", new=successful_agent),
+        patch.object(chat, "update_message_content", return_value={}) as update_message,
+        patch.object(chat, "update_retrieval_logs_for_answer"),
+    ):
+        response = await chat.chat_stream(
+            ChatRequest(message="Question", thread_id="thread-a"),
+            user=user,
+        )
+        events = [
+            json.loads(item["data"])
+            async for item in response.body_iterator
+        ]
+
+    streamed_answer = "".join(
+        event["content"]
+        for event in events
+        if event["type"] == "token"
+    )
+    assert streamed_answer == accepted_answer
+    update_message.assert_called_once_with(
+        "assistant-message",
+        accepted_answer,
+        status="complete",
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_disconnect_during_verification_still_persists_accepted_answer():
+    verification_reached = asyncio.Event()
+    release_verification = asyncio.Event()
+    persisted = asyncio.Event()
+    accepted_answer = "Atlas is operational."
+
+    async def verifying_agent(**_kwargs):
+        verification_reached.set()
+        yield {
+            "type": "thought",
+            "content": "Checking groundedness before delivering answer (attempt 2)...",
+            "action_type": "verifying",
+        }
+        await release_verification.wait()
+        yield {"type": "token", "content": accepted_answer}
+
+    def persist_message(*_args, **_kwargs):
+        persisted.set()
+        return {}
+
+    user = SimpleNamespace(
+        id="user-a",
+        status="approved",
+        role="client",
+        access_token="token-a",
+        tenant_id="tenant-a",
+    )
+
+    with (
+        patch.object(
+            chat,
+            "Settings",
+            return_value=SimpleNamespace(
+                rate_limit_chat_requests=10,
+                rate_limit_chat_window=60,
+                sql_tools_enabled=False,
+                chat_pipeline_timeout_seconds=120,
+            ),
+        ),
+        patch.object(chat, "check_rate_limit"),
+        patch.object(chat, "propagate_attributes", return_value=nullcontext()),
+        patch.object(
+            chat,
+            "save_message",
+            return_value={"id": "user-message", "created_at": "2026-07-17T00:00:00Z"},
+        ),
+        patch.object(
+            chat,
+            "save_message_streaming",
+            return_value={"id": "assistant-message", "created_at": "2026-07-17T00:00:01Z"},
+        ),
+        patch.object(
+            chat,
+            "get_thread_messages",
+            return_value=[{"id": "user-message", "role": "user", "content": "Question"}],
+        ),
+        patch.object(chat, "agent_execute", new=verifying_agent),
+        patch.object(
+            chat,
+            "update_message_content",
+            side_effect=persist_message,
+        ) as update_message,
+    ):
+        response = await chat.chat_stream(
+            ChatRequest(message="Question", thread_id="thread-a"),
+            user=user,
+        )
+        stream = response.body_iterator
+        await anext(stream)
+        await anext(stream)
+        progress = json.loads((await anext(stream))["data"])
+        await verification_reached.wait()
+
+        assert progress["action_type"] == "verifying"
+        await stream.aclose()
+        release_verification.set()
+        await asyncio.wait_for(persisted.wait(), timeout=1)
+
+    update_message.assert_called_once_with(
+        "assistant-message",
+        accepted_answer,
+        status="complete",
+    )
 
 
 @pytest.mark.asyncio

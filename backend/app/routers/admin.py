@@ -144,16 +144,14 @@ async def get_settings(user=Depends(get_current_user)):
     def redact(val: str | None) -> str | None:
         if not val:
             return ""
-        if len(val) <= 8:
-            return "••••••••"
-        return f"{val[:6]}••••••••{val[-4:]}"
+        return "[redacted]"
 
     from app.config import DEFAULT_OCR_MODEL, Settings, normalize_ocr_model
     runtime_settings = Settings()
 
     return {
         "MODEL_PROVIDER": settings_dict.get("MODEL_PROVIDER", "openrouter"),
-        "GOOGLE_API_KEY": redact(settings_dict.get("GOOGLE_API_KEY")),
+        "GOOGLE_API_KEY": redact(runtime_settings.google_api_key),
         "OPENROUTER_API_KEY": redact(settings_dict.get("OPENROUTER_API_KEY")),
         "OPENROUTER_MODEL": settings_dict.get("OPENROUTER_MODEL", ""),
         "OPENROUTER_FALLBACK_MODEL": settings_dict.get("OPENROUTER_FALLBACK_MODEL", ""),
@@ -164,8 +162,8 @@ async def get_settings(user=Depends(get_current_user)):
         "MISTRAL_MODEL": settings_dict.get("MISTRAL_MODEL", "mistral-large-latest"),
         "TAVLY_API_KEY": redact(settings_dict.get("TAVLY_API_KEY")),
         "COHERE_API_KEY": redact(settings_dict.get("COHERE_API_KEY")),
-        "QDRANT_URL": settings_dict.get("QDRANT_URL", ""),
-        "QDRANT_API_KEY": redact(settings_dict.get("QDRANT_API_KEY")),
+        "QDRANT_URL": runtime_settings.qdrant_url,
+        "QDRANT_API_KEY": redact(runtime_settings.qdrant_api_key),
         "LANGFUSE_PUBLIC_KEY": settings_dict.get("LANGFUSE_PUBLIC_KEY", ""),
         "LANGFUSE_SECRET_KEY": redact(settings_dict.get("LANGFUSE_SECRET_KEY")),
         "LANGFUSE_BASE_URL": settings_dict.get("LANGFUSE_BASE_URL", "https://jp.cloud.langfuse.com"),
@@ -182,9 +180,12 @@ async def save_settings(settings: SystemSettingsSchema, request: Request, user=D
     
     updates = settings.model_dump(exclude_unset=True)
     applied_keys: list[str] = []
+    from app.config import TENANT_OVERRIDABLE_SETTING_KEYS
     
     for key, value in updates.items():
         if value is None:
+            continue
+        if key not in TENANT_OVERRIDABLE_SETTING_KEYS:
             continue
         if value.strip() in {"[redacted]", "********"} or value.strip().startswith("[redacted"):
             continue
@@ -228,11 +229,11 @@ async def save_settings(settings: SystemSettingsSchema, request: Request, user=D
                 "updated_at": "now()"
             }).execute()
             applied_keys.append(key)
-        except Exception as e:
-            logger.error(f"Failed to upsert setting {key}: {e}", exc_info=True)
+        except Exception:
+            logger.error("Failed to upsert setting %s", key)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to update setting {key}: {str(e)}"
+                detail=f"Failed to update setting {key}",
             )
             
     # Clear the settings cache to apply overrides immediately

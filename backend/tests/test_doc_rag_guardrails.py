@@ -122,6 +122,90 @@ class DocRagGuardrailTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(quality["groundedness_flag"])
         self.assertTrue(quality["retried"])
 
+    async def test_failed_candidate_is_not_streamed_before_successful_retry(self):
+        source = {
+            "chunk_id": "chunk-a",
+            "document_id": "doc-a",
+            "filename": "a.md",
+            "content": "Atlas is operational.",
+            "score": 0.9,
+        }
+        retrieve_context = AsyncMock(side_effect=[
+            {
+                "chunks": ["Atlas is operational."],
+                "sources": [source],
+                "retrieval_log_ids": ["log-initial"],
+            },
+            {
+                "chunks": ["Atlas is operational."],
+                "sources": [source],
+                "retrieval_log_ids": ["log-retry"],
+            },
+        ])
+        answers = iter([
+            ["Unsupported first draft."],
+            ["Atlas is ", "operational."],
+        ])
+
+        async def answer_stream(*_args, **_kwargs):
+            for chunk in next(answers):
+                yield chunk
+
+        with (
+            patch.object(doc_rag_agent, "get_llm_client", return_value=Mock()),
+            patch.object(doc_rag_agent, "rewrite_query", new=AsyncMock(return_value="Atlas status")),
+            patch.object(doc_rag_agent, "expand_queries", new=AsyncMock(return_value=[])),
+            patch.object(doc_rag_agent, "retrieve_context", new=retrieve_context),
+            patch.object(doc_rag_agent, "_is_meta_query", new=AsyncMock(return_value=False)),
+            patch.object(doc_rag_agent, "_refine_query_for_retry", new=AsyncMock(return_value="refined Atlas status")),
+            patch.object(
+                doc_rag_agent,
+                "check_groundedness_with_llm",
+                new=AsyncMock(side_effect=[(0.1, False), (0.95, True)]),
+            ),
+            patch.object(
+                doc_rag_agent,
+                "chain_of_verification",
+                new=AsyncMock(return_value={
+                    "verified": True,
+                    "skipped": False,
+                    "verification_questions": ["What is the Atlas status?"],
+                    "verification_results": [],
+                    "unsupported_claims": [],
+                }),
+            ),
+            patch.object(doc_rag_agent, "generate_chat_response_stream", new=answer_stream),
+        ):
+            events = [
+                event
+                async for event in doc_rag_agent.execute(
+                    token="token",
+                    user_id="user-a",
+                    message="What is the Atlas status?",
+                    history=[],
+                    target_user_id="admin-a",
+                    tenant_id="tenant-a",
+                    enable_hyde=False,
+                    allow_web_fallback=False,
+                )
+            ]
+
+        token_text = "".join(
+            event.get("content", "")
+            for event in events
+            if event.get("type") == "token"
+        )
+        self.assertEqual(token_text, "Atlas is operational.")
+        self.assertTrue(any(
+            event.get("type") == "thought"
+            and event.get("action_type") == "retrying"
+            for event in events
+        ))
+
+        quality = [event for event in events if event.get("type") == "rag_quality"][-1]
+        self.assertEqual(quality["groundedness"], 0.95)
+        self.assertTrue(quality["retried"])
+
 
 if __name__ == "__main__":
     unittest.main()

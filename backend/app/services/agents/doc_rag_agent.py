@@ -1715,9 +1715,14 @@ async def execute(
         "action_data": {"stage": "llm_generation", "hybrid": use_hybrid or used_web_fallback},
     }
 
-    # Add transparency message when web search was used
-    if used_web_fallback:
-        yield {"type": "token", "content": "> I found limited relevant documents, so I also searched the web to give you a better answer.\n\n"}
+    # Buffer all answer content until a candidate has passed groundedness checks.
+    # Progress and source events can still stream while answer candidates remain
+    # private to the pipeline.
+    answer_prefix = (
+        "> I found limited relevant documents, so I also searched the web to give you a better answer.\n\n"
+        if used_web_fallback
+        else ""
+    )
 
     # ── Generate answer with optional groundedness retry ──
     # Retry 1: query reformulation; Retry 2: HyDE-based retrieval
@@ -1726,9 +1731,11 @@ async def execute(
     is_grounded = True
     groundedness = 1.0
     retry_retrieval_log_ids = []
+    accepted_chunks: list[str] = []
 
     while attempt <= max_retries:
         full_answer = ""
+        candidate_chunks: list[str] = []
         llm_start = monotonic_ms()
         first_token_logged = False
         async for chunk in generate_chat_response_stream(client, message, history, context_chunks, images=images, system_prompt=system_prompt, context_sources=context_sources):
@@ -1745,7 +1752,7 @@ async def execute(
                 )
                 first_token_logged = True
             full_answer += chunk
-            yield {"type": "token", "content": chunk}
+            candidate_chunks.append(chunk)
         log_latency(
             "llm.completion",
             elapsed_ms(llm_start),
@@ -1757,6 +1764,14 @@ async def execute(
             context_chunk_count=len(context_chunks),
             answer_chars=len(full_answer),
         )
+
+        yield {
+            "type": "thought",
+            "content": f"Checking groundedness before delivering answer (attempt {attempt + 1})...",
+            "action_type": "verifying",
+            "action_source": "doc_rag",
+            "action_data": {"stage": "groundedness", "attempt": attempt + 1},
+        }
 
         # Groundedness check (two-stage: token-overlap + LLM)
         # Detect if context contains web-fallback content to use web-aware groundedness prompt
@@ -1770,6 +1785,7 @@ async def execute(
         logger.info(f"Groundedness attempt {attempt+1}: score={groundedness:.3f}, is_grounded={is_grounded}")
 
         if is_grounded or attempt >= max_retries:
+            accepted_chunks = candidate_chunks
             break
 
         # ── Retry: different strategies per attempt ──
@@ -2021,6 +2037,7 @@ async def execute(
             print(f"[DOC_RAG] CoVe failed: {e}")
 
     # ── Post-retry groundedness handling ──
+    disclaimer = ""
     if not is_grounded and context_chunks:
         yield {
             "type": "thought",
@@ -2033,6 +2050,12 @@ async def execute(
             "\n\n---\n⚠️ *Note: Parts of this answer may not be directly sourced from your documents. "
             "Please verify the information independently.*"
         )
+
+    if answer_prefix:
+        yield {"type": "token", "content": answer_prefix}
+    for chunk in accepted_chunks:
+        yield {"type": "token", "content": chunk}
+    if disclaimer:
         yield {"type": "token", "content": disclaimer}
 
     all_retrieval_log_ids = retrieval_log_ids + retry_retrieval_log_ids

@@ -82,3 +82,25 @@ def test_retrieval_log_update_writes_grounding_status(monkeypatch):
     assert updated["groundedness_flag"] is True
     assert updated["grounding_status"] == "ungrounded"
 
+
+def test_retrieval_diagnostics_are_secret_redacted_before_storage(monkeypatch):
+    fake_db = _FakeDb()
+    monkeypatch.setattr(database, "get_db", lambda: fake_db)
+
+    database.log_retrieval(
+        query="question",
+        retrieval_mode="hybrid",
+        chunk_count=1,
+        diagnostics={
+            "provider": "openrouter",
+            "OPENROUTER_API_KEY": "tenant-secret",
+            "nested": {"authorization": "Bearer tenant-secret"},
+        },
+    )
+
+    diagnostics = fake_db.tables["retrieval_logs"].inserted["diagnostics"]
+    assert diagnostics == {
+        "provider": "openrouter",
+        "OPENROUTER_API_KEY": "[redacted]",
+        "nested": {"authorization": "[redacted]"},
+    }
