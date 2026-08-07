@@ -2,6 +2,7 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from openai import APIError, RateLimitError
+from app.config import tenant_settings_context
 from app.services.gemini import get_llm_client, get_primary_model, _extract_retry_delay
 from app.services.agents import doc_rag_agent, sql_sub_agent, web_search_agent, plan_executor, react_agent
 
@@ -111,7 +112,7 @@ async def route_query_llm(
         return await route_query(message, False, enable_sql, enable_web_search)
 
 
-async def execute(
+async def _execute_for_tenant(
     token: str,
     user_id: str,
     message: str,
@@ -201,3 +202,35 @@ async def execute(
                 "content": "The AI service is temporarily unavailable. Please try again in a moment.",
                 "error_code": "server_error",
             }
+
+
+async def execute(
+    token: str,
+    user_id: str,
+    message: str,
+    history: list,
+    thread_id: str,
+    use_documents: bool = False,
+    retrieval_mode: str = "hybrid",
+    enable_web_search: bool = False,
+    enable_sql: bool = False,
+    images: list[str] | None = None,
+    tenant_id: str | None = None,
+    target_user_id: str | None = None,
+) -> AsyncGenerator[dict, None]:
+    with tenant_settings_context(tenant_id):
+        async for event in _execute_for_tenant(
+            token=token,
+            user_id=user_id,
+            message=message,
+            history=history,
+            thread_id=thread_id,
+            use_documents=use_documents,
+            retrieval_mode=retrieval_mode,
+            enable_web_search=enable_web_search,
+            enable_sql=enable_sql,
+            images=images,
+            tenant_id=tenant_id,
+            target_user_id=target_user_id,
+        ):
+            yield event

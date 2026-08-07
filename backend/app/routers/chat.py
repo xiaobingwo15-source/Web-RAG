@@ -14,7 +14,7 @@ from app.services.agent_supervisor import execute as agent_execute
 from app.services.database import create_thread, save_message, save_message_streaming, update_message_content, get_thread_messages, get_user_threads, get_thread, delete_thread as db_delete_thread, save_message_feedback, get_message_feedback, get_retrieval_logs, update_retrieval_logs_for_answer
 from app.services.rate_limit import check_rate_limit
 from app.services.streaming_tasks import spawn_streaming_task
-from app.config import Settings
+from app.config import Settings, tenant_settings_context
 from sse_starlette.sse import EventSourceResponse
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,11 @@ def build_history(messages: list[dict]) -> list[dict]:
 
 @router.post("/", response_model=ChatResponse)
 async def chat(request: ChatRequest, user=Depends(get_current_user)):
+    with tenant_settings_context(user.tenant_id):
+        return await _chat_for_tenant(request, user)
+
+
+async def _chat_for_tenant(request: ChatRequest, user):
     if user.status != "approved":
         raise HTTPException(status_code=403, detail="Your account is pending approval. Please wait for an admin to approve your access.")
     settings = Settings()

@@ -1,6 +1,11 @@
+from contextlib import contextmanager
+from contextvars import ContextVar
 import functools
 import time
-from pydantic import Field
+from collections.abc import Iterator
+from typing import Any
+
+from pydantic import Field, PrivateAttr
 from pydantic_settings import BaseSettings
 
 
@@ -8,6 +13,30 @@ DEFAULT_OCR_MODEL = "google/gemini-2.5-flash-lite"
 OCR_MODEL_ALIASES = {
     "google/gemini-2.0-flash-001": DEFAULT_OCR_MODEL,
 }
+
+TENANT_OVERRIDABLE_SETTING_KEYS = frozenset({
+    "MODEL_PROVIDER",
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_MODEL",
+    "OPENROUTER_FALLBACK_MODEL",
+    "OCR_MODEL",
+    "PDF_OCR_MAX_PAGES",
+    "PDF_LAYOUT_MAX_PAGES",
+    "MISTRAL_API_KEY",
+    "MISTRAL_MODEL",
+    "TAVLY_API_KEY",
+    "COHERE_API_KEY",
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_SECRET_KEY",
+    "LANGFUSE_BASE_URL",
+    "CONTEXTUAL_RETRIEVAL",
+    "CONTEXTUAL_RETRIEVAL_BATCH_SIZE",
+})
+
+_current_tenant_id: ContextVar[str | None] = ContextVar(
+    "runtime_settings_tenant_id",
+    default=None,
+)
 
 
 def normalize_ocr_model(model: str | None) -> str:
@@ -28,6 +57,8 @@ def _nonnegative_int_setting(value: str | None, default: int) -> int:
 
 
 class Settings(BaseSettings):
+    _tenant_id: str | None = PrivateAttr(default=None)
+
     model_provider: str = "openrouter"
     openrouter_api_key: str = ""
     openrouter_model: str = "deepseek/deepseek-v4-flash"
@@ -141,16 +172,29 @@ class Settings(BaseSettings):
         "extra": "ignore",
     }
 
+    @classmethod
+    def for_tenant(cls, tenant_id: str, **values: Any) -> "Settings":
+        """Create runtime settings bound to exactly one tenant."""
+        normalized_tenant_id = str(tenant_id or "").strip()
+        if not normalized_tenant_id:
+            raise ValueError("tenant_id is required for tenant-overridable settings")
+        settings = cls(**values)
+        settings._tenant_id = normalized_tenant_id
+        return settings
+
     # Custom dynamic lookups that check database and fallback to env
     def _get_db_setting(self, key: str) -> str | None:
+        if key not in TENANT_OVERRIDABLE_SETTING_KEYS:
+            return None
+
+        tenant_id = self._tenant_id or _current_tenant_id.get()
+        if not tenant_id:
+            return None
+
         try:
-            # Avoid infinite recursion if fetching database configuration keys
-            if key in ["supabase_url", "supabase_service_role_key", "supabase_anon_key"]:
-                return None
-            
             # Caching mechanism using 10-second blocks to avoid high database load
             expiry_time = time.time() // 10
-            return _get_cached_setting(key, expiry_time)
+            return _get_cached_setting(tenant_id, key, expiry_time)
         except Exception:
             return None
 
@@ -202,46 +246,38 @@ class Settings(BaseSettings):
 
     @property
     def get_google_api_key(self) -> str:
-        val = self._get_db_setting("GOOGLE_API_KEY")
-        return val if val else self.google_api_key
+        return self.google_api_key
 
     @property
     def get_embedding_provider(self) -> str:
-        val = self._get_db_setting("EMBEDDING_PROVIDER")
-        provider = (val if val else self.embedding_provider).strip().lower()
+        provider = self.embedding_provider.strip().lower()
         allowed = {"gemini", "local_sentence_transformers", "jina"}
         return provider if provider in allowed else "gemini"
 
     @property
     def get_embedding_model(self) -> str:
-        val = self._get_db_setting("EMBEDDING_MODEL")
-        return val if val else self.embedding_model
+        return self.embedding_model
 
     @property
     def get_embedding_dimension(self) -> int:
-        val = self._get_db_setting("EMBEDDING_DIMENSION")
-        return int(val) if val else self.embedding_dimension
+        return self.embedding_dimension
 
     @property
     def get_local_embedding_model(self) -> str:
-        val = self._get_db_setting("LOCAL_EMBEDDING_MODEL")
-        return val if val else self.local_embedding_model
+        return self.local_embedding_model
 
     @property
     def get_local_embedding_device(self) -> str:
-        val = self._get_db_setting("LOCAL_EMBEDDING_DEVICE")
-        device = (val if val else self.local_embedding_device).strip().lower()
+        device = self.local_embedding_device.strip().lower()
         return device if device in {"cpu", "cuda"} else "cpu"
 
     @property
     def get_jina_api_key(self) -> str:
-        val = self._get_db_setting("JINA_API_KEY")
-        return val if val else self.jina_api_key
+        return self.jina_api_key
 
     @property
     def get_jina_embedding_model(self) -> str:
-        val = self._get_db_setting("JINA_EMBEDDING_MODEL")
-        return val if val else self.jina_embedding_model
+        return self.jina_embedding_model
 
     @property
     def get_contextual_retrieval(self) -> bool:
@@ -282,17 +318,19 @@ class Settings(BaseSettings):
 
     @property
     def get_qdrant_url(self) -> str:
-        val = self._get_db_setting("QDRANT_URL")
-        return val if val else self.qdrant_url
+        return self.qdrant_url
 
     @property
     def get_qdrant_api_key(self) -> str:
-        val = self._get_db_setting("QDRANT_API_KEY")
-        return val if val else self.qdrant_api_key
+        return self.qdrant_api_key
 
 
 @functools.lru_cache(maxsize=128)
-def _get_cached_setting(key_name: str, expiry_time: float) -> str | None:
+def _get_cached_setting(
+    tenant_id: str,
+    key_name: str,
+    expiry_time: float,
+) -> str | None:
     try:
         import httpx
         settings = Settings()
@@ -304,7 +342,11 @@ def _get_cached_setting(key_name: str, expiry_time: float) -> str | None:
         resp = httpx.get(
             url,
             headers=headers,
-            params={"select": "value", "key": f"eq.{key_name}"},
+            params={
+                "select": "value",
+                "tenant_id": f"eq.{tenant_id}",
+                "key": f"eq.{key_name}",
+            },
             timeout=5.0,
         )
         resp.raise_for_status()
@@ -314,3 +356,14 @@ def _get_cached_setting(key_name: str, expiry_time: float) -> str | None:
     except Exception:
         pass
     return None
+
+
+@contextmanager
+def tenant_settings_context(tenant_id: str | None) -> Iterator[None]:
+    """Bind tenant settings to the current async/thread execution context."""
+    normalized_tenant_id = str(tenant_id or "").strip() or None
+    token = _current_tenant_id.set(normalized_tenant_id)
+    try:
+        yield
+    finally:
+        _current_tenant_id.reset(token)

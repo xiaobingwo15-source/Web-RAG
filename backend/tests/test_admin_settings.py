@@ -98,6 +98,66 @@ def test_admin_settings_returns_pdf_page_limits(monkeypatch):
     assert response.json()["PDF_LAYOUT_MAX_PAGES"] == "18"
 
 
+def test_admin_settings_never_returns_any_secret_value_characters(monkeypatch):
+    fake_db = FakeDb({
+        "OPENROUTER_API_KEY": "tenant-secret-prefix-and-suffix",
+        "LANGFUSE_SECRET_KEY": "langfuse-secret-value",
+    })
+    client = _client(monkeypatch, fake_db)
+
+    response = client.get("/api/admin/settings")
+
+    assert response.status_code == 200
+    assert response.json()["OPENROUTER_API_KEY"] == "[redacted]"
+    assert response.json()["LANGFUSE_SECRET_KEY"] == "[redacted]"
+    assert "tenant-secret" not in response.text
+    assert "langfuse-secret" not in response.text
+
+
+def test_admin_settings_does_not_persist_environment_owned_infrastructure(monkeypatch):
+    fake_db = FakeDb({})
+    client = _client(monkeypatch, fake_db)
+
+    response = client.post(
+        "/api/admin/settings",
+        json={
+            "GOOGLE_API_KEY": "tenant-google-key",
+            "QDRANT_URL": "https://tenant-qdrant.invalid",
+            "QDRANT_API_KEY": "tenant-qdrant-key",
+        },
+    )
+
+    assert response.status_code == 200
+    assert fake_db.upserts == []
+
+
+def test_admin_settings_failure_diagnostics_do_not_echo_secret_values(
+    monkeypatch,
+    caplog,
+):
+    fake_db = FakeDb({})
+
+    class FailingTable(FakeTable):
+        def upsert(self, payload):
+            raise RuntimeError(f"database rejected {payload['value']}")
+
+    monkeypatch.setattr(
+        fake_db,
+        "table",
+        lambda name: FailingTable(fake_db),
+    )
+    client = _client(monkeypatch, fake_db)
+
+    response = client.post(
+        "/api/admin/settings",
+        json={"OPENROUTER_API_KEY": "tenant-secret-value"},
+    )
+
+    assert response.status_code == 500
+    assert "tenant-secret-value" not in response.text
+    assert "tenant-secret-value" not in caplog.text
+
+
 def test_admin_settings_saves_pdf_page_limits(monkeypatch):
     fake_db = FakeDb({})
     client = _client(monkeypatch, fake_db)

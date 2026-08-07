@@ -1389,6 +1389,8 @@ def log_retrieval(
 ) -> dict | None:
     """Log a retrieval request for analytics. Fire-and-forget — returns None on error."""
     try:
+        from app.services.audit import redact_snapshot
+
         db = get_db()
         row = {
             "query": query[:1000],
@@ -1397,7 +1399,7 @@ def log_retrieval(
             "source_count": source_count,
             "sources": sources or [],
             "chunks": chunks or [],
-            "diagnostics": diagnostics or {},
+            "diagnostics": redact_snapshot(diagnostics or {}),
             "grounding_status": "not_checked",
             **({"top_score": top_score} if top_score is not None else {}),
             **({"duration_ms": duration_ms} if duration_ms is not None else {}),
@@ -1429,7 +1431,16 @@ def get_retrieval_logs(
     )
     if zero_chunks_only:
         query = query.eq("chunk_count", 0)
-    return query.execute().data
+    from app.services.audit import redact_snapshot
+
+    rows = query.execute().data or []
+    return [
+        {
+            **row,
+            "diagnostics": redact_snapshot(row.get("diagnostics") or {}),
+        }
+        for row in rows
+    ]
 
 
 def list_recent_retrieval_logs(
@@ -1480,6 +1491,9 @@ def update_retrieval_logs_for_answer(
     if retrieval_quality:
         updates["retrieval_quality"] = retrieval_quality
     if diagnostics is not None:
+        from app.services.audit import redact_snapshot
+
+        diagnostics = redact_snapshot(diagnostics)
         updates["diagnostics"] = diagnostics
     try:
         db = get_db()
@@ -1507,6 +1521,7 @@ def update_retrieval_logs_for_answer(
                 **(row.get("diagnostics") or {}),
                 **diagnostics,
             }
+            merged = redact_snapshot(merged)
             (
                 db.table("retrieval_logs")
                 .update({**updates, "diagnostics": merged})

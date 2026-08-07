@@ -7,6 +7,7 @@ Handles: extract -> chunk -> embed -> store, with status tracking and retry logi
 
 import asyncio
 import logging
+from app.config import tenant_settings_context
 from app.services.file_search_store import process_document
 from app.services.database import update_document_status
 
@@ -42,6 +43,31 @@ def _is_transient(error: Exception) -> bool:
 
 
 async def process_document_async(
+    access_token: str,
+    user_id: str,
+    document_id: str,
+    file_bytes: bytes,
+    mime_type: str,
+    use_ocr: bool = False,
+    pdf_parser_mode: str = "auto",
+    filename: str | None = None,
+    tenant_id: str | None = None,
+) -> None:
+    with tenant_settings_context(tenant_id):
+        await _process_document_for_tenant(
+            access_token=access_token,
+            user_id=user_id,
+            document_id=document_id,
+            file_bytes=file_bytes,
+            mime_type=mime_type,
+            use_ocr=use_ocr,
+            pdf_parser_mode=pdf_parser_mode,
+            filename=filename,
+            tenant_id=tenant_id,
+        )
+
+
+async def _process_document_for_tenant(
     access_token: str,
     user_id: str,
     document_id: str,
