@@ -325,7 +325,7 @@ async def process_document(
             extraction.metadata, metadata, len(text), total_chunks,
         )
         metadata["quality_score"] = quality_score
-        update_document_metadata(access_token, document_id, {"quality_score": quality_score})
+        update_document_metadata(access_token, document_id, metadata)
         _log_document_stage(
             document_id,
             "quality",

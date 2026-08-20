@@ -138,9 +138,13 @@ async def _generate_clarification(
     for i, doc in enumerate(document_summaries, 1):
         tags_str = ", ".join(doc["tags"]) if doc["tags"] else ""
         summary_str = doc["summary"] if doc["summary"] else ""
-        line = f"{i}. **{doc['title']}**"
+        title = doc["title"] or doc.get("filename", "Unknown document")
+        line = f"{i}. **{title}**"
         if summary_str:
             line += f"\n   Summary: {summary_str}"
+        elif doc.get("filename"):
+            # Fallback: use filename to hint at content when summary is missing
+            line += f"\n   (File: {doc['filename']})"
         if tags_str:
             line += f"\n   Tags: {tags_str}"
         lines.append(line)
@@ -190,6 +194,71 @@ async def _try_clarification(
     if not summaries:
         return None
     return await _generate_clarification(query, summaries, client, is_meta=is_meta)
+
+
+async def _try_filename_retrieval(
+    query: str,
+    token: str | None,
+    user_id: str | None,
+    tenant_id: str | None,
+    target_user_id: str | None,
+    max_chunks: int = 10,
+) -> list[dict] | None:
+    """Try to retrieve chunks by matching the query against document filenames.
+
+    When standard vector/FTS retrieval fails but the user's query mentions a document
+    by name (e.g., "AI report", "assignment brief"), this fallback searches documents
+    by filename and returns their chunks directly.
+
+    Returns list of chunk dicts [{id, document_id, content, chunk_index, ...}] or None.
+    """
+    import re
+    from app.services.database import search_documents_by_filename, get_db
+
+    doc_user_id = target_user_id or user_id
+
+    # Extract potential filename terms from the query
+    # Remove common stop words and question words to get meaningful terms
+    stop_words = {
+        "what", "is", "the", "are", "about", "tell", "me", "explain", "describe",
+        "how", "does", "do", "can", "you", "my", "i", "we", "this", "that",
+        "file", "document", "doc", "pdf", "file", "talking", "with", "for",
+        "in", "on", "a", "an", "and", "or", "of", "to", "it", "its",
+        "说什么", "关于", "文件", "文档", "内容", "是什么", "讲了", "介绍",
+    }
+    words = re.findall(r'[a-zA-Z_]+|[一-鿿]+', query.lower())
+    meaningful_words = [w for w in words if w not in stop_words and len(w) > 2]
+
+    if not meaningful_words:
+        return None
+
+    # Try each meaningful word as a filename search term
+    doc_user_id = target_user_id or user_id
+    for word in meaningful_words:
+        docs = search_documents_by_filename(
+            token, word, user_id=doc_user_id, tenant_id=tenant_id, limit=3
+        )
+        if docs:
+            # Found matching document(s) — fetch chunks from the best match
+            doc = docs[0]
+            doc_id = doc["id"]
+            logger.info(f"Filename retrieval: matched '{word}' → document '{doc.get('filename')}' ({doc_id})")
+
+            db = get_db()  # service-role to bypass RLS
+            result = (
+                db.table("document_chunks")
+                .select("id, document_id, content, chunk_index, parent_id, chunk_type, heading, heading_level, structural_type, page_start, page_end, table_id, breadcrumb_path")
+                .eq("document_id", doc_id)
+                .order("chunk_index")
+                .limit(max_chunks)
+                .execute()
+            )
+            chunks = result.data or []
+            if chunks:
+                logger.info(f"Filename retrieval: returned {len(chunks)} chunks from '{doc.get('filename')}'")
+                return chunks
+
+    return None
 
 
 REWRITE_SYSTEM_PROMPT = (
@@ -1152,25 +1221,91 @@ async def execute(
         )
         print(f"[DOC_RAG] Early exit: {refusal_reason} (top_fused_score={top_fused_score:.4f})")
 
-        # ── Try clarification before refusing ──
-        clarification = await _try_clarification(
-            message, token, user_id, tenant_id, target_user_id, client, is_meta=is_meta_query
+        # ── Try filename-based retrieval before clarification ──
+        # When the query mentions a document by name (e.g., "AI report"), try matching
+        # against document filenames directly. This handles the case where vector/FTS
+        # retrieval fails because the query terms don't match the content.
+        filename_chunks = await _try_filename_retrieval(
+            message, token, user_id, tenant_id, target_user_id
         )
-        if clarification:
+        if filename_chunks:
+            logger.info(f"Filename retrieval recovered {len(filename_chunks)} chunks, continuing pipeline")
+            print(f"[DOC_RAG] Filename retrieval: recovered {len(filename_chunks)} chunks")
+            # Build context from filename-matched chunks
+            for fc in filename_chunks:
+                chunk_content = fc.get("content", "")
+                chunk_key = chunk_content[:500].strip().lower()
+                if chunk_key not in seen_chunk_keys:
+                    seen_chunk_keys.add(chunk_key)
+                    context_chunks.append(chunk_content)
+                    filename_source = {
+                        "id": fc.get("id", ""),
+                        "document_id": fc.get("document_id", ""),
+                        "content": chunk_content,
+                        "score": 0.5,  # moderate confidence for filename match
+                        "score_family": "filename_match",
+                        "metadata": fc.get("metadata", {}),
+                        "filename": "filename_match",
+                    }
+                    context_sources.append(filename_source)
+                    sources.append(filename_source)
+            top_fused_score = 0.5  # reset to allow pipeline to continue
+            public_sources = _public_sources(sources)
+            # Continue to the rest of the pipeline (HyDE, reranker, etc.) below
+
+        # ── Try clarification before refusing (only if still no chunks) ──
+        if not context_chunks:
+            clarification = await _try_clarification(
+                message, token, user_id, tenant_id, target_user_id, client, is_meta=is_meta_query
+            )
+            if clarification:
+                yield {
+                    "type": "thought",
+                    "content": "No direct match found. Checking knowledge base inventory for relevant topics...",
+                    "action_type": "searching",
+                    "action_source": "doc_rag",
+                    "action_data": {"query": message, "clarification_used": True},
+                }
+                yield {"type": "token", "content": clarification}
+                yield {
+                    "type": "rag_quality",
+                    "retrieval_log_ids": retrieval_log_ids,
+                    "groundedness": None,
+                    "groundedness_flag": False,
+                    "retrieval_quality": "clarification",
+                    "diagnostics": {
+                        "channel": channel,
+                        "doc_chunk_count": 0,
+                        "web_result_count": 0,
+                        "fallback_reason": refusal_reason,
+                        "web_fallback_allowed": allow_web_fallback,
+                        "query_variant_count": len(all_queries),
+                        "top_fused_score": round(top_fused_score, 4),
+                        "clarification_used": True,
+                    },
+                }
+                return
+
             yield {
                 "type": "thought",
-                "content": "No direct match found. Checking knowledge base inventory for relevant topics...",
-                "action_type": "searching",
+                "content": f"No relevant content found in the knowledge base (low retrieval confidence: {top_fused_score:.3f}).",
+                "action_type": "no_results",
                 "action_source": "doc_rag",
-                "action_data": {"query": message, "clarification_used": True},
+                "action_data": {
+                    "query": message,
+                    "fallback_reason": refusal_reason,
+                    "retrieval_log_ids": retrieval_log_ids,
+                    "top_fused_score": round(top_fused_score, 4),
+                    "web_fallback_allowed": allow_web_fallback,
+                },
             }
-            yield {"type": "token", "content": clarification}
+            yield {"type": "token", "content": "I don't have that information in my knowledge base."}
             yield {
                 "type": "rag_quality",
                 "retrieval_log_ids": retrieval_log_ids,
                 "groundedness": None,
                 "groundedness_flag": False,
-                "retrieval_quality": "clarification",
+                "retrieval_quality": "near_random_early_exit" if refusal_reason == "near_random" else "no_sources",
                 "diagnostics": {
                     "channel": channel,
                     "doc_chunk_count": 0,
@@ -1179,42 +1314,9 @@ async def execute(
                     "web_fallback_allowed": allow_web_fallback,
                     "query_variant_count": len(all_queries),
                     "top_fused_score": round(top_fused_score, 4),
-                    "clarification_used": True,
                 },
             }
             return
-
-        yield {
-            "type": "thought",
-            "content": f"No relevant content found in the knowledge base (low retrieval confidence: {top_fused_score:.3f}).",
-            "action_type": "no_results",
-            "action_source": "doc_rag",
-            "action_data": {
-                "query": message,
-                "fallback_reason": refusal_reason,
-                "retrieval_log_ids": retrieval_log_ids,
-                "top_fused_score": round(top_fused_score, 4),
-                "web_fallback_allowed": allow_web_fallback,
-            },
-        }
-        yield {"type": "token", "content": "I don't have that information in my knowledge base."}
-        yield {
-            "type": "rag_quality",
-            "retrieval_log_ids": retrieval_log_ids,
-            "groundedness": None,
-            "groundedness_flag": False,
-            "retrieval_quality": "near_random_early_exit" if refusal_reason == "near_random" else "no_sources",
-            "diagnostics": {
-                "channel": channel,
-                "doc_chunk_count": 0,
-                "web_result_count": 0,
-                "fallback_reason": refusal_reason,
-                "web_fallback_allowed": allow_web_fallback,
-                "query_variant_count": len(all_queries),
-                "top_fused_score": round(top_fused_score, 4),
-            },
-        }
-        return
 
     # ── Merge delegated SQL results into context ──
     if delegated_sql_result and delegated_sql_result.get("chunks"):

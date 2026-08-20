@@ -594,6 +594,32 @@ def get_user_document_summaries(
     return summaries
 
 
+def search_documents_by_filename(
+    access_token: str | None,
+    filename_query: str,
+    user_id: str | None = None,
+    tenant_id: str | None = None,
+    limit: int = 5,
+) -> list[dict]:
+    """Search documents by filename using ILIKE matching.
+
+    Returns list of {id, filename, metadata} for non-archived docs
+    whose filename matches the query (case-insensitive, substring match).
+    """
+    db = get_user_db(access_token) if access_token else get_db()
+    query = (
+        db.table("documents")
+        .select("id, filename, metadata")
+        .neq("status", "archived")
+        .ilike("filename", f"%{filename_query}%")
+        .limit(limit)
+    )
+    if user_id:
+        query = query.eq("user_id", user_id)
+    result = _apply_tenant(query, tenant_id).order("created_at", desc=True).execute()
+    return result.data or []
+
+
 def search_chunks_fts(access_token: str | None, user_id: str | None, query_text: str, match_count: int = 10, tenant_id: str | None = None) -> list[dict]:
     db = get_user_db(access_token) if access_token else get_db()
     params = {
